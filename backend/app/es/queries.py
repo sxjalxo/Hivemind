@@ -47,8 +47,8 @@ def build_log_query(query: LogQuery) -> dict:
 
 def to_event(hit: dict) -> HoneypotEvent:
     src = hit["_source"]
-    process = src.get("process") or {}
-    mitre = src.get("mitre") or {}
+    process = src.get("process")
+    mitre = src.get("mitre")
     return HoneypotEvent.model_validate(
         {
             "id": hit["_id"],
@@ -58,17 +58,25 @@ def to_event(hit: dict) -> HoneypotEvent:
             "event": src.get("event") or {"action": "unknown", "category": "other"},
             "network": src.get("network") or {"protocol": "ssh"},
             "user": src.get("user"),
-            "process": {
-                "commandLine": process.get("command_line"),
-                "output": process.get("output"),
-            },
+            "process": (
+                {
+                    "commandLine": process.get("command_line"),
+                    "output": process.get("output"),
+                }
+                if process
+                else None
+            ),
             "honeypot": src.get("honeypot") or {"id": "unknown", "name": "unknown"},
             "session": src.get("session") or {"id": "unknown"},
             "risk": src.get("risk") or {"score": 0, "level": "informational"},
-            "mitre": {
-                "techniqueId": mitre.get("technique_id"),
-                "tactic": mitre.get("tactic"),
-            },
+            "mitre": (
+                {
+                    "techniqueId": mitre.get("technique_id"),
+                    "tactic": mitre.get("tactic"),
+                }
+                if mitre
+                else None
+            ),
             "aiClassification": src.get("ai_classification"),
         }
     )

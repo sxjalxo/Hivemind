@@ -5,7 +5,7 @@ export interface HoneypotEvent {
   id: string;
   timestamp: string;
   source: { ip: string; port?: number | undefined; country?: string | undefined };
-  destination: { ip: string; port?: number | undefined };
+  destination: { ip?: string | undefined; port?: number | undefined };
   event: { action: string; category: string; outcome?: string | undefined };
   network: { protocol: string };
   user?: { name?: string | undefined } | undefined;
