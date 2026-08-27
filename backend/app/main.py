@@ -12,7 +12,11 @@ from app.routers import status
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.seed.seeder import seed, seeded_count
+
     await bootstrap_es()
+    if await seeded_count() == 0:
+        await seed()
     yield
     await get_es().close()
     await get_engine().dispose()

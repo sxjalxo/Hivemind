@@ -1,0 +1,14 @@
+{
+  "session": "seed-brute-01",
+  "src_ip": "212.70.149.83",
+  "src_port": 33012,
+  "events": [
+    { "offset": 2400, "eventid": "cowrie.session.connect", "dst_port": 2222 },
+    { "offset": 2401, "eventid": "cowrie.login.failed", "username": "admin", "password": "admin" },
+    { "offset": 2402, "eventid": "cowrie.login.failed", "username": "admin", "password": "password" },
+    { "offset": 2403, "eventid": "cowrie.login.failed", "username": "oracle", "password": "oracle" },
+    { "offset": 2404, "eventid": "cowrie.login.failed", "username": "postgres", "password": "postgres" },
+    { "offset": 2405, "eventid": "cowrie.login.failed", "username": "ubuntu", "password": "ubuntu" },
+    { "offset": 2407, "eventid": "cowrie.session.closed" }
+  ]
+}

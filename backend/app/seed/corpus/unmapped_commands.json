@@ -1,0 +1,14 @@
+{
+  "session": "seed-unmapped-01",
+  "src_ip": "77.83.36.9",
+  "src_port": 47710,
+  "events": [
+    { "offset": 3000, "eventid": "cowrie.session.connect", "dst_port": 2222 },
+    { "offset": 3003, "eventid": "cowrie.login.success", "username": "root", "password": "1234" },
+    { "offset": 3007, "eventid": "cowrie.command.input", "input": "dmidecode -s system-manufacturer" },
+    { "offset": 3012, "eventid": "cowrie.command.input", "input": "cat /sys/class/dmi/id/product_name" },
+    { "offset": 3018, "eventid": "cowrie.command.input", "input": "ip route show default" },
+    { "offset": 3024, "eventid": "cowrie.command.input", "input": "systemctl list-units --type=service --state=running" },
+    { "offset": 3030, "eventid": "cowrie.session.closed" }
+  ]
+}

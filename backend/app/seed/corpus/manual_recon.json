@@ -1,0 +1,15 @@
+{
+  "session": "seed-recon-01",
+  "src_ip": "91.240.118.172",
+  "src_port": 60214,
+  "events": [
+    { "offset": 1800, "eventid": "cowrie.session.connect", "dst_port": 2222 },
+    { "offset": 1806, "eventid": "cowrie.login.success", "username": "medtech", "password": "medtech2024" },
+    { "offset": 1840, "eventid": "cowrie.command.input", "input": "ls -la" },
+    { "offset": 1901, "eventid": "cowrie.command.input", "input": "cat /etc/os-release" },
+    { "offset": 1975, "eventid": "cowrie.command.input", "input": "ps aux" },
+    { "offset": 2060, "eventid": "cowrie.command.input", "input": "netstat -tulpn" },
+    { "offset": 2140, "eventid": "cowrie.command.input", "input": "uptime" },
+    { "offset": 2200, "eventid": "cowrie.session.closed" }
+  ]
+}

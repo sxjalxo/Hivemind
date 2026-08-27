@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from app.config import get_settings
 from app.db.session import pg_health
 from app.es.client import es_health
+from app.seed.seeder import seeded_count
 from app.serialization import CamelModel
 
 router = APIRouter()
@@ -27,6 +28,7 @@ async def get_status() -> list[ServiceStatus]:
         es_health(), pg_health()
     )
     evaluator_configured = settings.byok_api_key is not None
+    seeded = await seeded_count()
 
     return [
         ServiceStatus(
@@ -41,5 +43,11 @@ async def get_status() -> list[ServiceStatus]:
             name="Cloud evaluator (BYOK)",
             state="connected" if evaluator_configured else "disconnected",
             detail=settings.byok_model if evaluator_configured else "no API key configured",
+        ),
+        ServiceStatus(
+            id="seed-corpus",
+            name="Seeded corpus",
+            state="running" if seeded else "unknown",
+            detail=f"{seeded} seeded events" if seeded else "no seeded events",
         ),
     ]

