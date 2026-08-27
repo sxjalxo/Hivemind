@@ -1,0 +1,77 @@
+filebeat.inputs:
+  - type: filestream
+    id: cowrie-json
+    enabled: true
+    paths:
+      - /cowrie-logs/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+
+# Cowrie's JSON is parsed into the nested "cowrie" namespace above (rather than
+# the document root) because Filebeat's own filestream input always attaches a
+# root-level "input" field (input.type: filestream). Cowrie's raw JSON also has
+# a root-level "input" field (the typed command) for cowrie.command.input
+# events, and the two collide under the same key: Filebeat's own value wins,
+# silently discarding the command text before it ever reaches Elasticsearch.
+# Parsing into "cowrie.*" avoids the collision entirely; the fields the
+# cowrie-ecs ingest pipeline expects are then promoted back to document root
+# to match the field names used by infra/elasticsearch/pipelines/cowrie-ecs.json
+# (and by backend/tests/test_ingest_pipeline.py, which feeds the pipeline
+# raw Cowrie-shaped documents directly).
+processors:
+  - drop_fields:
+      fields: ["agent", "ecs", "host", "input", "log", "@metadata.beat"]
+      ignore_missing: true
+  - rename:
+      fields:
+        - from: "cowrie.src_ip"
+          to: "src_ip"
+        - from: "cowrie.src_port"
+          to: "src_port"
+        - from: "cowrie.dst_ip"
+          to: "dst_ip"
+        - from: "cowrie.dst_port"
+          to: "dst_port"
+        - from: "cowrie.session"
+          to: "session"
+        - from: "cowrie.eventid"
+          to: "eventid"
+        - from: "cowrie.input"
+          to: "input"
+        - from: "cowrie.username"
+          to: "username"
+        - from: "cowrie.password"
+          to: "password"
+        - from: "cowrie.shasum"
+          to: "shasum"
+        - from: "cowrie.url"
+          to: "url"
+        - from: "cowrie.outfile"
+          to: "outfile"
+        - from: "cowrie.timestamp"
+          to: "timestamp"
+      ignore_missing: true
+      fail_on_error: false
+  - drop_fields:
+      fields: ["cowrie"]
+      ignore_missing: true
+  - add_fields:
+      target: honeypot
+      fields:
+        id: cowrie-01
+        name: Cowrie SSH (med-ws-04)
+  - add_fields:
+      target: labels
+      fields:
+        seeded: false
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+  index: "honeypot-events"
+  pipeline: "cowrie-ecs"
+
+setup.template.enabled: false
+setup.ilm.enabled: false

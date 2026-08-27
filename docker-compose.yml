@@ -41,6 +41,30 @@ services:
       timeout: 5s
       retries: 12
 
+  cowrie:
+    image: cowrie/cowrie:latest
+    ports:
+      - "127.0.0.1:2222:2222"
+      - "127.0.0.1:2223:2223"
+    volumes:
+      - ./infra/cowrie/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - cowrie-logs:/cowrie/cowrie-git/var/log/cowrie
+    restart: unless-stopped
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.15.3
+    user: root
+    command: ["--strict.perms=false"]
+    volumes:
+      - ./infra/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - cowrie-logs:/cowrie-logs:ro
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      cowrie:
+        condition: service_started
+
 volumes:
   es-data:
   pg-data:
+  cowrie-logs:

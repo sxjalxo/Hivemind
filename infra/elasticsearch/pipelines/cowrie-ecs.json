@@ -39,7 +39,7 @@
     { "remove": { "field": "timestamp", "ignore_missing": true } },
     {
       "remove": {
-        "field": ["message", "sensor", "protocol", "system", "isError", "src_host", "duration", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex"],
+        "field": ["message", "sensor", "protocol", "system", "isError", "src_host", "duration", "duration_ms", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex", "uuid", "width", "height"],
         "ignore_missing": true
       }
     }
