@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.db.session import get_engine
 from app.es.bootstrap import bootstrap_es
 from app.es.client import get_es
-from app.routers import status
+from app.routers import logs, status
 
 
 @asynccontextmanager
@@ -40,6 +40,7 @@ def create_app() -> FastAPI:
 
     api = APIRouter(prefix="/api")
     api.include_router(status.router, tags=["status"])
+    api.include_router(logs.router, tags=["logs"])
     app.include_router(api)
     return app
 
