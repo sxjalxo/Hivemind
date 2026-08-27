@@ -16,47 +16,22 @@ filebeat.inputs:
 # a root-level "input" field (the typed command) for cowrie.command.input
 # events, and the two collide under the same key: Filebeat's own value wins,
 # silently discarding the command text before it ever reaches Elasticsearch.
-# Parsing into "cowrie.*" avoids the collision entirely; the fields the
-# cowrie-ecs ingest pipeline expects are then promoted back to document root
-# to match the field names used by infra/elasticsearch/pipelines/cowrie-ecs.json
-# (and by backend/tests/test_ingest_pipeline.py, which feeds the pipeline
-# raw Cowrie-shaped documents directly).
+# Parsing into "cowrie.*" avoids the collision entirely.
+#
+# Field policy (which Cowrie fields survive, which are noise, which are
+# genuinely unexpected) lives in ONE place: infra/elasticsearch/pipelines/
+# cowrie-ecs.json. That pipeline flattens the "cowrie" namespace back onto the
+# document root, renames the fields it cares about, and removes known noise.
+# Anything left over is neither promoted nor removed, so Elasticsearch's
+# dynamic:strict mapping rejects it BY NAME — a loud, visible
+# strict_dynamic_mapping_exception in the Filebeat log naming the offending
+# field. Filebeat itself only drops fields that are unambiguously its own
+# metadata (agent/ecs/host/input/log/@metadata.beat) and never touches the
+# "cowrie" object's contents, so an unrecognised Cowrie field can never be
+# silently discarded before Elasticsearch gets a chance to flag it.
 processors:
   - drop_fields:
       fields: ["agent", "ecs", "host", "input", "log", "@metadata.beat"]
-      ignore_missing: true
-  - rename:
-      fields:
-        - from: "cowrie.src_ip"
-          to: "src_ip"
-        - from: "cowrie.src_port"
-          to: "src_port"
-        - from: "cowrie.dst_ip"
-          to: "dst_ip"
-        - from: "cowrie.dst_port"
-          to: "dst_port"
-        - from: "cowrie.session"
-          to: "session"
-        - from: "cowrie.eventid"
-          to: "eventid"
-        - from: "cowrie.input"
-          to: "input"
-        - from: "cowrie.username"
-          to: "username"
-        - from: "cowrie.password"
-          to: "password"
-        - from: "cowrie.shasum"
-          to: "shasum"
-        - from: "cowrie.url"
-          to: "url"
-        - from: "cowrie.outfile"
-          to: "outfile"
-        - from: "cowrie.timestamp"
-          to: "timestamp"
-      ignore_missing: true
-      fail_on_error: false
-  - drop_fields:
-      fields: ["cowrie"]
       ignore_missing: true
   - add_fields:
       target: honeypot

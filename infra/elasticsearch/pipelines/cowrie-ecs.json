@@ -1,6 +1,13 @@
 {
   "description": "Map Cowrie honeypot JSON events onto the ECS-style honeypot-events mapping",
   "processors": [
+    {
+      "script": {
+        "lang": "painless",
+        "description": "Flatten Filebeat's nested 'cowrie.*' namespace (see infra/filebeat/filebeat.yml) onto the document root, then drop the now-empty 'cowrie' container. No-op when 'cowrie' is absent, e.g. when a document is fed to this pipeline directly at root level (as backend/tests/test_ingest_pipeline.py does). This is the single place field policy lives: known fields get renamed below, known noise gets removed below, and anything left over is neither, so Elasticsearch's dynamic:strict mapping rejects it by name instead of it silently vanishing.",
+        "source": "if (ctx.containsKey('cowrie')) { for (entry in ctx.cowrie.entrySet()) { ctx[entry.getKey()] = entry.getValue(); } ctx.remove('cowrie'); }"
+      }
+    },
     { "set": { "field": "network.protocol", "value": "ssh", "override": false } },
     { "rename": { "field": "src_ip", "target_field": "source.ip", "ignore_missing": true } },
     { "rename": { "field": "src_port", "target_field": "source.port", "ignore_missing": true } },
@@ -39,7 +46,8 @@
     { "remove": { "field": "timestamp", "ignore_missing": true } },
     {
       "remove": {
-        "field": ["message", "sensor", "protocol", "system", "isError", "src_host", "duration", "duration_ms", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex", "uuid", "width", "height"],
+        "description": "Known-noise Cowrie fields with no mapped ECS home. Live for both the direct/_simulate path (root-level docs, e.g. backend/tests/test_ingest_pipeline.py) and the Filebeat path (flattened from 'cowrie.*' by the script processor above). 'uuid'/'width'/'height'/'duration_ms' were the fields that originally tripped strict_dynamic_mapping_exception under live Cowrie traffic; 'duplicate'/'name'/'value'/'size' are additional known-noise fields from cowrie.session.file_download/file_upload, cowrie.client.var, and cowrie.log.closed. Deliberately NOT included: 'error' (written by Filebeat's ndjson parser on a malformed log line) — that must keep failing loudly via strict_dynamic_mapping_exception rather than being suppressed here.",
+        "field": ["message", "sensor", "protocol", "system", "isError", "src_host", "duration", "duration_ms", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex", "uuid", "width", "height", "duplicate", "name", "value", "size"],
         "ignore_missing": true
       }
     }
