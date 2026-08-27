@@ -83,19 +83,25 @@ async def test_nested_cowrie_fields_from_filebeat_flatten_and_map_correctly() ->
             "timestamp": "2026-08-20T10:15:03.421000Z",
         },
         "honeypot": {"id": "cowrie-01", "name": "Cowrie SSH (med-ws-04)"},
-        "labels": {"seeded": True},
+        # This simulates Filebeat-shipped, live-shaped traffic (not seed
+        # corpus data), so it carries the same labels.seeded: False that
+        # live traffic gets stamped with -- not True.
+        "labels": {"seeded": False},
     }
     resp = await get_es().index(
         index=settings.es_index, document=doc, pipeline=PIPELINE_ID, refresh=True
     )
-    fetched = await get_es().get(index=settings.es_index, id=resp["_id"])
-    src = fetched["_source"]
+    try:
+        fetched = await get_es().get(index=settings.es_index, id=resp["_id"])
+        src = fetched["_source"]
 
-    assert src["process"]["command_line"] == "id"
-    assert src["session"]["id"] == "test-flatten-nested"
-    assert src["source"]["ip"] == "203.0.113.9"
-    assert src["honeypot"]["id"] == "cowrie-01"
-    assert "cowrie" not in src
+        assert src["process"]["command_line"] == "id"
+        assert src["session"]["id"] == "test-flatten-nested"
+        assert src["source"]["ip"] == "203.0.113.9"
+        assert src["honeypot"]["id"] == "cowrie-01"
+        assert "cowrie" not in src
+    finally:
+        await get_es().delete(index=settings.es_index, id=resp["_id"])
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 import pytest
+from elasticsearch import NotFoundError
 
 from app.config import get_settings
 from app.es.client import get_es
@@ -55,3 +56,40 @@ async def test_seeded_events_pass_through_the_ecs_pipeline() -> None:
     assert any(c.startswith("wget ") for c in commands)
     assert any(c.startswith("chmod ") for c in commands)
     assert all(s["labels"]["seeded"] is True for s in sources)
+
+
+@pytest.mark.asyncio
+async def test_seeded_scoping_ignores_stray_non_seed_prefixed_documents() -> None:
+    """labels.seeded alone does not identify a corpus document -- only the
+    combination of the label AND a seed- prefixed _id does. A stray document
+    that sets labels.seeded: true without that id prefix (e.g. a mislabeled
+    fixture from an unrelated test) must not be counted by seeded_count()
+    and must survive seed(reset=True) untouched."""
+    settings = get_settings()
+    es = get_es()
+    stray_id = "not-seed-prefixed-but-labelled-seeded"
+
+    baseline = await seed(reset=True)
+
+    await es.index(
+        index=settings.es_index,
+        id=stray_id,
+        document={
+            "labels": {"seeded": True},
+            "honeypot": {"id": "cowrie-01", "name": "Cowrie SSH (med-ws-04)"},
+        },
+        refresh=True,
+    )
+    try:
+        assert await seeded_count() == baseline, "stray doc must not be counted"
+
+        second = await seed(reset=True)
+        assert second == baseline, "reset must reseed exactly the real corpus"
+        assert await es.exists(index=settings.es_index, id=stray_id), (
+            "reset must not delete a labels.seeded doc outside the seed- id prefix"
+        )
+    finally:
+        try:
+            await es.delete(index=settings.es_index, id=stray_id)
+        except NotFoundError:
+            pass

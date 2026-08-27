@@ -7,7 +7,7 @@ from pathlib import Path
 from elasticsearch.helpers import async_bulk
 
 from app.config import get_settings
-from app.es.bootstrap import bootstrap_es
+from app.es.bootstrap import PIPELINE_ID, bootstrap_es
 from app.es.client import get_es
 
 SEED_BASE_TIME = datetime(2026, 8, 20, 10, 0, 0, tzinfo=timezone.utc)
@@ -41,6 +41,32 @@ def load_corpus() -> list[dict]:
     return events
 
 
+def _seeded_query() -> dict:
+    """Match only real corpus documents, not merely anything labelled seeded.
+
+    Belt and braces: labels.seeded says a document claims to be seed data;
+    matching against load_corpus()'s actual _id set says it is really ours.
+    A document that sets labels.seeded: true without being one of our ids
+    (e.g. a mislabeled fixture in an unrelated test, or future corruption)
+    must not be counted, nor deleted by seed(reset=True).
+
+    Elasticsearch's `_id` field is of type `_id`, which rejects prefix/
+    wildcard queries outright ("Can only use prefix queries on keyword,
+    text and wildcard fields - not on [_id]"), so a prefix check on "seed-"
+    is not expressible directly. The `ids` query is the field's supported
+    lookup and is exact rather than prefix-based, which is even tighter.
+    """
+    ids = [event["_id"] for event in load_corpus()]
+    return {
+        "bool": {
+            "filter": [
+                {"term": {"labels.seeded": True}},
+                {"ids": {"values": ids}},
+            ]
+        }
+    }
+
+
 def _to_bulk_action(event: dict, index: str) -> dict:
     doc = {k: v for k, v in event.items() if k != "_id"}
     doc["honeypot"] = dict(HONEYPOT)
@@ -49,7 +75,7 @@ def _to_bulk_action(event: dict, index: str) -> dict:
         "_op_type": "index",
         "_index": index,
         "_id": event["_id"],
-        "pipeline": "cowrie-ecs",
+        "pipeline": PIPELINE_ID,
         "_source": doc,
     }
 
@@ -57,9 +83,7 @@ def _to_bulk_action(event: dict, index: str) -> dict:
 async def seeded_count() -> int:
     settings = get_settings()
     await get_es().indices.refresh(index=settings.es_index)
-    result = await get_es().count(
-        index=settings.es_index, query={"term": {"labels.seeded": True}}
-    )
+    result = await get_es().count(index=settings.es_index, query=_seeded_query())
     return int(result["count"])
 
 
@@ -71,7 +95,7 @@ async def seed(reset: bool = False) -> int:
     if reset:
         await get_es().delete_by_query(
             index=settings.es_index,
-            query={"term": {"labels.seeded": True}},
+            query=_seeded_query(),
             refresh=True,
             conflicts="proceed",
         )
