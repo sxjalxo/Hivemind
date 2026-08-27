@@ -1,13 +1,30 @@
+from contextlib import asynccontextmanager
+
 from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.db.session import get_engine
+from app.es.bootstrap import bootstrap_es
+from app.es.client import get_es
 from app.routers import status
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await bootstrap_es()
+    yield
+    await get_es().close()
+    await get_engine().dispose()
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title="Honeypot Intelligence Platform API", version="0.1.0")
+    app = FastAPI(
+        title="Honeypot Intelligence Platform API",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
 
     app.add_middleware(
         CORSMiddleware,

@@ -1,0 +1,83 @@
+{
+  "index_patterns": ["honeypot-events*"],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "index.default_pipeline": "cowrie-ecs"
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "source": {
+          "properties": {
+            "ip": { "type": "ip" },
+            "port": { "type": "integer" },
+            "country": { "type": "keyword" }
+          }
+        },
+        "destination": {
+          "properties": {
+            "ip": { "type": "ip" },
+            "port": { "type": "integer" }
+          }
+        },
+        "event": {
+          "properties": {
+            "action": { "type": "keyword" },
+            "category": { "type": "keyword" },
+            "outcome": { "type": "keyword" }
+          }
+        },
+        "network": { "properties": { "protocol": { "type": "keyword" } } },
+        "user": { "properties": { "name": { "type": "keyword" } } },
+        "process": {
+          "properties": {
+            "command_line": {
+              "type": "text",
+              "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } }
+            },
+            "output": { "type": "text", "index": false }
+          }
+        },
+        "honeypot": {
+          "properties": {
+            "id": { "type": "keyword" },
+            "name": { "type": "keyword" }
+          }
+        },
+        "session": { "properties": { "id": { "type": "keyword" } } },
+        "risk": {
+          "properties": {
+            "score": { "type": "integer" },
+            "level": { "type": "keyword" }
+          }
+        },
+        "mitre": {
+          "properties": {
+            "technique_id": { "type": "keyword" },
+            "tactic": { "type": "keyword" }
+          }
+        },
+        "ai_classification": { "type": "keyword" },
+        "labels": { "properties": { "seeded": { "type": "boolean" } } },
+        "file": {
+          "properties": {
+            "name": { "type": "keyword" },
+            "hash": { "properties": { "sha256": { "type": "keyword" } } },
+            "size": { "type": "long" },
+            "url": { "type": "keyword" }
+          }
+        },
+        "credential": {
+          "properties": {
+            "username": { "type": "keyword" },
+            "password": { "type": "keyword" }
+          }
+        }
+      }
+    }
+  },
+  "priority": 200
+}

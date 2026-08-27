@@ -1,0 +1,55 @@
+{
+  "description": "Map Cowrie honeypot JSON events onto the ECS-style honeypot-events mapping",
+  "processors": [
+    { "set": { "field": "network.protocol", "value": "ssh", "override": false } },
+    { "rename": { "field": "src_ip", "target_field": "source.ip", "ignore_missing": true } },
+    { "rename": { "field": "src_port", "target_field": "source.port", "ignore_missing": true } },
+    { "rename": { "field": "dst_ip", "target_field": "destination.ip", "ignore_missing": true } },
+    { "rename": { "field": "dst_port", "target_field": "destination.port", "ignore_missing": true } },
+    { "rename": { "field": "session", "target_field": "session.id", "ignore_missing": true } },
+    { "rename": { "field": "eventid", "target_field": "event.action", "ignore_missing": true } },
+    { "rename": { "field": "input", "target_field": "process.command_line", "ignore_missing": true } },
+    { "rename": { "field": "username", "target_field": "credential.username", "ignore_missing": true } },
+    { "rename": { "field": "password", "target_field": "credential.password", "ignore_missing": true } },
+    { "rename": { "field": "shasum", "target_field": "file.hash.sha256", "ignore_missing": true } },
+    { "rename": { "field": "url", "target_field": "file.url", "ignore_missing": true } },
+    { "rename": { "field": "outfile", "target_field": "file.name", "ignore_missing": true } },
+    {
+      "set": {
+        "field": "user.name",
+        "copy_from": "credential.username",
+        "ignore_empty_value": true
+      }
+    },
+    {
+      "script": {
+        "lang": "painless",
+        "description": "Derive event.category and event.outcome from event.action",
+        "source": "def a = ctx.event?.action; if (a == null) { return; } if (a.contains('session.connect') || a.contains('session.closed') || a.contains('client.')) { ctx.event.category = 'network'; } else if (a.contains('login.')) { ctx.event.category = 'authentication'; ctx.event.outcome = a.contains('success') ? 'success' : 'failure'; } else if (a.contains('command.')) { ctx.event.category = 'process'; ctx.event.outcome = a.contains('failed') ? 'failure' : 'success'; } else if (a.contains('file_download') || a.contains('file_upload')) { ctx.event.category = 'file'; } else { ctx.event.category = 'other'; }"
+      }
+    },
+    {
+      "date": {
+        "field": "timestamp",
+        "target_field": "@timestamp",
+        "formats": ["ISO8601"],
+        "ignore_failure": true
+      }
+    },
+    { "remove": { "field": "timestamp", "ignore_missing": true } },
+    {
+      "remove": {
+        "field": ["message", "sensor", "protocol", "system", "isError", "src_host", "duration", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex"],
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "set": {
+        "field": "event.category",
+        "value": "other"
+      }
+    }
+  ]
+}
