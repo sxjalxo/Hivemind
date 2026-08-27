@@ -1,6 +1,14 @@
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.main import create_app
+from app.routers.status import ServiceStatus
+
+
+def test_service_status_rejects_invalid_state() -> None:
+    with pytest.raises(ValidationError):
+        ServiceStatus(id="elasticsearch", name="Elasticsearch", state="exploded")
 
 
 def test_status_returns_service_list() -> None:
