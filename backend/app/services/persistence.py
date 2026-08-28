@@ -37,6 +37,32 @@ class UngroundedClaimError(RuntimeError):
     """
 
 
+class NaiveTimestampError(ValueError):
+    """An ``event_timestamps`` value has no timezone attached.
+
+    ``EvidenceRef.timestamp`` is ``DateTime(timezone=True)``. Handing
+    asyncpg a tz-aware value against a tz-naive column raises loudly, but
+    the reverse — a tz-naive Python value against this tz-aware column —
+    does not: Postgres silently reinterprets it in the DB session's local
+    timezone, storing a different instant than intended with no error. That
+    breaks the one thing ``EvidenceRef.timestamp`` exists for: tying a claim
+    back to the exact moment its event occurred. So this is checked and
+    rejected here, loudly, before any value from ``event_timestamps``
+    reaches the database — never coerced or assumed-UTC, since a guess would
+    just be a different flavor of the same silent corruption.
+    """
+
+
+def _require_aware_timestamps(event_timestamps: dict[str, datetime]) -> None:
+    for event_id, ts in event_timestamps.items():
+        if ts.tzinfo is None or ts.utcoffset() is None:
+            raise NaiveTimestampError(
+                f"event_timestamps[{event_id!r}] is a naive datetime ({ts!r}); "
+                "evidence timestamps must be timezone-aware, or Postgres will "
+                "silently reinterpret them in the session's local timezone."
+            )
+
+
 class Claim(BaseModel):
     """A derived claim awaiting the evidence barrier.
 
@@ -86,7 +112,13 @@ async def persist_analysis(
     Returns the number of claims rejected during this call. The analysis's
     stored ``rejected_claims`` is set to ``prior_rejected`` plus that count,
     so the value accumulates across the phases that call this function.
+
+    Raises ``NaiveTimestampError`` if any value in ``event_timestamps`` lacks
+    timezone info — checked before any database session is opened, so a bad
+    caller never gets a half-open transaction.
     """
+    _require_aware_timestamps(event_timestamps)
+
     rejected = 0
     factory = get_session_factory()
 
@@ -98,12 +130,19 @@ async def persist_analysis(
             grounded = [c for c in claim.evidence if c.event_id in event_timestamps]
             try:
                 if not grounded:
+                    # Structural facts only -- kind, session, and how many
+                    # citations failed to ground. Never claim.payload: it is
+                    # freeform LLM-derived text that can echo attacker command
+                    # text verbatim, and logging it would (a) let an
+                    # attacker-influenced label forge log lines via embedded
+                    # control characters, and (b) leak content from a claim
+                    # we deliberately chose not to store.
                     raise UngroundedClaimError(
-                        f"{claim.kind.value} claim has no citation resolving to a "
-                        f"known event in session {session_id}: {claim.payload}"
+                        f"rejected claim: kind={claim.kind.value} "
+                        f"session={session_id} cited={len(claim.evidence)} resolved=0"
                     )
             except UngroundedClaimError as exc:
-                logger.warning("rejected ungrounded claim: %s", exc)
+                logger.warning("%s", exc)
                 rejected += 1
                 continue
 

