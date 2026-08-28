@@ -1,21 +1,41 @@
 # Deterministic command -> ATT&CK mappings.
 # A hit here is provenance OBSERVED with confidence 1.0.
 # Patterns are Python re, matched case-insensitively against the command line.
+#
+# Command-position anchoring:
+#   Verb-triggered rules (a rule whose trigger is an ordinary word that could
+#   plausibly appear as plain text -- wget, chmod, uname, rm, ps, netstat,
+#   ls/find/du, id/whoami/w/who, passwd, sh/bash/dash/zsh) require the verb
+#   to sit in COMMAND POSITION: at the start of the command line, or
+#   immediately after a chain/pipe operator (;, &, &&, |, ||) or a command
+#   substitution opener ($( or a backtick). Without this, `echo "wget ..."`,
+#   a `grep` pattern, a code comment, or a filename argument would satisfy a
+#   bare `\bwget\b`-style pattern despite never invoking the tool -- exactly
+#   the false-OBSERVED failure mode this rulebook exists to avoid.
+#
+#   Path/identifier-triggered rules (T1003.008's /etc/passwd|shadow, T1082's
+#   /etc/os-release and /proc/cpuinfo, T1496's xmrig/c3pool/etc.) are left
+#   UNANCHORED on purpose: these are high-specificity, low-entropy strings
+#   that essentially never appear incidentally in echoed text or comments,
+#   unlike common verbs. Even a `grep -r /etc/shadow /home` or a `find /
+#   -name authorized_keys`-style reference to one of these strings is still
+#   meaningful recon/credential-access-adjacent telemetry worth surfacing,
+#   so permissive matching is a deliberate choice there, not an oversight.
 rules:
   - id: T1105
     name: Ingress Tool Transfer
     tactic: Command and Control
-    pattern: '\b(wget|curl|tftp)\b[^|;]*\b(https?|ftp)://'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(wget|curl|tftp)\b[^|;&]*\b(https?|ftp)://'
 
   - id: T1222.002
     name: Linux and Mac File and Directory Permissions Modification
     tactic: Defense Evasion
-    pattern: '\bchmod\b\s+(-[a-z]+\s+)*([0-7]{3,4}|[ugoa]*[+=][rwxst]*)'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)chmod\b\s+(-[a-z]+\s+)*([0-7]{3,4}|[ugoa]*[+=][rwxst]*)'
 
   - id: T1082
     name: System Information Discovery
     tactic: Discovery
-    pattern: '\buname\b|/etc/os-release|/proc/cpuinfo|\blscpu\b|\bnproc\b|\bfree\s+-[a-z]|\buptime\b'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(uname|lscpu|nproc|free\s+-[a-z]|uptime)\b|/etc/os-release|/proc/cpuinfo'
 
   - id: T1003.008
     name: /etc/passwd and /etc/shadow
@@ -25,7 +45,12 @@ rules:
   - id: T1098.004
     name: SSH Authorized Keys
     tactic: Persistence
-    pattern: 'authorized_keys'
+    # authorized_keys is a path, not a verb, so command-position anchoring
+    # doesn't apply. Instead require evidence of a WRITE: a redirect into a
+    # path containing authorized_keys, or a `tee` writing to it. Reading it
+    # (ls, cat, grep, find) must not match -- installing a key is
+    # persistence, looking at the file is not.
+    pattern: '>>?\s*\S*authorized_keys|\btee\b[^|;&]*authorized_keys'
 
   - id: T1496
     name: Resource Hijacking
@@ -35,37 +60,41 @@ rules:
   - id: T1070.004
     name: File Deletion
     tactic: Defense Evasion
-    pattern: '\brm\b\s+(-[a-zA-Z]+\s+)*\S'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)rm\b\s+(-[a-zA-Z]+\s+)*\S'
 
   - id: T1057
     name: Process Discovery
     tactic: Discovery
-    pattern: '\bps\b\s+(aux|-ef|-e)|\btop\b\s*-b|\bpgrep\b'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(ps\b\s+(aux|-ef|-e)|top\b\s*-b|pgrep\b)'
 
   - id: T1049
     name: System Network Connections Discovery
     tactic: Discovery
-    pattern: '\bnetstat\b|\bss\b\s+-[a-z]+|\blsof\b\s+-i'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(netstat\b|ss\b\s+-[a-z]+|lsof\b\s+-i)'
 
   - id: T1083
     name: File and Directory Discovery
     tactic: Discovery
-    pattern: '\bls\b\s+-[a-zA-Z]+|\bfind\b\s+/|\bdu\b\s+-[a-z]'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(ls\b\s+-[a-zA-Z]+|find\b\s+/|du\b\s+-[a-z])'
 
   - id: T1033
     name: System Owner/User Discovery
     tactic: Discovery
-    pattern: '^\s*(id|whoami|w|who)\b'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(id|whoami|w|who)\b'
 
   - id: T1531
     name: Account Access Removal
     tactic: Impact
     # Negative lookbehind excludes "/etc/passwd" (a read/write target, already
     # covered by T1003.008) so that merely referencing the file is not
-    # mistaken for actually invoking the passwd command.
-    pattern: '(?<!/etc/)\bpasswd\b|\busermod\b\s+.*-L'
+    # mistaken for actually invoking the passwd command. Command-position
+    # anchoring on top of that stops `echo passwd` from matching too -- with
+    # the anchor in place the lookbehind is now belt-and-suspenders (passwd
+    # preceded by "/etc/" can never be in command position anyway) but it is
+    # kept for clarity and defense in depth.
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(?:(?<!/etc/)passwd\b|usermod\b\s+.*-L)'
 
   - id: T1059.004
     name: Unix Shell
     tactic: Execution
-    pattern: '^\s*(sh|bash|dash|zsh)\s+\S+\.(sh|bash)\b'
+    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(sh|bash|dash|zsh)\s+\S+\.(sh|bash)\b'
