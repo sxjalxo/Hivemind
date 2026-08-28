@@ -1,0 +1,71 @@
+# Deterministic command -> ATT&CK mappings.
+# A hit here is provenance OBSERVED with confidence 1.0.
+# Patterns are Python re, matched case-insensitively against the command line.
+rules:
+  - id: T1105
+    name: Ingress Tool Transfer
+    tactic: Command and Control
+    pattern: '\b(wget|curl|tftp)\b[^|;]*\b(https?|ftp)://'
+
+  - id: T1222.002
+    name: Linux and Mac File and Directory Permissions Modification
+    tactic: Defense Evasion
+    pattern: '\bchmod\b\s+(-[a-z]+\s+)*([0-7]{3,4}|[ugoa]*[+=][rwxst]*)'
+
+  - id: T1082
+    name: System Information Discovery
+    tactic: Discovery
+    pattern: '\buname\b|/etc/os-release|/proc/cpuinfo|\blscpu\b|\bnproc\b|\bfree\s+-[a-z]|\buptime\b'
+
+  - id: T1003.008
+    name: /etc/passwd and /etc/shadow
+    tactic: Credential Access
+    pattern: '/etc/(passwd|shadow)\b'
+
+  - id: T1098.004
+    name: SSH Authorized Keys
+    tactic: Persistence
+    pattern: 'authorized_keys'
+
+  - id: T1496
+    name: Resource Hijacking
+    tactic: Impact
+    pattern: '\b(xmrig|minerd|cpuminer|c3pool|setup_c3pool_miner)\b'
+
+  - id: T1070.004
+    name: File Deletion
+    tactic: Defense Evasion
+    pattern: '\brm\b\s+(-[a-zA-Z]+\s+)*\S'
+
+  - id: T1057
+    name: Process Discovery
+    tactic: Discovery
+    pattern: '\bps\b\s+(aux|-ef|-e)|\btop\b\s*-b|\bpgrep\b'
+
+  - id: T1049
+    name: System Network Connections Discovery
+    tactic: Discovery
+    pattern: '\bnetstat\b|\bss\b\s+-[a-z]+|\blsof\b\s+-i'
+
+  - id: T1083
+    name: File and Directory Discovery
+    tactic: Discovery
+    pattern: '\bls\b\s+-[a-zA-Z]+|\bfind\b\s+/|\bdu\b\s+-[a-z]'
+
+  - id: T1033
+    name: System Owner/User Discovery
+    tactic: Discovery
+    pattern: '^\s*(id|whoami|w|who)\b'
+
+  - id: T1531
+    name: Account Access Removal
+    tactic: Impact
+    # Negative lookbehind excludes "/etc/passwd" (a read/write target, already
+    # covered by T1003.008) so that merely referencing the file is not
+    # mistaken for actually invoking the passwd command.
+    pattern: '(?<!/etc/)\bpasswd\b|\busermod\b\s+.*-L'
+
+  - id: T1059.004
+    name: Unix Shell
+    tactic: Execution
+    pattern: '^\s*(sh|bash|dash|zsh)\s+\S+\.(sh|bash)\b'
