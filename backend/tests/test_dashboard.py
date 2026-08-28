@@ -62,6 +62,13 @@ async def test_honeypots_are_derived_from_indexed_events() -> None:
     assert cowrie.interaction_level == "medium"
     assert cowrie.events > 0
     assert cowrie.status in {"online", "offline", "degraded"}
+    # ip must be the real destination.ip observed on indexed events, never
+    # a hardcoded loopback placeholder.
+    assert cowrie.ip != "127.0.0.1"
+    # risk.level is unassessed until Task 14; "informational" is this
+    # codebase's convention for "not yet assessed" — never a fabricated
+    # non-neutral severity like "medium".
+    assert cowrie.risk == "informational"
 
 
 @pytest.mark.asyncio
@@ -97,6 +104,9 @@ async def test_top_attackers_lists_seeded_source_ips() -> None:
 
     ips = {a.ip for a in data.top_attackers}
     assert "185.220.101.44" in ips
+    # No attacker has been assessed yet — every one must carry the
+    # "not yet assessed" convention, never a fabricated severity.
+    assert all(a.risk == "informational" for a in data.top_attackers)
 
 
 @pytest.mark.asyncio
@@ -125,6 +135,32 @@ async def test_30d_window_returns_at_least_as_many_events_as_1h_window() -> None
     # The seed corpus alone (51 docs) plus any live traffic guarantees the
     # 30d window is non-trivially larger than an empty-or-near-empty 1h one.
     assert wide_total > 0
+
+
+@pytest.mark.asyncio
+async def test_timeline_spans_the_full_requested_window_not_just_observed_data() -> None:
+    # extended_bounds/hard_bounds must force the date_histogram to cover
+    # the entire requested range, not merely the span where documents
+    # happen to exist. min_doc_count: 0 alone only fills gaps BETWEEN
+    # observed documents — without explicit bounds a 30d window whose data
+    # is clustered on ~8 days renders ~8 daily buckets instead of ~30, and
+    # a window with zero matching documents (like a quiet 1h) renders no
+    # buckets at all rather than a run of zero-valued ones.
+    await seed(reset=True)
+    data = await build_dashboard("30d")
+
+    # 30 days of 1d buckets is ~30-31 buckets, never the ~8 you'd get by
+    # only spanning the days that actually have data.
+    assert len(data.timeline) >= 28
+    # The requested window starts well before any seed/live data does, so
+    # the leading buckets must exist with zero events, not be absent.
+    assert data.timeline[0].events == 0
+
+    narrow = await build_dashboard("1h")
+    # 1h of 5m buckets is ~12-13 buckets, present even when the window
+    # holds no events at all — an empty list would be indistinguishable
+    # from a broken request on the frontend's chart.
+    assert len(narrow.timeline) >= 11
 
 
 @pytest.mark.asyncio

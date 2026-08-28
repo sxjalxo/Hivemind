@@ -42,8 +42,15 @@ def _previous_bounds(range_: str) -> tuple[str, str]:
     return _iso(end - span), _iso(end)
 
 
-def _range_filter(start: str, end: str) -> dict:
-    return {"range": {"@timestamp": {"gte": start, "lte": end}}}
+def _range_filter(start: str, end: str, *, inclusive_end: bool = True) -> dict:
+    """Build a range filter. Half-open (`lt`) when the caller needs windows
+    that partition cleanly instead of sharing a boundary instant."""
+    upper_op = "lte" if inclusive_end else "lt"
+    return {"range": {"@timestamp": {"gte": start, upper_op: end}}}
+
+
+def _epoch_millis(iso: str) -> int:
+    return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
 
 
 def _trend(current: int, previous: int) -> tuple[float, str]:
@@ -74,7 +81,7 @@ async def list_honeypots() -> list[Honeypot]:
                     "name": {"terms": {"field": "honeypot.name", "size": 1}},
                     "last_activity": {"max": {"field": "@timestamp"}},
                     "sessions": {"cardinality": {"field": "session.id"}},
-                    "dst_port": {"terms": {"field": "destination.port", "size": 1}},
+                    "dst_ip": {"terms": {"field": "destination.ip", "size": 1}},
                 },
             }
         },
@@ -84,6 +91,7 @@ async def list_honeypots() -> list[Honeypot]:
     honeypots: list[Honeypot] = []
     for bucket in result["aggregations"]["honeypots"]["buckets"]:
         name_buckets = bucket["name"]["buckets"]
+        dst_ip_buckets = bucket["dst_ip"]["buckets"]
         last_iso = bucket["last_activity"]["value_as_string"]
         stale = (now - datetime.fromisoformat(last_iso.replace("Z", "+00:00"))) > timedelta(hours=24)
         honeypots.append(
@@ -93,12 +101,22 @@ async def list_honeypots() -> list[Honeypot]:
                 type="SSH",
                 os="Debian 11 (emulated)",
                 interaction_level="medium",
-                ip="127.0.0.1",
+                # Observed from indexed events, not a fabricated address.
+                # "unknown" (never a made-up IP) is the honest fallback for
+                # a honeypot bucket that somehow has no destination.ip on
+                # any of its documents.
+                ip=dst_ip_buckets[0]["key"] if dst_ip_buckets else "unknown",
                 status="degraded" if stale else "online",
                 active_sessions=bucket["sessions"]["value"],
                 events=bucket["doc_count"],
                 last_activity=last_iso,
-                risk="medium",
+                # risk.level is unassessed until Task 14 writes real
+                # analysis back to events; "informational" is this
+                # codebase's convention for "not yet assessed" (see
+                # to_event in app.es.queries and _assemble in
+                # app.services.session_builder), never a fabricated
+                # severity like "medium".
+                risk="informational",
                 sensor=bucket["key"],
             )
         )
@@ -110,6 +128,15 @@ async def build_dashboard(range_: str) -> DashboardData:
     start, end = range_to_bounds(range_)
     prev_start, prev_end = _previous_bounds(range_)
     window = _range_filter(start, end)
+    # min_doc_count: 0 only fills gaps BETWEEN observed documents; it does
+    # not extend the histogram to the query's actual start/end. Without
+    # explicit bounds a sparse window (e.g. seed data clustered on one day
+    # inside a 30d range) renders an axis that silently starts wherever
+    # data happens to begin, and a window with zero matching documents
+    # renders no buckets at all. extended_bounds forces the full requested
+    # span to appear (with zero-valued buckets where there's no data);
+    # hard_bounds clips out anything outside it for good measure.
+    bounds = {"min": _epoch_millis(start), "max": _epoch_millis(end)}
 
     result = await get_es().search(
         index=settings.es_index,
@@ -122,6 +149,8 @@ async def build_dashboard(range_: str) -> DashboardData:
                     "field": "@timestamp",
                     "fixed_interval": _BUCKET_INTERVAL.get(range_, "1h"),
                     "min_doc_count": 0,
+                    "extended_bounds": bounds,
+                    "hard_bounds": bounds,
                 },
                 "aggs": {
                     "high_risk": {
@@ -149,9 +178,17 @@ async def build_dashboard(range_: str) -> DashboardData:
         },
     )
 
+    # prev_end == start (the current window's lower bound): make the
+    # previous window's upper edge exclusive so the two windows partition
+    # cleanly instead of double-counting a document landing exactly on
+    # that shared boundary instant.
     previous = await get_es().count(
         index=settings.es_index,
-        query={"bool": {"filter": [_range_filter(prev_start, prev_end)]}},
+        query={
+            "bool": {
+                "filter": [_range_filter(prev_start, prev_end, inclusive_end=False)]
+            }
+        },
     )
 
     aggs = result["aggregations"]
@@ -225,7 +262,9 @@ async def build_dashboard(range_: str) -> DashboardData:
                 country=country_buckets[0]["key"] if country_buckets else "Unknown",
                 events=b["doc_count"],
                 sessions=b["sessions"]["value"],
-                risk="medium",
+                # Not yet assessed — see the risk="informational" note in
+                # list_honeypots above; the same convention applies here.
+                risk="informational",
                 last_seen=b["last_seen"]["value_as_string"],
             )
         )
