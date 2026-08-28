@@ -8,6 +8,7 @@ from app.db.session import pg_health
 from app.es.client import es_health
 from app.seed.seeder import seeded_count
 from app.serialization import CamelModel
+from app.services.llm.ollama import ollama_health
 
 router = APIRouter()
 
@@ -24,8 +25,8 @@ class ServiceStatus(CamelModel):
 @router.get("/status", response_model=list[ServiceStatus])
 async def get_status() -> list[ServiceStatus]:
     settings = get_settings()
-    (es_state, es_detail), (pg_state, pg_detail) = await asyncio.gather(
-        es_health(), pg_health()
+    (es_state, es_detail), (pg_state, pg_detail), (ol_state, ol_detail) = (
+        await asyncio.gather(es_health(), pg_health(), ollama_health())
     )
     evaluator_configured = settings.byok_api_key is not None
     seeded = await seeded_count()
@@ -36,7 +37,10 @@ async def get_status() -> list[ServiceStatus]:
         ),
         ServiceStatus(id="postgres", name="Postgres", state=pg_state, detail=pg_detail),
         ServiceStatus(
-            id="ollama", name=f"Ollama ({settings.ollama_model})", state="unknown"
+            id="ollama",
+            name=f"Ollama ({settings.ollama_model})",
+            state=ol_state,
+            detail=ol_detail,
         ),
         ServiceStatus(
             id="evaluator",
