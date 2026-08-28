@@ -389,3 +389,85 @@ def test_unbalanced_quote_does_not_raise() -> None:
     command = 'echo "unterminated && wget http://x'
     hits = _hit_ids(command)  # must not raise
     assert hits == set()
+
+
+# Fix round 5: the segment splitter had no backslash-escape model. It closed
+# a double-quoted string on the `"` of a `\"` without looking at the
+# preceding backslash, so it believed the string ended early and scored the
+# quoted text after the next `&&` as an executed command. In real shell
+# semantics an escaped quote is a literal character and the string is still
+# open. Fixed by consuming `\<char>` as a pair when unquoted or inside
+# double quotes -- and deliberately NOT inside single quotes, where POSIX sh
+# has no escape mechanism at all.
+BACKSLASH_ESCAPE_NEGATIVE = [
+    # The `\"` is an escaped literal quote: the string is still open, so the
+    # `&&` is data and `wget http://x` was never executed.
+    r'echo "a \" && wget http://x"',
+    # Same shape with a semicolon rather than `&&`.
+    r'echo "a \" ; wget http://x"',
+]
+
+BACKSLASH_ESCAPE_POSITIVE = [
+    # `\\` is an ESCAPED BACKSLASH, so it does not steal the escape from the
+    # quote that follows it. That quote genuinely closes the string, making
+    # the `&&` a real command boundary and `wget http://x` a real execution.
+    (r'echo "a \\" && wget http://x"', "T1105"),
+    # An escaped backslash at the very end of a quoted string, with a
+    # further real command after the boundary.
+    (r'echo "path C:\\" ; wget http://x', "T1105"),
+    # An escaped quote in UNQUOTED context is a literal `"` that does not
+    # OPEN a string either, so the `&&` after it is a genuine operator and
+    # the wget genuinely runs. Escaping must not over-suppress: it only
+    # neutralises the escaped character's syntactic meaning, it does not
+    # put the rest of the line inside a string.
+    (r'echo a \" && wget http://x"', "T1105"),
+    # Single-quote behaviour is UNCHANGED and must stay that way: POSIX sh
+    # has no escape inside single quotes, so the `'` after the backslash
+    # really does close the string and this `&&` really is an operator.
+    (r"echo 'it\'s && wget http://x'", "T1105"),
+]
+
+
+@pytest.mark.parametrize("command", BACKSLASH_ESCAPE_NEGATIVE)
+def test_escaped_quote_does_not_end_a_quoted_string(command: str) -> None:
+    assert "T1105" not in _hit_ids(command)
+
+
+@pytest.mark.parametrize(("command", "technique"), BACKSLASH_ESCAPE_POSITIVE)
+def test_escaped_backslash_lets_the_quote_close(command: str, technique: str) -> None:
+    assert technique in _hit_ids(command)
+
+
+def test_single_quote_escape_behaviour_is_unchanged() -> None:
+    r"""Locked in explicitly so a future escape-handling change cannot
+    silently extend backslash escaping into single quotes.
+
+    POSIX sh gives a backslash no special meaning inside single quotes: in
+    `echo 'it\'s && wget http://x'` the `'` immediately after the backslash
+    closes the string, so the `&&` that follows is a genuine command
+    boundary and `wget http://x'` genuinely is a second command. Treating
+    the backslash as an escape here would WRONGLY suppress a real
+    detection.
+    """
+    assert "T1105" in _hit_ids(r"echo 'it\'s && wget http://x'")
+
+
+def test_trailing_lone_backslash_does_not_raise_or_overrun() -> None:
+    """A backslash as the final character has nothing to escape. The
+    scanner must consume it and stop rather than index past the end of the
+    string -- `apply_rules` must never raise on malformed attacker input.
+    """
+    for command in ("wget http://x \\", "\\", 'echo "a \\', "cd /tmp && \\"):
+        _hit_ids(command)  # must not raise
+
+    # The real invocation is still found in the first of those.
+    assert "T1105" in _hit_ids("wget http://x \\")
+
+
+def test_escaped_delimiters_are_not_command_boundaries() -> None:
+    """A backslash-escaped chain operator or comment marker is a literal
+    character passed to the current command, not shell syntax, so it must
+    not start a new segment that could be scored in command position.
+    """
+    assert "T1105" not in _hit_ids(r"echo a \&\& wget http://x")
+    assert "T1105" not in _hit_ids(r"echo a \; wget http://x")

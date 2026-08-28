@@ -104,6 +104,16 @@ def _split_command_segments(command_text: str) -> list[str]:
     `_filtered_command_text` for why swallowing the tail of a malformed
     line is the safe outcome here.
 
+    Escape handling: unquoted, and inside DOUBLE quotes, a backslash
+    escapes the next character, so `\\"` is a literal quote that neither
+    opens nor closes a string (`echo "a \\" && wget ..."` keeps the `&&`
+    inside the string, as a real shell does) and `\\\\` is an escaped
+    backslash that does not steal the escape from what follows it. Inside
+    SINGLE quotes there is deliberately no escape handling, because POSIX
+    sh has none there: in `echo 'it\\'s && wget ...'` the `'` after the
+    backslash really does close the string and the `&&` really is a
+    command boundary.
+
     Comment handling: an UNQUOTED '#' starts a comment that runs to the
     end of its line. The comment text is dropped entirely -- it is dead
     shell syntax that never executes -- rather than folded into either
@@ -118,6 +128,34 @@ def _split_command_segments(command_text: str) -> list[str]:
     length = len(command_text)
     while index < length:
         char = command_text[index]
+        if quote == "'":
+            # POSIX sh has NO escape mechanism inside single quotes: a
+            # backslash there is a literal backslash and the very next `'`
+            # closes the string. Checked before the backslash branch below
+            # so single-quote handling stays exactly as it was.
+            current.append(char)
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if char == "\\":
+            # Unquoted, and inside double quotes, a backslash escapes the
+            # character that follows it. Consume both so an escaped quote
+            # (\") neither opens nor closes a string and an escaped
+            # delimiter (\; \& \| \# \<newline>) is never a boundary. An
+            # escaped backslash (\\) is consumed as a pair, so it cannot
+            # steal the escape from the character after it -- the quote in
+            # `"a \\"` genuinely closes. Both characters are appended
+            # verbatim: the scanner decides boundaries only, it never
+            # rewrites the segment text the rules are matched against. A
+            # lone trailing backslash consumes nothing further and ends
+            # the loop rather than indexing past the end.
+            current.append(char)
+            index += 1
+            if index < length:
+                current.append(command_text[index])
+                index += 1
+            continue
         if quote is not None:
             current.append(char)
             if char == quote:
