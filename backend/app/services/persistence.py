@@ -38,29 +38,71 @@ class UngroundedClaimError(RuntimeError):
 
 
 class NaiveTimestampError(ValueError):
-    """An ``event_timestamps`` value has no timezone attached.
+    """A datetime this function is about to write has no timezone attached.
 
-    ``EvidenceRef.timestamp`` is ``DateTime(timezone=True)``. Handing
+    Every datetime ``persist_analysis`` writes lands in a
+    ``DateTime(timezone=True)`` column: ``EvidenceRef.timestamp`` (from
+    ``event_timestamps``), ``Analysis.created_at``, and whatever a claim
+    table's timestamp-typed column receives via ``claim.payload``. Handing
     asyncpg a tz-aware value against a tz-naive column raises loudly, but
-    the reverse — a tz-naive Python value against this tz-aware column —
-    does not: Postgres silently reinterprets it in the DB session's local
+    the reverse — a tz-naive Python value against a tz-aware column — does
+    not: Postgres silently reinterprets it in the DB session's local
     timezone, storing a different instant than intended with no error. That
-    breaks the one thing ``EvidenceRef.timestamp`` exists for: tying a claim
-    back to the exact moment its event occurred. So this is checked and
-    rejected here, loudly, before any value from ``event_timestamps``
-    reaches the database — never coerced or assumed-UTC, since a guess would
-    just be a different flavor of the same silent corruption.
+    breaks the one thing these columns exist for: tying a claim back to the
+    exact moment it happened. So every datetime source is checked here,
+    loudly, before any of them reaches the database — never coerced or
+    assumed-UTC, since a guess would just be a different flavor of the same
+    silent corruption.
     """
 
 
-def _require_aware_timestamps(event_timestamps: dict[str, datetime]) -> None:
+def _is_naive(ts: datetime) -> bool:
+    return ts.tzinfo is None or ts.utcoffset() is None
+
+
+def _require_aware_datetimes(
+    analysis: Analysis,
+    claims: list["Claim"],
+    event_timestamps: dict[str, datetime],
+) -> None:
+    """Refuse any naive datetime among everything this call is about to write.
+
+    Checked eagerly, before any database session opens, so the same input
+    always fails the same way regardless of which claims happen to ground,
+    and the guard can never fire mid-transaction leaving a partial write.
+
+    ``claim.payload`` is inspected by value *type* (``isinstance(value,
+    datetime)``), not by a hardcoded key such as ``"timestamp"`` — a future
+    claim kind could carry a differently named datetime field, and a
+    name-based check would silently miss it. Only the key name (a field
+    name from our own schema, never attacker-controlled) and the naive
+    datetime's own repr (just numbers) go into the error message; other
+    payload values are never printed.
+    """
     for event_id, ts in event_timestamps.items():
-        if ts.tzinfo is None or ts.utcoffset() is None:
+        if _is_naive(ts):
             raise NaiveTimestampError(
                 f"event_timestamps[{event_id!r}] is a naive datetime ({ts!r}); "
                 "evidence timestamps must be timezone-aware, or Postgres will "
                 "silently reinterpret them in the session's local timezone."
             )
+
+    if _is_naive(analysis.created_at):
+        raise NaiveTimestampError(
+            f"Analysis.created_at is a naive datetime ({analysis.created_at!r}); "
+            "it must be timezone-aware, or Postgres will silently "
+            "reinterpret it in the session's local timezone."
+        )
+
+    for claim in claims:
+        for key, value in claim.payload.items():
+            if isinstance(value, datetime) and _is_naive(value):
+                raise NaiveTimestampError(
+                    f"{claim.kind.value} claim payload[{key!r}] is a naive "
+                    f"datetime ({value!r}); it must be timezone-aware, or "
+                    "Postgres will silently reinterpret it in the session's "
+                    "local timezone."
+                )
 
 
 class Claim(BaseModel):
@@ -113,11 +155,13 @@ async def persist_analysis(
     stored ``rejected_claims`` is set to ``prior_rejected`` plus that count,
     so the value accumulates across the phases that call this function.
 
-    Raises ``NaiveTimestampError`` if any value in ``event_timestamps`` lacks
-    timezone info — checked before any database session is opened, so a bad
-    caller never gets a half-open transaction.
+    Raises ``NaiveTimestampError`` if any datetime this call would write is
+    tz-naive — every value in ``event_timestamps``, ``analysis.created_at``,
+    and every datetime-typed value inside any claim's ``payload`` — checked
+    before any database session is opened, so a bad caller never gets a
+    half-open transaction.
     """
-    _require_aware_timestamps(event_timestamps)
+    _require_aware_datetimes(analysis, claims, event_timestamps)
 
     rejected = 0
     factory = get_session_factory()

