@@ -33,12 +33,23 @@ class MappingResult(BaseModel):
     rejected: int
 
 
-def _render_prompt(commands: list[CompactedCommand]) -> str:
+def _render_prompt(commands: list[CompactedCommand], ruled_ids: set[str]) -> str:
+    """Render the gap-fill prompt.
+
+    The allowed-technique list excludes ids a rule already produced, so the
+    model isn't invited to re-propose something we already know
+    deterministically. If that would empty the list (rules covered the whole
+    catalog — unlikely with 21 entries, but not impossible in principle), fall
+    back to the full catalog rather than send an empty, incoherent prompt.
+    """
     catalog = load_catalog()
     rendered = "\n".join(
         f"- event_id: {c.event_id}\n  command: {c.command}" for c in commands
     )
-    allowed = "\n".join(f"- {e.id} ({e.name}) — {e.tactic}" for e in catalog.values())
+    remaining = [e for e in catalog.values() if e.id not in ruled_ids]
+    if not remaining:
+        remaining = list(catalog.values())
+    allowed = "\n".join(f"- {e.id} ({e.name}) — {e.tactic}" for e in remaining)
     template = _PROMPT_PATH.read_text(encoding="utf-8")
     return template.replace("{commands}", rendered).replace(
         "{allowed_techniques}", allowed
@@ -78,12 +89,13 @@ async def map_techniques(
     and must survive catalog validation and evidence validation to be kept.
     """
     mapped, unmatched = _from_rules(commands)
+    ruled_ids = {m.technique_id for m in mapped}
     if not unmatched:
         return MappingResult(techniques=mapped, rejected=0)
 
     try:
         proposals = await client.complete_json(
-            _render_prompt(unmatched), TechniqueProposals
+            _render_prompt(unmatched, ruled_ids), TechniqueProposals
         )
     except LLMValidationError as exc:
         logger.warning("MITRE gap-fill failed, keeping rule mappings only: %s", exc)
@@ -106,6 +118,22 @@ async def map_techniques(
                 "rejected %s: cited event ids were never offered", proposal.technique_id
             )
             rejected += 1
+            continue
+
+        if entry.id in ruled_ids:
+            # A rule already produced this technique, from other evidence in
+            # the same session, with observed=True at confidence 1.0. That is
+            # strictly stronger than a model inference and already correct --
+            # the LLM entry would add no information, only a second,
+            # contradictory-looking record for the same id. Drop it, but this
+            # is not a hallucination or a fabrication: the model named
+            # something real and grounded, it's just redundant. Do not count
+            # it in `rejected`, which is a model-quality signal reserved for
+            # actual hallucinations/fabrications.
+            logger.info(
+                "dropped duplicate LLM proposal for %s: already produced by a rule",
+                entry.id,
+            )
             continue
 
         mapped.append(
