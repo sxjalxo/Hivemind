@@ -41,12 +41,6 @@ _CMD_START = (
 # executes, writes, or transfers anything.
 _DATA_PRODUCING_HEAD = re.compile(r"^\s*(?:echo|printf|grep|egrep|fgrep)\b", re.IGNORECASE)
 
-# Split on chain/pipe operators and newlines, keeping the delimiter so each
-# segment's neighbours can be told apart. A run of one or more of ; & | is
-# one delimiter (so && / || split as a single unit); a literal newline is
-# normalized to the same footing as a semicolon.
-_CHAIN_SPLIT = re.compile(r"([;&|]+|\n)")
-
 # T1098.004 is matched against the *raw*, unfiltered command text rather
 # than the data-segment-filtered text every other rule uses. Its own
 # pattern already requires literal write syntax (a redirect or `tee`) that
@@ -88,11 +82,80 @@ def _compiled() -> list[tuple[Rule, re.Pattern[str]]]:
     return [(rule, re.compile(rule.pattern, re.IGNORECASE)) for rule in load_rules()]
 
 
+def _split_command_segments(command_text: str) -> list[str]:
+    """Split a command line into segments on ;, &, |, and newline --
+    tracking quote and comment state so an operator that is quoted or
+    commented out is never mistaken for a real chain/pipe boundary.
+
+    A hand-rolled single-pass scanner rather than a regex split: a regex
+    cannot express "this delimiter only counts when we are not currently
+    inside a quote," and `shlex` raises `ValueError` on the unbalanced
+    quotes attacker input will routinely contain, which apply_rules must
+    never propagate.
+
+    Quote handling: once a `'` or `"` opens a quote, every character up
+    to and including its matching close -- semicolons, pipes, ampersands,
+    even a literal embedded newline -- is folded into the current segment
+    as literal text, exactly as a real shell would treat it. An
+    unterminated quote is not an error: there is no matching close, so
+    every remaining character (to the end of the string) is folded into
+    the final segment as literal text. This is a deliberate, conservative
+    choice, not an oversight -- see the call site in
+    `_filtered_command_text` for why swallowing the tail of a malformed
+    line is the safe outcome here.
+
+    Comment handling: an UNQUOTED '#' starts a comment that runs to the
+    end of its line. The comment text is dropped entirely -- it is dead
+    shell syntax that never executes -- rather than folded into either
+    neighbouring segment, so a trigger word sitting after a `#` (even one
+    that looks like it precedes a real operator, e.g. `# ... && wget ...`)
+    can never surface a hit.
+    """
+    segments: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    index = 0
+    length = len(command_text)
+    while index < length:
+        char = command_text[index]
+        if quote is not None:
+            current.append(char)
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            current.append(char)
+            index += 1
+            continue
+        if char == "#":
+            while index < length and command_text[index] != "\n":
+                index += 1
+            continue
+        if char == "\n":
+            segments.append("".join(current))
+            current = []
+            index += 1
+            continue
+        if char in ";&|":
+            while index < length and command_text[index] in ";&|":
+                index += 1
+            segments.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+        index += 1
+    segments.append("".join(current))
+    return segments
+
+
 def _filtered_command_text(command_text: str) -> str:
     """Reduce a command line to only the segments that could plausibly
-    execute or act on something, normalizing newlines to ';' along the way.
+    execute or act on something.
 
-    Splits on chain/pipe operators and newlines, then drops any segment
+    Splits on chain/pipe operators and newlines (quote- and
+    comment-aware, see `_split_command_segments`), then drops any segment
     whose head verb only emits (echo/printf) or searches (grep family)
     text. This stops a trigger token that is merely quoted, echoed, or
     grepped for from being mistaken for the token being actually invoked
@@ -101,25 +164,27 @@ def _filtered_command_text(command_text: str) -> str:
     extended here to the permissive path/identifier rules that have no
     verb to anchor.
 
-    Newlines are normalized to ';' rather than handled with re.MULTILINE
-    so that a multi-line compacted command (e.g. "id\\nwget http://x")
-    still lets a real command on a later line be found in command
-    position by the ordinary chain-operator anchor, without needing every
-    pattern to special-case line boundaries.
+    A literal newline is treated as just another segment boundary here
+    (rather than handled with re.MULTILINE on the compiled patterns) so
+    that a multi-line compacted command (e.g. "id\\nwget http://x") still
+    lets a real command on a later, UNQUOTED line be found in command
+    position by the ordinary chain-operator anchor -- while a newline
+    embedded INSIDE a quoted string is correctly not a boundary at all,
+    since `_split_command_segments` never inspects characters for
+    delimiter meaning while a quote is open.
+
+    Surviving segments are rejoined with ';', which every anchored
+    pattern already recognizes as a chain operator; if the first segment
+    was dropped, the ';' is simply not needed for the next surviving
+    segment to be found in command position, since '^' also matches the
+    very start of the reduced string.
     """
-    parts = _CHAIN_SPLIT.split(command_text)
-    kept: list[str] = []
-    for index, part in enumerate(parts):
-        if index % 2 == 1:
-            # A delimiter: ; & | (in any combination) or a newline. All are
-            # normalized to ';', which every anchored pattern already
-            # recognizes as a chain operator.
-            kept.append(";")
-            continue
-        if part.strip() and _DATA_PRODUCING_HEAD.match(part):
-            continue
-        kept.append(part)
-    return "".join(kept)
+    kept = [
+        segment
+        for segment in _split_command_segments(command_text)
+        if not (segment.strip() and _DATA_PRODUCING_HEAD.match(segment))
+    ]
+    return ";".join(kept)
 
 
 def apply_rules(

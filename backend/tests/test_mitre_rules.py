@@ -317,3 +317,75 @@ def test_all_round_1_and_round_2_probes_still_hold() -> None:
         assert technique in _hit_ids(command), f"round-2 chained positive regressed: {command!r}"
     for command, expected in SEED_CORPUS_COMMANDS:
         assert _hit_ids(command) == set(expected), f"seed corpus hit set regressed: {command!r}"
+
+
+# Fix round 4: the chain/pipe-operator splitter used to build the
+# data-segment-filtered text (see rules.py's `_split_command_segments`) was
+# quote-unaware. A chain operator sitting INSIDE a quoted string -- or a
+# real newline embedded inside a quoted string -- was treated as a real
+# command boundary, so the quoted text after it was matched as if it had
+# actually been executed. Three of these date back to round 1's anchoring
+# design (the operator-inside-quotes cases); the real-newline-inside-quotes
+# case was introduced by round 3's newline-to-segment-boundary handling.
+# All four share one root cause and one fix: track quote state while
+# splitting.
+QUOTE_AWARE_NEGATIVE = [
+    # An actual embedded newline character inside the quotes, not "\n" as
+    # two literal characters -- that distinction is exactly the gap that
+    # let this one through every previous round's tests.
+    'echo "line1\nwget http://x"',
+    'echo "a && wget http://x"',
+    'echo "a; wget http://x"',
+    "echo test # comment && wget http://x",
+    "echo 'a && wget http://x'",
+]
+
+
+@pytest.mark.parametrize("command", QUOTE_AWARE_NEGATIVE)
+def test_chain_operators_inside_quotes_or_comments_do_not_split(command: str) -> None:
+    assert "T1105" not in _hit_ids(command)
+
+
+def test_real_newline_inside_quotes_is_not_a_command_boundary() -> None:
+    """A literal newline embedded inside a quoted string is part of the
+    quoted argument, not a second command -- unlike an unquoted newline
+    (see test_newline_separated_commands_are_each_checked_independently),
+    which genuinely does separate two commands.
+    """
+    command = 'echo "line1\nwget http://x"'
+    assert "\n" in command  # guards against this regressing to a literal backslash-n
+    assert _hit_ids(command) == set()
+
+
+def test_real_newline_outside_quotes_still_separates_commands() -> None:
+    """The mirror image of the previous test, using the same real-newline
+    character but with no quotes at all: this MUST still split into two
+    commands and both must be found in command position.
+    """
+    command = "id\nwget http://x"
+    assert "\n" in command
+    assert _hit_ids(command) == {"T1033", "T1105"}
+
+
+def test_unbalanced_quote_does_not_raise() -> None:
+    """Attacker input will routinely contain malformed shell syntax,
+    including an unterminated quote. The segmenter must degrade
+    gracefully rather than raise: everything from the unmatched quote to
+    the end of the line is folded into the current segment as literal
+    text (there is no matching close, so there is no principled place to
+    resume treating characters as delimiters again).
+
+    For `echo "unterminated && wget http://x` this means the ENTIRE line
+    becomes one `echo`-headed segment and is filtered out, so the command
+    produces no hits at all -- it is not reported as T1105. This is the
+    conservative outcome: we cannot tell whether the attacker meant
+    `wget` to run as a separate command or intended it as part of the
+    (malformed) quoted string, and precision-first means treating
+    unparseable trailing text as inert rather than risking a fabricated
+    OBSERVED hit. A real attack that actually intends to run wget will
+    send a syntactically valid command; Task 12's LLM gap-fill remains
+    available for genuinely ambiguous unmatched commands.
+    """
+    command = 'echo "unterminated && wget http://x'
+    hits = _hit_ids(command)  # must not raise
+    assert hits == set()
