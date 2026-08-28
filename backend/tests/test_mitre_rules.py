@@ -207,3 +207,113 @@ def test_seed_corpus_hits_are_unchanged_by_command_position_anchoring(
     hit set is expected to change.
     """
     assert _hit_ids(command) == set(expected_hits)
+
+
+# Fix round 3: over-anchoring introduced false negatives (a real command
+# fronted by a wrapper binary was silently missed), a residual T1098.004
+# substring-anchoring bug (the redirect target only had to CONTAIN
+# "authorized_keys", not equal it), and an escalation of the round-2 issue
+# to the permissive path/identifier rules (T1003.008, T1082's path
+# alternatives, T1496), which have no verb to command-position anchor and
+# so still tripped on an echoed/grepped reference.
+WRAPPER_POSITIVE = [
+    ("sudo wget http://x", "T1105"),
+    ("nohup wget http://x &", "T1105"),
+    ("env FOO=1 wget http://x", "T1105"),
+    ("timeout 5 curl http://x", "T1105"),
+    ('bash -c "wget http://x"', "T1105"),
+    ("cd /tmp && sudo wget http://x", "T1105"),
+]
+
+
+@pytest.mark.parametrize(("command", "technique"), WRAPPER_POSITIVE)
+def test_wrapper_prefixed_commands_still_match(command: str, technique: str) -> None:
+    """A real invocation fronted by sudo/nohup/env/timeout/bash -c is not
+    exotic -- it is ordinary in real intrusions -- and command-position
+    anchoring must not blind the rulebook to it. Only wrappers that EXECUTE
+    their argument belong in this allowance; echo/grep (which print or
+    search it) are deliberately excluded, see
+    test_reference_is_not_mistaken_for_execution above.
+    """
+    assert technique in _hit_ids(command)
+
+
+def test_newline_separated_commands_are_each_checked_independently() -> None:
+    """A compacted command can, in principle, carry more than one shell
+    line. `^` alone only anchors at position 0, so a second command after a
+    literal newline could never be in "command position" and would be
+    silently dropped. Newlines are normalized to ';' before matching so
+    each line gets the same command-position treatment as a chained
+    command.
+    """
+    hits = _hit_ids("id\nwget http://x")
+    assert hits == {"T1033", "T1105"}
+
+
+T1098_SUBSTRING_ANCHOR_NEGATIVE = [
+    "echo hi > authorized_keys_backup.txt",
+    "cat pwn > /tmp/authorized_keys.bak",
+]
+
+
+@pytest.mark.parametrize("command", T1098_SUBSTRING_ANCHOR_NEGATIVE)
+def test_authorized_keys_write_target_must_be_the_whole_filename(command: str) -> None:
+    """The redirect target must be exactly "authorized_keys" (optionally
+    inside a longer path, e.g. ".ssh/authorized_keys"), not merely contain
+    it as a prefix of a differently-named file. Writing to
+    "authorized_keys_backup.txt" or "authorized_keys.bak" is not installing
+    an SSH key.
+    """
+    assert "T1098.004" not in _hit_ids(command)
+
+
+def test_authorized_keys_on_the_read_side_of_a_redirect_does_not_match() -> None:
+    """`echo authorized_keys > notes.txt` writes the word "authorized_keys"
+    into notes.txt -- the trigger string is data being printed, not the
+    write target. And `rm ~/.ssh/authorized_keys` deletes the file (already
+    correctly T1070.004) without writing to it at all.
+    """
+    assert "T1098.004" not in _hit_ids("echo authorized_keys > notes.txt")
+    assert _hit_ids("rm ~/.ssh/authorized_keys") == {"T1070.004"}
+
+
+# Escalation: the round-2 fix left T1003.008, T1082's path alternatives, and
+# T1496 unanchored, arguing they are high-specificity strings unlikely to
+# appear incidentally. That argument does not survive an echoed or grepped
+# reference. Decision: apply the SAME data-segment filter used for every
+# other rule (drop echo/printf/grep-family segments before matching) so the
+# precision bar is uniform across all thirteen rules, not verb-dependent.
+# grep's search pattern is explicitly included in the filter (not just
+# echo/printf): grep -r xmrig /var/log is Discovery of a string, not
+# Resource Hijacking, and treating it otherwise would keep exactly the same
+# inconsistency in a different rule.
+PATH_IDENTIFIER_REFERENCE_NEGATIVE = [
+    ('echo "check /etc/passwd"', "T1003.008"),
+    ("grep xmrig /var/log/syslog", "T1496"),
+]
+
+
+@pytest.mark.parametrize(("command", "technique"), PATH_IDENTIFIER_REFERENCE_NEGATIVE)
+def test_path_and_identifier_rules_are_not_exempt_from_reference_filtering(
+    command: str, technique: str
+) -> None:
+    assert _hit_ids(command) == set()
+    assert technique not in _hit_ids(command)
+
+
+def test_all_round_1_and_round_2_probes_still_hold() -> None:
+    """Consolidated non-regression sweep: every probe introduced by the
+    first two review rounds, re-checked after the round-3 wrapper/segment
+    changes. Failing any of these would mean the fix for one problem broke
+    the fix for an earlier one.
+    """
+    for command, technique in POSITIVE:
+        assert technique in _hit_ids(command), f"round-1 positive regressed: {command!r}"
+    for command, technique in NEGATIVE:
+        assert technique not in _hit_ids(command), f"round-1 negative regressed: {command!r}"
+    for command, expected in ADVERSARIAL_NEGATIVE:
+        assert _hit_ids(command) == expected, f"round-2 adversarial regressed: {command!r}"
+    for command, technique in COMMAND_POSITION_POSITIVE:
+        assert technique in _hit_ids(command), f"round-2 chained positive regressed: {command!r}"
+    for command, expected in SEED_CORPUS_COMMANDS:
+        assert _hit_ids(command) == set(expected), f"seed corpus hit set regressed: {command!r}"

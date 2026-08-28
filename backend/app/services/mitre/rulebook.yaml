@@ -2,40 +2,52 @@
 # A hit here is provenance OBSERVED with confidence 1.0.
 # Patterns are Python re, matched case-insensitively against the command line.
 #
-# Command-position anchoring:
-#   Verb-triggered rules (a rule whose trigger is an ordinary word that could
-#   plausibly appear as plain text -- wget, chmod, uname, rm, ps, netstat,
-#   ls/find/du, id/whoami/w/who, passwd, sh/bash/dash/zsh) require the verb
-#   to sit in COMMAND POSITION: at the start of the command line, or
-#   immediately after a chain/pipe operator (;, &, &&, |, ||) or a command
-#   substitution opener ($( or a backtick). Without this, `echo "wget ..."`,
-#   a `grep` pattern, a code comment, or a filename argument would satisfy a
-#   bare `\bwget\b`-style pattern despite never invoking the tool -- exactly
-#   the false-OBSERVED failure mode this rulebook exists to avoid.
+# {CMD_START} is a placeholder substituted at load time (see rules.py) with
+# ONE shared regex fragment meaning "this verb is in COMMAND POSITION": at
+# the start of the command line, or immediately after a chain/pipe operator
+# (;, &, &&, |, ||) or a command-substitution opener ($( or a backtick),
+# optionally preceded by a wrapper binary that executes its argument
+# (sudo, nohup, env FOO=1, timeout N, command, exec, stdbuf, setsid, or
+# bash -c "..." / sh -c "..."). Using one placeholder instead of hand-copying
+# the fragment into ten patterns means it cannot drift -- change it once in
+# rules.py and every anchored rule picks up the change.
 #
-#   Path/identifier-triggered rules (T1003.008's /etc/passwd|shadow, T1082's
-#   /etc/os-release and /proc/cpuinfo, T1496's xmrig/c3pool/etc.) are left
-#   UNANCHORED on purpose: these are high-specificity, low-entropy strings
-#   that essentially never appear incidentally in echoed text or comments,
-#   unlike common verbs. Even a `grep -r /etc/shadow /home` or a `find /
-#   -name authorized_keys`-style reference to one of these strings is still
-#   meaningful recon/credential-access-adjacent telemetry worth surfacing,
-#   so permissive matching is a deliberate choice there, not an oversight.
+#   Without this anchor, `echo "wget ..."`, a `grep` pattern, a code
+#   comment, or a filename argument would satisfy a bare `\bwget\b`-style
+#   pattern despite never invoking the tool -- exactly the false-OBSERVED
+#   failure mode this rulebook exists to avoid. Without the wrapper
+#   allowance, a real invocation fronted by `sudo`/`nohup`/`timeout`/`env`/
+#   `bash -c` would be silently missed -- ordinary in real intrusions, not
+#   exotic.
+#
+#   Separately, rules.py drops any chain-operator segment whose head verb
+#   only emits (echo/printf) or searches (grep/egrep/fgrep) text before
+#   matching ANY rule (anchored or not) against the reduced text. That is
+#   what stops `echo "check /etc/passwd"` or `grep xmrig /var/log/syslog`
+#   from tripping the permissive path/identifier rules below (T1003.008,
+#   T1082's path alternatives, T1496) -- those rules have no verb to anchor,
+#   so command-position anchoring alone can't protect them; the segment
+#   filter is the uniform mechanism that does. T1098.004 is the one
+#   exception: it is matched against the *unfiltered* command text because
+#   its own pattern already requires literal write syntax (a redirect or
+#   `tee`) that an echoed reference alone can never satisfy, and filtering
+#   out an echo segment would destroy the redirect target that IS the
+#   evidence for `echo "..." >> .ssh/authorized_keys`.
 rules:
   - id: T1105
     name: Ingress Tool Transfer
     tactic: Command and Control
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(wget|curl|tftp)\b[^|;&]*\b(https?|ftp)://'
+    pattern: '{CMD_START}(wget|curl|tftp)\b[^|;&]*\b(https?|ftp)://'
 
   - id: T1222.002
     name: Linux and Mac File and Directory Permissions Modification
     tactic: Defense Evasion
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)chmod\b\s+(-[a-z]+\s+)*([0-7]{3,4}|[ugoa]*[+=][rwxst]*)'
+    pattern: '{CMD_START}chmod\b\s+(-[a-z]+\s+)*([0-7]{3,4}|[ugoa]*[+=][rwxst]*)'
 
   - id: T1082
     name: System Information Discovery
     tactic: Discovery
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(uname|lscpu|nproc|free\s+-[a-z]|uptime)\b|/etc/os-release|/proc/cpuinfo'
+    pattern: '{CMD_START}(uname|lscpu|nproc|free\s+-[a-z]|uptime)\b|/etc/os-release|/proc/cpuinfo'
 
   - id: T1003.008
     name: /etc/passwd and /etc/shadow
@@ -46,11 +58,15 @@ rules:
     name: SSH Authorized Keys
     tactic: Persistence
     # authorized_keys is a path, not a verb, so command-position anchoring
-    # doesn't apply. Instead require evidence of a WRITE: a redirect into a
-    # path containing authorized_keys, or a `tee` writing to it. Reading it
-    # (ls, cat, grep, find) must not match -- installing a key is
-    # persistence, looking at the file is not.
-    pattern: '>>?\s*\S*authorized_keys|\btee\b[^|;&]*authorized_keys'
+    # doesn't apply, and this rule is matched against the raw, unfiltered
+    # command text (see the module docstring above and rules.py). Require
+    # evidence of a WRITE: a redirect whose target's final path segment is
+    # exactly "authorized_keys" (not merely a substring, e.g.
+    # "authorized_keys_backup.txt" or "authorized_keys.bak" must NOT
+    # match), or a `tee` writing to it. Reading it (ls, cat, grep, find)
+    # must not match -- installing a key is persistence, looking at the
+    # file is not.
+    pattern: '>>?\s*(?:\S*/)?authorized_keys(?=\s|$)|\btee\b[^|;&]*(?:\S*/)?authorized_keys(?=\s|$)'
 
   - id: T1496
     name: Resource Hijacking
@@ -60,27 +76,27 @@ rules:
   - id: T1070.004
     name: File Deletion
     tactic: Defense Evasion
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)rm\b\s+(-[a-zA-Z]+\s+)*\S'
+    pattern: '{CMD_START}rm\b\s+(-[a-zA-Z]+\s+)*\S'
 
   - id: T1057
     name: Process Discovery
     tactic: Discovery
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(ps\b\s+(aux|-ef|-e)|top\b\s*-b|pgrep\b)'
+    pattern: '{CMD_START}(ps\b\s+(aux|-ef|-e)|top\b\s*-b|pgrep\b)'
 
   - id: T1049
     name: System Network Connections Discovery
     tactic: Discovery
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(netstat\b|ss\b\s+-[a-z]+|lsof\b\s+-i)'
+    pattern: '{CMD_START}(netstat\b|ss\b\s+-[a-z]+|lsof\b\s+-i)'
 
   - id: T1083
     name: File and Directory Discovery
     tactic: Discovery
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(ls\b\s+-[a-zA-Z]+|find\b\s+/|du\b\s+-[a-z])'
+    pattern: '{CMD_START}(ls\b\s+-[a-zA-Z]+|find\b\s+/|du\b\s+-[a-z])'
 
   - id: T1033
     name: System Owner/User Discovery
     tactic: Discovery
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(id|whoami|w|who)\b'
+    pattern: '{CMD_START}(id|whoami|w|who)\b'
 
   - id: T1531
     name: Account Access Removal
@@ -92,9 +108,9 @@ rules:
     # the anchor in place the lookbehind is now belt-and-suspenders (passwd
     # preceded by "/etc/" can never be in command position anyway) but it is
     # kept for clarity and defense in depth.
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(?:(?<!/etc/)passwd\b|usermod\b\s+.*-L)'
+    pattern: '{CMD_START}(?:(?<!/etc/)passwd\b|usermod\b\s+.*-L)'
 
   - id: T1059.004
     name: Unix Shell
     tactic: Execution
-    pattern: '(?:^\s*|[;&|]+\s*|\$\(\s*|`\s*)(sh|bash|dash|zsh)\s+\S+\.(sh|bash)\b'
+    pattern: '{CMD_START}(sh|bash|dash|zsh)\s+\S+\.(sh|bash)\b'
