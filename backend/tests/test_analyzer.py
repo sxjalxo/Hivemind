@@ -9,6 +9,8 @@ from app.config import get_settings
 from app.db.models import (
     Analysis,
     EvidenceRef,
+    Indicator,
+    IndicatorSession,
     ObservedBehavior,
     RecommendedAction,
     SuspiciousIndicator,
@@ -31,6 +33,51 @@ from app.workers.queue import get_queue
 # loop" error from SQLAlchemy's pool_pre_ping. Cleaning up from within the
 # same task that did the writes avoids that entirely, and still leaves the
 # claim tables at zero rows regardless of test order.
+#
+# Task 15 wired stage 5 (`generating_intel`) into `run_analysis` for real, so
+# every call in this file now also writes to `indicators`/`indicator_sessions`
+# (`app.services.intel.correlate`) -- a side effect this file predates and
+# its own cleanup never accounted for. `_delete_indicators_for_session`
+# mirrors the same helper in `tests/test_intel.py`: it removes this
+# session's indicator_sessions links, then deletes any indicator left with
+# zero remaining links, so a value another still-live session also cites is
+# left untouched.
+
+
+async def _delete_indicators_for_session(session_id: str) -> None:
+    factory = get_session_factory()
+    async with factory() as db:
+        links = (
+            (
+                await db.execute(
+                    select(IndicatorSession).where(IndicatorSession.session_id == session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        indicator_ids = [link.indicator_id for link in links]
+        for link in links:
+            await db.delete(link)
+        await db.flush()
+
+        for indicator_id in indicator_ids:
+            remaining = (
+                (
+                    await db.execute(
+                        select(IndicatorSession).where(
+                            IndicatorSession.indicator_id == indicator_id
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if remaining is None:
+                row = await db.get(Indicator, indicator_id)
+                if row:
+                    await db.delete(row)
+        await db.commit()
 
 
 async def _delete_analysis_and_children(analysis_id: uuid.UUID) -> None:
@@ -104,6 +151,7 @@ async def test_analysis_of_the_botnet_session_completes_and_is_grounded() -> Non
                 assert ref.session_id == "seed-botnet-01"
     finally:
         await _delete_analysis_and_children(analysis_id)
+        await _delete_indicators_for_session("seed-botnet-01")
 
 
 @pytest.mark.asyncio
@@ -119,6 +167,7 @@ async def test_rule_backed_techniques_are_marked_observed() -> None:
         assert ingress.ai_explanation is None
     finally:
         await _delete_analysis_and_children(analysis_id)
+        await _delete_indicators_for_session("seed-botnet-01")
 
 
 @pytest.mark.asyncio
@@ -145,6 +194,7 @@ async def test_progress_events_cover_every_stage_in_order() -> None:
         assert max(received) == len(ANALYSIS_STAGES) - 1
     finally:
         await _delete_analysis_and_children(analysis_id)
+        await _delete_indicators_for_session("seed-recon-01")
 
 
 @pytest.mark.asyncio
@@ -161,6 +211,7 @@ async def test_analysis_of_a_session_with_no_commands_still_completes() -> None:
         )
     finally:
         await _delete_analysis_and_children(analysis_id)
+        await _delete_indicators_for_session("seed-brute-01")
 
 
 @pytest.mark.asyncio
@@ -227,6 +278,7 @@ async def test_write_back_enrichment_lands_after_a_real_analysis() -> None:
                 assert mitre["technique_id"] == technique.technique_id
     finally:
         await _delete_analysis_and_children(analysis_id)
+        await _delete_indicators_for_session("seed-botnet-01")
 
 
 # ---------------------------------------------------------------------------
@@ -401,4 +453,5 @@ async def test_oversized_synthetic_session_completes_via_chunk_and_merge() -> No
     finally:
         if analysis_id is not None:
             await _delete_analysis_and_children(analysis_id)
+            await _delete_indicators_for_session(_SYNTHETIC_SESSION_ID)
         await _delete_oversized_session_docs()

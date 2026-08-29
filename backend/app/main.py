@@ -7,7 +7,18 @@ from app.config import get_settings
 from app.db.session import get_engine
 from app.es.bootstrap import bootstrap_es
 from app.es.client import get_es
-from app.routers import analysis, analyze, dashboard, honeypots, logs, sessions, status
+from app.routers import (
+    analysis,
+    analyze,
+    attackers,
+    dashboard,
+    honeypots,
+    intel,
+    logs,
+    mitre,
+    sessions,
+    status,
+)
 
 
 @asynccontextmanager
@@ -46,6 +57,9 @@ def create_app() -> FastAPI:
     api.include_router(dashboard.router, tags=["dashboard"])
     api.include_router(analyze.router, tags=["analysis"])
     api.include_router(analysis.router, tags=["analysis"])
+    api.include_router(intel.router, tags=["intel"])
+    api.include_router(attackers.router, tags=["intel"])
+    api.include_router(mitre.router, tags=["mitre"])
     app.include_router(api)
     return app
 

@@ -137,10 +137,17 @@ async def run_analysis(session_id: str) -> uuid.UUID:
         )
     await _emit(session_id, 4, techniques_detected=len(mapping.techniques))
 
-    # Stage 5 — intel correlation is filled in by Task 15; emit the stage now
-    # so the UI stepper advances truthfully rather than stalling. No
-    # correlation result is fabricated here.
-    await _emit(session_id, 5, techniques_detected=len(mapping.techniques))
+    # Stage 5 — correlate IOCs across sessions
+    from app.services.intel import correlate, extract_indicators
+
+    extracted = extract_indicators(compacted)
+    await correlate(session_id, extracted)
+    await _emit(
+        session_id,
+        5,
+        techniques_detected=len(mapping.techniques),
+        iocs_extracted=len(extracted),
+    )
 
     # Stage 6 — recommendations (own context per chunk, cloud evaluator when configured)
     actions = await _recommend(evaluator, chunks, classification, mapping)
