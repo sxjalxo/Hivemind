@@ -14,16 +14,49 @@ def test_source_ip_becomes_a_term_filter() -> None:
     assert {"term": {"source.ip": "185.220.101.44"}} in dsl["bool"]["filter"]
 
 
-def test_free_text_searches_command_line_and_action() -> None:
+def test_free_text_searches_command_line_action_user_and_source_ip() -> None:
     dsl = build_log_query(LogQuery(q="wget"))
     assert dsl["bool"]["must"] == [
         {
             "multi_match": {
                 "query": "wget",
-                "fields": ["process.command_line", "event.action", "user.name"],
+                "fields": [
+                    "process.command_line",
+                    "event.action",
+                    "user.name",
+                    "source.ip",
+                ],
+                "lenient": True,
             }
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_free_text_search_matches_a_bare_attacker_ip() -> None:
+    """Pasting an attacker IP into the log search must find its events.
+
+    Without `source.ip` in the multi_match this returned zero hits while the
+    equivalent search on the sessions surface worked, which is a silently
+    inconsistent result for the same query text.
+    """
+    await seed(reset=True)
+    page = await search_logs(LogQuery(q="185.220.101.44"))
+
+    assert page.total > 0
+    assert all(e.source.ip == "185.220.101.44" for e in page.items)
+
+
+@pytest.mark.asyncio
+async def test_free_text_search_still_matches_commands_after_adding_source_ip() -> None:
+    """A non-IP query must not be rejected by the `ip`-mapped field."""
+    await seed(reset=True)
+    page = await search_logs(LogQuery(q="chmod"))
+
+    commands = [
+        e.process.command_line for e in page.items if e.process and e.process.command_line
+    ]
+    assert any("chmod" in c for c in commands)
 
 
 def test_time_range_becomes_a_range_filter() -> None:

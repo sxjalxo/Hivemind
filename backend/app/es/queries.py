@@ -37,7 +37,19 @@ def build_log_query(query: LogQuery) -> dict:
             {
                 "multi_match": {
                     "query": query.q,
-                    "fields": ["process.command_line", "event.action", "user.name"],
+                    "fields": [
+                        "process.command_line",
+                        "event.action",
+                        "user.name",
+                        "source.ip",
+                    ],
+                    # source.ip is mapped as `ip`, not `text`/`keyword`. Without
+                    # `lenient` a query string that isn't a valid IP literal
+                    # (e.g. "wget") makes ES reject the whole multi_match with a
+                    # 400 instead of just skipping that field. Including the
+                    # field keeps free-text search consistent with the sessions
+                    # surface, where pasting an attacker IP already works.
+                    "lenient": True,
                 }
             }
         )
