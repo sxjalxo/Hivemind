@@ -37,6 +37,27 @@ class ProcessInfo(CamelModel):
     output: str | None = None
 
 
+class FileHashInfo(CamelModel):
+    sha256: str | None = None
+
+
+class FileInfo(CamelModel):
+    """A `cowrie.session.file_download`'s payload, ECS-shaped.
+
+    The ingest pipeline (`infra/elasticsearch/pipelines/cowrie-ecs.json`)
+    renames Cowrie's raw `shasum`/`url`/`outfile` fields to
+    `file.hash.sha256`/`file.url`/`file.name` on ingest; this mirrors that
+    shape exactly rather than re-flattening it. Cowrie's raw `size` field is
+    deliberately stripped as known-noise by the same pipeline (see its
+    comment), so there is no `file.size` to model here -- a downstream
+    consumer must not assume a real size is ever available.
+    """
+
+    name: str | None = None
+    url: str | None = None
+    hash: FileHashInfo | None = None
+
+
 class HoneypotInfo(CamelModel):
     id: str
     name: str
@@ -65,6 +86,7 @@ class HoneypotEvent(CamelModel):
     network: NetworkInfo
     user: UserInfo | None = None
     process: ProcessInfo | None = None
+    file: FileInfo | None = None
     honeypot: HoneypotInfo
     session: SessionInfo
     risk: RiskInfo

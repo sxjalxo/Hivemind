@@ -18,10 +18,20 @@ _SHA256 = re.compile(r"\b[a-fA-F0-9]{64}\b")
 def extract_indicators(
     compacted: CompactedSession,
 ) -> list[tuple[dict, list[EvidenceCitation]]]:
-    """Pull IOCs out of a session with deterministic regex.
+    """Pull IOCs out of a session with deterministic regex and direct field reads.
 
     No LLM: extraction must be reproducible. Each IOC carries the citation of
-    the command it came from, so the Task 13 barrier can ground it.
+    the command (or download event) it came from, so the Task 13 barrier can
+    ground it.
+
+    A downloaded file's `hash`/`url`/`filename` are read directly from
+    `compacted.downloads` (`app.services.compaction.CompactedDownload`) --
+    fields Cowrie's `cowrie.session.file_download` event reports directly,
+    not something that needs regex-scanning out of command text. A malware
+    hash never appears in a command line at all (the `wget ...` that
+    triggers the download never mentions its own target's shasum), so
+    without this, the single most actionable IOC a honeypot produces --
+    a hash a defender can pivot on -- could never become an indicator.
     """
     found: dict[tuple[str, str], list[EvidenceCitation]] = {}
 
@@ -39,6 +49,18 @@ def extract_indicators(
             record("ip", ip, citation)
         for digest in _SHA256.findall(command.command):
             record("hash", digest, citation)
+
+    for download in compacted.downloads:
+        label = download.outfile or download.url or "downloaded file"
+        citation = EvidenceCitation(
+            event_id=download.event_id, artifact=f"download: {label}"
+        )
+        if download.shasum:
+            record("hash", download.shasum, citation)
+        if download.url:
+            record("url", download.url, citation)
+        if download.outfile:
+            record("filename", download.outfile, citation)
 
     attacker_citation = EvidenceCitation(
         event_id=compacted.first_event_id, artifact=f"connection from {compacted.attacker_ip}"

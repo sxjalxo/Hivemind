@@ -129,16 +129,44 @@ def test_jaccard_is_symmetric() -> None:
 
 @pytest.mark.asyncio
 async def test_extraction_finds_urls_hashes_and_ips() -> None:
+    # seed-botnet-01's download event (app/seed/corpus/botnet_dropper.json)
+    # carries a real 64-char shasum, url, and outfile -- none of which
+    # appear anywhere in command text, so this can only pass if
+    # extract_indicators actually reads compacted.downloads, not just
+    # regex-scans commands.
     await seed(reset=True)
     events = await get_session_events("seed-botnet-01")
-    extracted = extract_indicators(compact(events))
+    compacted = compact(events)
+    extracted = extract_indicators(compacted)
 
     types = {payload["type"] for payload, _ in extracted}
     assert "url" in types
     assert "command" in types
+    assert "hash" in types
+    assert "filename" in types
 
     for payload, citations in extracted:
         assert citations, f"{payload} was extracted without a citation"
+
+    assert len(compacted.downloads) == 1
+    download = compacted.downloads[0]
+    assert download.shasum == (
+        "9f2b1c4e8a7d6053f1e2b9c8a7d6e5f4b3a2918077665544332211aabbccddee"
+    )
+
+    hash_entry = next(
+        (p, c) for p, c in extracted if p["type"] == "hash" and p["value"] == download.shasum
+    )
+    _, hash_citations = hash_entry
+    assert any(c.event_id == download.event_id for c in hash_citations), (
+        "the hash indicator must be cited to the download event, not a command"
+    )
+
+    filename_entry = next(
+        (p, c) for p, c in extracted if p["type"] == "filename" and p["value"] == download.outfile
+    )
+    _, filename_citations = filename_entry
+    assert any(c.event_id == download.event_id for c in filename_citations)
 
 
 @pytest.mark.asyncio

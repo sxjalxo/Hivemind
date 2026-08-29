@@ -21,6 +21,24 @@ class CompactedCommand(CamelModel):
     repeat_count: int = 1
 
 
+class CompactedDownload(CamelModel):
+    """A `cowrie.session.file_download`, IOC fields intact.
+
+    Kept separate from `CompactedCommand` -- a download is not a command --
+    but citable the same way, via `event_id`. `url`/`outfile`/`shasum` are
+    carried through exactly as Cowrie/the ingest pipeline names them (see
+    `app.models.event.FileInfo`) so `app.services.intel.extract_indicators`
+    can emit `hash`/`url`/`filename` indicators grounded in the real
+    download event, not just whatever a later `wget ...` command happens to
+    also mention.
+    """
+
+    event_id: str
+    url: str | None = None
+    outfile: str | None = None
+    shasum: str | None = None
+
+
 class CompactedSession(CamelModel):
     session_id: str
     attacker_ip: str
@@ -30,7 +48,7 @@ class CompactedSession(CamelModel):
     successful_login: bool
     username: str | None
     commands: list[CompactedCommand]
-    downloads: list[str]
+    downloads: list[CompactedDownload]
     first_event_id: str
 
 
@@ -59,7 +77,7 @@ def compact(events: list[HoneypotEvent]) -> CompactedSession:
 
     first = events[0]
     commands: list[CompactedCommand] = []
-    downloads: list[str] = []
+    downloads: list[CompactedDownload] = []
     failed_logins = 0
     successful_login = False
     username: str | None = None
@@ -89,7 +107,14 @@ def compact(events: list[HoneypotEvent]) -> CompactedSession:
                 )
             )
         elif action == "cowrie.session.file_download":
-            downloads.append(event.id)
+            downloads.append(
+                CompactedDownload(
+                    event_id=event.id,
+                    url=event.file.url if event.file else None,
+                    outfile=event.file.name if event.file else None,
+                    shasum=event.file.hash.sha256 if event.file and event.file.hash else None,
+                )
+            )
 
     last = events[-1]
     from datetime import datetime

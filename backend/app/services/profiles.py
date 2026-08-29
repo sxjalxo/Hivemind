@@ -2,7 +2,8 @@ from sqlalchemy import select
 
 from app.db.models import Analysis, TechniqueMapping
 from app.db.session import get_session_factory
-from app.models.intel import AttackerProfileOut, SimilarAttacker
+from app.models.intel import AttackerProfileOut, DownloadedFile, SimilarAttacker
+from app.services.intel import list_indicators
 from app.services.session_builder import get_session_events, list_sessions
 
 
@@ -34,12 +35,25 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
 
     commands: list[str] = []
     honeypots: list[str] = []
+    downloaded_files: list[DownloadedFile] = []
     for session in sessions:
         if session.honeypot_name not in honeypots:
             honeypots.append(session.honeypot_name)
         for event in await get_session_events(session.id):
             if event.process and event.process.command_line:
                 commands.append(event.process.command_line)
+            elif event.event.action == "cowrie.session.file_download" and event.file:
+                # Cowrie's raw `size` field is stripped as known-noise by the
+                # ingest pipeline (infra/elasticsearch/pipelines/cowrie-ecs.json)
+                # -- there is no real size to report here, so this is an
+                # honest 0 (never observed) rather than an invented value.
+                downloaded_files.append(
+                    DownloadedFile(
+                        name=event.file.name or "unknown",
+                        sha256=event.file.hash.sha256 if event.file.hash else "",
+                        size=0,
+                    )
+                )
 
     session_ids = [s.id for s in sessions]
     async with get_session_factory()() as db:
@@ -78,6 +92,18 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
     ]
     similarity.sort(key=lambda s: s.score, reverse=True)
 
+    # Every indicator linked to any of this attacker's own sessions --
+    # a full scan of list_indicators(), filtered in Python. Same
+    # straightforward-over-optimized approach as _commands_by_ip above; fine
+    # at seed-corpus scale, would need indexing (e.g. a session_id-scoped
+    # query) at real indicator-table volume.
+    session_id_set = set(session_ids)
+    indicator_ids = [
+        indicator.id
+        for indicator in await list_indicators()
+        if session_id_set & set(indicator.session_ids)
+    ]
+
     ordered = sorted(sessions, key=lambda s: s.started_at)
     return AttackerProfileOut(
         ip=ip,
@@ -90,8 +116,8 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
         targeted_honeypots=honeypots,
         commands=commands,
         technique_ids=technique_ids,
-        downloaded_files=[],
-        indicator_ids=[],
+        downloaded_files=downloaded_files,
+        indicator_ids=indicator_ids,
         geo=None,
         similarity=similarity[:5],
         attack_pattern=commands[:12],

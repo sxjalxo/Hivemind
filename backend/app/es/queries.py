@@ -66,6 +66,7 @@ def to_event(hit: dict) -> HoneypotEvent:
                 if process
                 else None
             ),
+            "file": src.get("file"),
             "honeypot": src.get("honeypot") or {"id": "unknown", "name": "unknown"},
             "session": src.get("session") or {"id": "unknown"},
             "risk": src.get("risk") or {"score": 0, "level": "informational"},
