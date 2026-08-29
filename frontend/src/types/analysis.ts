@@ -19,8 +19,10 @@ export interface EvidenceRef {
   /** Raw observed artifact (command, log line, header). */
   artifact: string;
   sessionId: string;
-  timestamp?: string | undefined;
-  eventId?: string | undefined;
+  /** Required: evidence is a pointer to a real event, not a copied string. */
+  timestamp: string;
+  /** Required: resolves via DataProvider.getEvent to the source event. */
+  eventId: string;
 }
 
 export interface TechniqueMapping {

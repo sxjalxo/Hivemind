@@ -265,6 +265,13 @@ export const DemoProvider: DataProvider = {
     return demo.sessionEvents[id] ?? demo.allEvents.filter((e) => e.session.id === id);
   },
 
+  async getEvent(eventId) {
+    await delay(140);
+    const event = demo.allEvents.find((e) => e.id === eventId);
+    if (!event) throw new Error(`unknown demo event ${eventId}`);
+    return event;
+  },
+
   async queryLogs(query): Promise<Paginated<HoneypotEvent>> {
     await delay(260);
     const filtered = demo.allEvents.filter((event) => matchesQuery(event, query));

@@ -1,5 +1,5 @@
-import { endpoints, request } from "./api";
-import type { DashboardData, DataProvider } from "./provider";
+import { API_BASE_URL, endpoints, request } from "./api";
+import type { AnalysisProgressEvent, DashboardData, DataProvider, Unsubscribe } from "./provider";
 import type {
   AttackSession,
   AttackerProfile,
@@ -27,7 +27,7 @@ export const FastAPIProvider: DataProvider = {
 
   getSessions: (params) =>
     request<AttackSession[]>(endpoints.sessions, {
-      query: { risk: params?.risk, honeypot_id: params?.honeypotId, q: params?.q },
+      query: { risk: params?.risk, honeypotId: params?.honeypotId, q: params?.q },
     }),
 
   getSession: (id) => request<AttackSession>(endpoints.session(id)),
@@ -40,20 +40,22 @@ export const FastAPIProvider: DataProvider = {
     request<Paginated<HoneypotEvent>>(endpoints.logs, {
       query: {
         q: query.q,
-        honeypot_id: query.honeypotId,
-        "source.ip": query.sourceIp,
-        "destination.ip": query.destinationIp,
+        honeypotId: query.honeypotId,
+        sourceIp: query.sourceIp,
+        destinationIp: query.destinationIp,
         protocol: query.protocol,
-        event_category: query.eventCategory,
+        eventCategory: query.eventCategory,
         risk: query.risk,
-        technique_id: query.techniqueId,
-        session_id: query.sessionId,
+        techniqueId: query.techniqueId,
+        sessionId: query.sessionId,
         from: query.from,
         to: query.to,
         page: query.page,
-        page_size: query.pageSize,
+        pageSize: query.pageSize,
       },
     }),
+
+  getEvent: (eventId) => request<HoneypotEvent>(endpoints.event(eventId)),
 
   analyzeSession: (sessionId, signal) =>
     request<SessionAnalysis>(endpoints.analyze(sessionId), { method: "POST", signal }),
@@ -62,15 +64,27 @@ export const FastAPIProvider: DataProvider = {
 
   getAnalysisHistory: () => request<SessionAnalysis[]>(endpoints.analyses),
 
-  // `subscribeAnalysisProgress` is intentionally NOT implemented here yet.
-  //
-  // The UI treats its absence as "no live stage channel" and shows an
-  // indeterminate running state. Wire it up once the backend exposes
-  // WS /api/analyze/{session_id}/progress, emitting AnalysisProgressEvent
-  // frames; no UI change is required to light the stepper up.
+  /**
+   * Live stage channel for a running analysis.
+   *
+   * Connects to WS /api/analyze/{session_id}/progress and forwards each
+   * AnalysisProgressEvent frame to the caller. Its presence is what tells the
+   * UI to animate the stepper from real backend stages instead of falling
+   * back to an indeterminate running state.
+   */
+  subscribeAnalysisProgress(sessionId, onEvent): Unsubscribe {
+    const wsBase = API_BASE_URL.replace(/^http/, "ws");
+    const socket = new WebSocket(`${wsBase}${endpoints.analyze(sessionId)}/progress`);
+
+    socket.onmessage = (message) => {
+      onEvent(JSON.parse(message.data as string) as AnalysisProgressEvent);
+    };
+
+    return () => socket.close();
+  },
 
   getMitreCoverage: (params) =>
-    request<MitreCoverage>(endpoints.mitre, { query: { session_id: params?.sessionId } }),
+    request<MitreCoverage>(endpoints.mitre, { query: { sessionId: params?.sessionId } }),
 
   getIndicators: (params) =>
     request<Indicator[]>(endpoints.threatIntel, { query: { type: params?.type, q: params?.q } }),
@@ -80,7 +94,7 @@ export const FastAPIProvider: DataProvider = {
   getReports: () => request<ThreatReport[]>(endpoints.reports),
 
   createReport: (sessionId) =>
-    request<ThreatReport>(endpoints.reports, { method: "POST", body: { session_id: sessionId } }),
+    request<ThreatReport>(endpoints.reports, { method: "POST", body: { sessionId } }),
 
   getDashboard: (range) => request<DashboardData>("/api/dashboard", { query: { range } }),
 };

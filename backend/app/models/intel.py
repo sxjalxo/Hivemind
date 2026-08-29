@@ -16,7 +16,9 @@ class Indicator(CamelModel):
 class DownloadedFile(CamelModel):
     name: str
     sha256: str
-    size: int
+    # Cowrie's raw `size` is stripped as known-noise by the ingest pipeline, so
+    # it is omitted (not 0) whenever the source never recorded it.
+    size: int | None = None
 
 
 class SimilarAttacker(CamelModel):

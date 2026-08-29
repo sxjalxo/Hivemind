@@ -31,7 +31,13 @@ export function formatDuration(seconds: number): string {
   return `${minutes}m ${String(rest).padStart(2, "0")}s`;
 }
 
-export function formatBytes(bytes: number): string {
+/**
+ * `undefined`/`null` means the source never recorded a size — distinct from an
+ * observed 0. The backend serializes the omitted field as JSON `null`, so both
+ * are treated the same way here.
+ */
+export function formatBytes(bytes: number | null | undefined): string {
+  if (bytes == null) return "size unknown";
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;

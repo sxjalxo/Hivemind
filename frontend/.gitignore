@@ -16,6 +16,10 @@ dist-ssr
 .nitro
 *.local
 
+# Local environment overrides (VITE_API_BASE_URL, etc). Keep .env.example tracked.
+.env
+!.env.example
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

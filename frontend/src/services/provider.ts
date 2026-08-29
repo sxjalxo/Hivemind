@@ -47,6 +47,14 @@ export interface DataProvider {
 
   queryLogs(query: LogQuery): Promise<Paginated<HoneypotEvent>>;
 
+  /**
+   * Resolve an EvidenceRef to its source event.
+   *
+   * This is what makes an AI conclusion expandable into the exact log line
+   * that produced it, rather than a quoted string with no provenance.
+   */
+  getEvent(eventId: string): Promise<HoneypotEvent>;
+
   analyzeSession(sessionId: string, signal?: AbortSignal): Promise<SessionAnalysis>;
   getAnalysis(id: string): Promise<SessionAnalysis>;
   getAnalysisHistory(): Promise<SessionAnalysis[]>;

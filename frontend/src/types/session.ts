@@ -45,7 +45,8 @@ export interface AttackerProfile {
   targetedHoneypots: string[];
   commands: string[];
   techniqueIds: string[];
-  downloadedFiles: { name: string; sha256: string; size: number }[];
+  /** null when Cowrie's raw size was stripped as noise by the ingest pipeline — never a fabricated 0. */
+  downloadedFiles: { name: string; sha256: string; size?: number | null }[];
   indicatorIds: string[];
   geo: { country?: string; asn?: string; org?: string } | null;
   /** Behavioral similarity to other known attackers, 0-1. */

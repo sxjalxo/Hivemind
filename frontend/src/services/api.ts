@@ -67,6 +67,7 @@ export const endpoints = {
   honeypots: "/api/honeypots",
   sessions: "/api/sessions",
   session: (id: string) => `/api/sessions/${id}`,
+  event: (id: string) => `/api/events/${encodeURIComponent(id)}`,
   logs: "/api/logs",
   analyze: (sessionId: string) => `/api/analyze/${sessionId}`,
   analysis: (id: string) => `/api/analysis/${id}`,

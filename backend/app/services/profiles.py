@@ -45,13 +45,13 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
             elif event.event.action == "cowrie.session.file_download" and event.file:
                 # Cowrie's raw `size` field is stripped as known-noise by the
                 # ingest pipeline (infra/elasticsearch/pipelines/cowrie-ecs.json)
-                # -- there is no real size to report here, so this is an
-                # honest 0 (never observed) rather than an invented value.
+                # -- there is no real size to report here, so it is left
+                # unset (never recorded) rather than presented as an
+                # observed 0.
                 downloaded_files.append(
                     DownloadedFile(
                         name=event.file.name or "unknown",
                         sha256=event.file.hash.sha256 if event.file.hash else "",
-                        size=0,
                     )
                 )
 
