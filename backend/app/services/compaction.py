@@ -1,6 +1,13 @@
 from app.config import get_settings
 from app.models.event import HoneypotEvent
 from app.serialization import CamelModel
+from app.services.chunking import (
+    MAX_ITEM_CHARS,
+    SESSION_TOKEN_BUDGET,
+    chunk_items,
+    estimate_tokens,
+    truncate_text,
+)
 
 UNTRUSTED_BEGIN = "----- BEGIN UNTRUSTED DATA -----"
 UNTRUSTED_END = "----- END UNTRUSTED DATA -----"
@@ -24,6 +31,7 @@ class CompactedSession(CamelModel):
     username: str | None
     commands: list[CompactedCommand]
     downloads: list[str]
+    first_event_id: str
 
 
 def _truncate_output(output: str | None) -> str | None:
@@ -99,6 +107,7 @@ def compact(events: list[HoneypotEvent]) -> CompactedSession:
         username=username,
         commands=commands,
         downloads=downloads,
+        first_event_id=first.id,
     )
 
 
@@ -126,3 +135,41 @@ def render_untrusted_block(compacted: CompactedSession) -> str:
             lines.append(f"    output: {command.output_excerpt}")
     lines.append(UNTRUSTED_END)
     return "\n".join(lines)
+
+
+def chunk_session(
+    compacted: CompactedSession, budget_tokens: int = SESSION_TOKEN_BUDGET
+) -> list[CompactedSession]:
+    """Split an oversized session into chunks that each fit the model's window.
+
+    Every chunk is a full `CompactedSession` -- same session metadata
+    (attacker_ip, login state, ...), a subset of `commands` -- so a stage
+    analyzing one chunk in isolation still has the context it needs to
+    reason about the commands it was given. A normal, well-under-budget
+    session always comes back as a single chunk equal to the input, so
+    this is a no-op for the common case.
+
+    A single command whose own rendering already exceeds the budget (a
+    pathologically long line, e.g. a base64 blob) is explicitly truncated
+    (see `app.services.chunking.truncate_text`) before chunking -- an
+    atomic command cannot be split across two LLM calls the way a list of
+    commands can be regrouped, so bounding its text is the only way to
+    keep it from silently overflowing on its own.
+    """
+
+    def render_group(commands: list[CompactedCommand]) -> str:
+        return render_untrusted_block(compacted.model_copy(update={"commands": commands}))
+
+    bounded: list[CompactedCommand] = []
+    for command in compacted.commands:
+        if estimate_tokens(render_group([command])) > budget_tokens:
+            bounded.append(
+                command.model_copy(
+                    update={"command": truncate_text(command.command, MAX_ITEM_CHARS)}
+                )
+            )
+        else:
+            bounded.append(command)
+
+    groups = chunk_items(bounded, render_group, budget_tokens)
+    return [compacted.model_copy(update={"commands": group}) for group in groups]

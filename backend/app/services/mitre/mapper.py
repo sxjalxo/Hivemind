@@ -3,6 +3,13 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from app.services.chunking import (
+    MAX_ITEM_CHARS,
+    SESSION_TOKEN_BUDGET,
+    chunk_items,
+    estimate_tokens,
+    truncate_text,
+)
 from app.services.compaction import CompactedCommand
 from app.services.llm.base import LLMClient, LLMValidationError
 from app.services.llm.schemas import EvidenceCitation, TechniqueProposals
@@ -80,6 +87,27 @@ def _from_rules(commands: list[CompactedCommand]) -> tuple[list[MappedTechnique]
     return list(by_technique.values()), unmatched
 
 
+def _bound_unmatched(unmatched: list[CompactedCommand], ruled_ids: set[str]) -> list[CompactedCommand]:
+    """Explicitly truncate any single unmatched command whose own gap-fill
+    rendering alone would exceed the session token budget.
+
+    Mirrors `app.services.compaction.chunk_session`'s per-item bound: an
+    atomic command cannot be split further, so an oversized one must be
+    visibly truncated rather than silently overflowing the model's context.
+    """
+    bounded: list[CompactedCommand] = []
+    for command in unmatched:
+        if estimate_tokens(_render_prompt([command], ruled_ids)) > SESSION_TOKEN_BUDGET:
+            bounded.append(
+                command.model_copy(
+                    update={"command": truncate_text(command.command, MAX_ITEM_CHARS)}
+                )
+            )
+        else:
+            bounded.append(command)
+    return bounded
+
+
 async def map_techniques(
     commands: list[CompactedCommand], client: LLMClient
 ) -> MappingResult:
@@ -87,67 +115,92 @@ async def map_techniques(
 
     Rule hits are OBSERVED with confidence 1.0. LLM proposals are AI INFERENCE
     and must survive catalog validation and evidence validation to be kept.
+
+    The gap-fill prompt lists every unmatched command; on a large session
+    that alone can exceed the model's context window. When it would, the
+    unmatched commands are chunked (see `app.services.chunking`) and each
+    chunk gets its own gap-fill call -- still one context per call, never a
+    prompt silently truncated by the model itself.
     """
     mapped, unmatched = _from_rules(commands)
     ruled_ids = {m.technique_id for m in mapped}
     if not unmatched:
         return MappingResult(techniques=mapped, rejected=0)
 
-    try:
-        proposals = await client.complete_json(
-            _render_prompt(unmatched, ruled_ids), TechniqueProposals
-        )
-    except LLMValidationError as exc:
-        logger.warning("MITRE gap-fill failed, keeping rule mappings only: %s", exc)
-        return MappingResult(techniques=mapped, rejected=0)
+    bounded = _bound_unmatched(unmatched, ruled_ids)
+    groups = chunk_items(
+        bounded, lambda group: _render_prompt(group, ruled_ids), SESSION_TOKEN_BUDGET
+    )
 
     catalog = load_catalog()
-    offered_ids = {c.event_id for c in unmatched}
     rejected = 0
 
-    for proposal in proposals.techniques:
-        entry = catalog.get(proposal.technique_id)
-        if entry is None:
-            logger.warning("rejected hallucinated technique %s", proposal.technique_id)
-            rejected += 1
+    for group in groups:
+        try:
+            proposals = await client.complete_json(
+                _render_prompt(group, ruled_ids), TechniqueProposals
+            )
+        except LLMValidationError as exc:
+            logger.warning("MITRE gap-fill failed for one chunk, skipping it: %s", exc)
             continue
 
-        grounded = [c for c in proposal.evidence if c.event_id in offered_ids]
-        if not grounded:
-            logger.warning(
-                "rejected %s: cited event ids were never offered", proposal.technique_id
-            )
-            rejected += 1
-            continue
+        offered_ids = {c.event_id for c in group}
 
-        if entry.id in ruled_ids:
-            # A rule already produced this technique, from other evidence in
-            # the same session, with observed=True at confidence 1.0. That is
-            # strictly stronger than a model inference and already correct --
-            # the LLM entry would add no information, only a second,
-            # contradictory-looking record for the same id. Drop it, but this
-            # is not a hallucination or a fabrication: the model named
-            # something real and grounded, it's just redundant. Do not count
-            # it in `rejected`, which is a model-quality signal reserved for
-            # actual hallucinations/fabrications.
-            logger.info(
-                "dropped duplicate LLM proposal for %s: already produced by a rule",
-                entry.id,
-            )
-            continue
+        for proposal in proposals.techniques:
+            entry = catalog.get(proposal.technique_id)
+            if entry is None:
+                logger.warning("rejected hallucinated technique %s", proposal.technique_id)
+                rejected += 1
+                continue
 
-        mapped.append(
-            MappedTechnique(
-                technique_id=entry.id,
-                technique_name=entry.name,
-                tactic=entry.tactic,
-                confidence=proposal.confidence,
-                ai_explanation=proposal.ai_explanation,
-                source="llm",
-                rule_id=None,
-                observed=False,
-                evidence=grounded,
+            grounded = [c for c in proposal.evidence if c.event_id in offered_ids]
+            if not grounded:
+                logger.warning(
+                    "rejected %s: cited event ids were never offered", proposal.technique_id
+                )
+                rejected += 1
+                continue
+
+            if entry.id in ruled_ids:
+                # A rule already produced this technique, from other evidence
+                # in the same session, with observed=True at confidence 1.0.
+                # That is strictly stronger than a model inference and
+                # already correct -- the LLM entry would add no information,
+                # only a second, contradictory-looking record for the same
+                # id. Drop it, but this is not a hallucination or a
+                # fabrication: the model named something real and grounded,
+                # it's just redundant. Do not count it in `rejected`, which
+                # is a model-quality signal reserved for actual
+                # hallucinations/fabrications.
+                logger.info(
+                    "dropped duplicate LLM proposal for %s: already produced by a rule",
+                    entry.id,
+                )
+                continue
+
+            # A technique already produced by an *earlier chunk's* LLM call
+            # in this same run is the same kind of harmless redundancy --
+            # chunking is an implementation detail, not a second, independent
+            # opportunity to re-report the same finding.
+            if any(m.technique_id == entry.id and m.source == "llm" for m in mapped):
+                logger.info(
+                    "dropped duplicate LLM proposal for %s: already produced by an earlier chunk",
+                    entry.id,
+                )
+                continue
+
+            mapped.append(
+                MappedTechnique(
+                    technique_id=entry.id,
+                    technique_name=entry.name,
+                    tactic=entry.tactic,
+                    confidence=proposal.confidence,
+                    ai_explanation=proposal.ai_explanation,
+                    source="llm",
+                    rule_id=None,
+                    observed=False,
+                    evidence=grounded,
+                )
             )
-        )
 
     return MappingResult(techniques=mapped, rejected=rejected)

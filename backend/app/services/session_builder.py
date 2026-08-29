@@ -78,7 +78,27 @@ async def get_session_events(session_id: str) -> list[HoneypotEvent]:
 
 async def get_session(session_id: str) -> AttackSession | None:
     events = await _fetch_session_events(session_id)
-    return _assemble(session_id, events) if events else None
+    if not events:
+        return None
+
+    session = _assemble(session_id, events)
+
+    # Local import: analyzer imports session_builder (get_session_events),
+    # so a module-level import here would be circular.
+    from app.services.analyzer import latest_for_session
+
+    analysis = await latest_for_session(session_id)
+    if analysis:
+        session.analysis_state = "completed"
+        session.risk = analysis.risk
+        session.risk_score = analysis.risk_score
+        session.mitre_technique_ids = [t.technique_id for t in analysis.techniques]
+        seen: list[str] = []
+        for technique in analysis.techniques:
+            if technique.tactic not in seen:
+                seen.append(technique.tactic)
+        session.classification_chain = seen
+    return session
 
 
 async def list_sessions(
