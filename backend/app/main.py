@@ -12,10 +12,12 @@ from app.routers import (
     analyze,
     attackers,
     dashboard,
+    events,
     honeypots,
     intel,
     logs,
     mitre,
+    reports,
     sessions,
     status,
 )
@@ -60,6 +62,8 @@ def create_app() -> FastAPI:
     api.include_router(intel.router, tags=["intel"])
     api.include_router(attackers.router, tags=["intel"])
     api.include_router(mitre.router, tags=["mitre"])
+    api.include_router(reports.router, tags=["reports"])
+    api.include_router(events.router, tags=["events"])
     app.include_router(api)
     return app
 
