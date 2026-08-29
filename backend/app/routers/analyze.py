@@ -22,6 +22,10 @@ async def analyze(session_id: str) -> SessionAnalysis:
 
 @router.websocket("/analyze/{session_id}/progress")
 async def progress(websocket: WebSocket, session_id: str) -> None:
+    # No history/replay -- see JobQueue.subscribe's docstring. A client that
+    # connects here after the session's analysis has already finished gets
+    # no frames and waits indefinitely; it should read the outcome back via
+    # GET /api/analysis/{id} (or the overlaid /api/sessions/{id}) instead.
     await websocket.accept()
     try:
         async for event in get_queue().subscribe(session_id):

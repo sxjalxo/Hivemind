@@ -52,28 +52,68 @@ async def write_back_enrichment(
     (see `infra/elasticsearch/index-template.json`); when a single command
     matches more than one rule, the first rule-backed technique to cite
     that event id (in `techniques` order, which is deterministic) wins.
+
+    This write-back is AUTHORITATIVE for the session it processes, not
+    additive: every event's `mitre.*` is cleared first (same script, same
+    pass, before the per-event re-stamp below), so a technique a previous
+    run mapped but this run doesn't -- a rulebook change, a re-analysis
+    that no longer matches, an event a new rule set no longer covers --
+    does not survive as a stale stamp indistinguishable from a current
+    one. `risk.*`/`ai_classification` never needed this treatment: they
+    are always fully overwritten with this run's session-wide verdict
+    already, every time.
+
+    Postgres is unconditionally the system of record; this whole function
+    is a best-effort projection onto Elasticsearch. A failure here is
+    logged (loudly, so an un-enriched session is visible rather than
+    silently indistinguishable from "not yet analyzed") but never raised
+    -- `run_analysis` must still return the analysis id, and the analysis
+    itself is already durably committed to Postgres by the time this runs.
     """
     settings = get_settings()
     es = get_es()
 
-    await es.update_by_query(
-        index=settings.es_index,
-        query={"term": {"session.id": session_id}},
-        script={
-            "source": (
-                "ctx._source.risk = ['score': params.score, 'level': params.level]; "
-                "ctx._source.ai_classification = params.classification;"
-            ),
-            "lang": "painless",
-            "params": {
-                "score": risk_score,
-                "level": risk,
-                "classification": classification,
+    try:
+        await es.update_by_query(
+            index=settings.es_index,
+            query={"term": {"session.id": session_id}},
+            script={
+                "source": (
+                    "ctx._source.risk = ['score': params.score, 'level': params.level]; "
+                    "ctx._source.ai_classification = params.classification; "
+                    "if (ctx._source.containsKey('mitre')) { ctx._source.remove('mitre'); }"
+                ),
+                "lang": "painless",
+                "params": {
+                    "score": risk_score,
+                    "level": risk,
+                    "classification": classification,
+                },
             },
-        },
-        conflicts="proceed",
-        refresh=True,
-    )
+            conflicts="proceed",
+            refresh=True,
+        )
+    except Exception as exc:  # noqa: BLE001 -- enrichment is a best-effort
+        # projection onto Elasticsearch; Postgres already holds the durable,
+        # authoritative analysis regardless of whether this write lands. A
+        # transient ES failure here must never surface as a bare 500 for an
+        # analysis that actually completed and is retrievable via
+        # GET /api/analysis/{id} -- but it must not be silent either, or a
+        # permanently un-enriched session becomes invisible (dashboard
+        # aggregations and the /api/logs risk/techniqueId filters would just
+        # keep showing it as unanalyzed, forever, with no signal why). This
+        # ERROR log line -- named by session id -- is how an operator finds
+        # out: it's what a log-based alert (or a human grepping application
+        # logs for "enrichment write-back failed") would catch. No exception
+        # propagates past this function.
+        logger.error(
+            "enrichment write-back failed for session %s -- risk/classification/mitre "
+            "were NOT projected to Elasticsearch this run (Postgres analysis is complete "
+            "and unaffected): %s",
+            session_id,
+            exc,
+        )
+        return
 
     event_to_technique: dict[str, tuple[str, str]] = {}
     for technique in techniques:

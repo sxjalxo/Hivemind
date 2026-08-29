@@ -169,9 +169,13 @@ async def run_analysis(session_id: str) -> uuid.UUID:
     )
 
     # Denormalized projection onto Elasticsearch, written only after the
-    # Postgres write (the system of record) has succeeded. See
+    # Postgres write (the system of record) has succeeded. Best-effort:
+    # write_back_enrichment catches and logs its own failures internally
+    # and never raises, so a transient ES error here can never turn an
+    # already-completed, already-persisted analysis into a bare 500 -- see
     # app.services.enrichment for why mitre.* is restricted to rule-backed
-    # mappings.
+    # mappings, and how it stays authoritative (not additive) across
+    # re-analysis.
     await write_back_enrichment(
         session_id=session_id,
         risk_score=analysis.risk_score,
@@ -376,14 +380,27 @@ def _refs_to_out(refs: list[EvidenceRef]) -> list[EvidenceRefOut]:
 
 
 async def _hydrate(db, analysis: Analysis) -> SessionAnalysis:
+    # Every query below carries an explicit ORDER BY. Without one, Postgres
+    # makes no ordering guarantee across repeated SELECTs of the same rows
+    # (physical storage order can shift with vacuum/autoanalyze even when
+    # nothing about the data itself changed) -- which showed up as
+    # `techniques` (and the `classificationChain`/`mitreTechniqueIds` Task
+    # 14 derives from it in `session_builder.get_session`) reordering
+    # between two back-to-back reads of the same analysis. `id` (a random
+    # uuid4) is not insertion order, but it IS a fixed, stable sort key --
+    # the same rows always come back in the same order. Tables that also
+    # carry a meaningful timestamp (`TechniqueMapping`, `EvidenceRef`) sort
+    # by that first, `id` only as the tiebreaker for same-instant rows.
     async def refs_for(parent_type: ParentType, parent_id) -> list[EvidenceRef]:  # noqa: ANN001
         return (
             (
                 await db.execute(
-                    select(EvidenceRef).where(
+                    select(EvidenceRef)
+                    .where(
                         EvidenceRef.parent_type == parent_type,
                         EvidenceRef.parent_id == parent_id,
                     )
+                    .order_by(EvidenceRef.timestamp, EvidenceRef.id)
                 )
             )
             .scalars()
@@ -391,22 +408,46 @@ async def _hydrate(db, analysis: Analysis) -> SessionAnalysis:
         )
 
     mappings = (
-        (await db.execute(select(TechniqueMapping).where(TechniqueMapping.analysis_id == analysis.id)))
+        (
+            await db.execute(
+                select(TechniqueMapping)
+                .where(TechniqueMapping.analysis_id == analysis.id)
+                .order_by(TechniqueMapping.timestamp, TechniqueMapping.id)
+            )
+        )
         .scalars()
         .all()
     )
     behaviors = (
-        (await db.execute(select(ObservedBehavior).where(ObservedBehavior.analysis_id == analysis.id)))
+        (
+            await db.execute(
+                select(ObservedBehavior)
+                .where(ObservedBehavior.analysis_id == analysis.id)
+                .order_by(ObservedBehavior.id)
+            )
+        )
         .scalars()
         .all()
     )
     suspicious = (
-        (await db.execute(select(SuspiciousIndicator).where(SuspiciousIndicator.analysis_id == analysis.id)))
+        (
+            await db.execute(
+                select(SuspiciousIndicator)
+                .where(SuspiciousIndicator.analysis_id == analysis.id)
+                .order_by(SuspiciousIndicator.id)
+            )
+        )
         .scalars()
         .all()
     )
     actions = (
-        (await db.execute(select(RecommendedAction).where(RecommendedAction.analysis_id == analysis.id)))
+        (
+            await db.execute(
+                select(RecommendedAction)
+                .where(RecommendedAction.analysis_id == analysis.id)
+                .order_by(RecommendedAction.id)
+            )
+        )
         .scalars()
         .all()
     )

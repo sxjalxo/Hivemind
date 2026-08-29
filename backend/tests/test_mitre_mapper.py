@@ -166,6 +166,96 @@ async def test_dropped_duplicate_does_not_increment_rejected() -> None:
     assert result.rejected == 0
 
 
+CHUNK_A = CompactedCommand(
+    event_id="e-chunk-a", timestamp="2026-08-20T10:00:40Z", command="ip route show default"
+)
+CHUNK_B = CompactedCommand(
+    event_id="e-chunk-b",
+    timestamp="2026-08-20T10:00:41Z",
+    command="systemctl list-units --type=service",
+)
+
+
+class SequencedClient:
+    """A stub whose response depends on call order, one per (forced) chunk."""
+
+    def __init__(self, responses: list[TechniqueProposals]) -> None:
+        self._responses = responses
+        self._calls = 0
+        self.prompts: list[str] = []
+
+    @property
+    def model_name(self) -> str:
+        return "stub"
+
+    async def complete_json(self, prompt: str, schema):  # noqa: ANN001
+        self.prompts.append(prompt)
+        response = self._responses[self._calls]
+        self._calls += 1
+        return response
+
+
+@pytest.mark.asyncio
+async def test_llm_proposals_for_the_same_technique_across_chunks_are_merged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Force exactly two chunks, one command each, regardless of the real
+    # token-budget math -- isolates the merge behaviour from chunk sizing.
+    monkeypatch.setattr(
+        "app.services.mitre.mapper.chunk_items",
+        lambda items, render, budget_tokens: [[CHUNK_A], [CHUNK_B]],
+    )
+    client = SequencedClient(
+        [_proposals("T1082", "e-chunk-a"), _proposals("T1082", "e-chunk-b")]
+    )
+
+    result = await map_techniques([CHUNK_A, CHUNK_B], client)
+
+    entries = [t for t in result.techniques if t.technique_id == "T1082"]
+    assert len(entries) == 1, "the two chunks' proposals must merge into ONE entry, not two"
+    entry = entries[0]
+    assert entry.source == "llm"
+    assert {c.event_id for c in entry.evidence} == {"e-chunk-a", "e-chunk-b"}
+    assert result.rejected == 0
+
+
+@pytest.mark.asyncio
+async def test_cross_chunk_llm_merge_deduplicates_by_event_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A defensive case: the second (forced) chunk re-proposes a citation for
+    # an event id the first chunk's proposal already grounded. The merge
+    # must not double it up in the final evidence list.
+    monkeypatch.setattr(
+        "app.services.mitre.mapper.chunk_items",
+        lambda items, render, budget_tokens: [[CHUNK_A, CHUNK_B], [CHUNK_B]],
+    )
+    first_call = TechniqueProposals(
+        techniques=[
+            TechniqueProposal(
+                technique_id="T1082",
+                tactic="Discovery",
+                confidence=0.7,
+                ai_explanation="Reads hardware identity.",
+                evidence=[
+                    EvidenceCitation(event_id="e-chunk-a", artifact="ip route"),
+                    EvidenceCitation(event_id="e-chunk-b", artifact="systemctl"),
+                ],
+            )
+        ]
+    )
+    second_call = _proposals("T1082", "e-chunk-b")  # re-cites e-chunk-b
+    client = SequencedClient([first_call, second_call])
+
+    result = await map_techniques([CHUNK_A, CHUNK_B], client)
+
+    entries = [t for t in result.techniques if t.technique_id == "T1082"]
+    assert len(entries) == 1
+    ids = [c.event_id for c in entries[0].evidence]
+    assert sorted(ids) == ["e-chunk-a", "e-chunk-b"]
+    assert len(ids) == len(set(ids)), "e-chunk-b must not be cited twice"
+
+
 @pytest.mark.asyncio
 async def test_non_duplicate_llm_proposal_still_accepted_alongside_a_dropped_duplicate() -> None:
     # Guard against over-dropping: a technique no rule produced (T1082) must

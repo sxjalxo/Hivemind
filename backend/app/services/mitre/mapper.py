@@ -179,14 +179,36 @@ async def map_techniques(
                 continue
 
             # A technique already produced by an *earlier chunk's* LLM call
-            # in this same run is the same kind of harmless redundancy --
-            # chunking is an implementation detail, not a second, independent
-            # opportunity to re-report the same finding.
-            if any(m.technique_id == entry.id and m.source == "llm" for m in mapped):
-                logger.info(
-                    "dropped duplicate LLM proposal for %s: already produced by an earlier chunk",
-                    entry.id,
-                )
+            # in this same run is chunking-as-implementation-detail, not a
+            # second, independent finding -- but unlike the rule-duplicate
+            # case above, the earlier chunk's citations are NOT stronger
+            # evidence than this chunk's: both are equally-provenanced model
+            # inference, just grounded in different (chunk-local) commands.
+            # Dropping this proposal outright would silently lose real,
+            # grounded evidence the barrier is supposed to preserve. Merge
+            # the new grounded citations into the existing LLM entry instead,
+            # deduplicated by event_id so an event already cited from a
+            # previous chunk is never cited twice.
+            existing_llm = next(
+                (m for m in mapped if m.technique_id == entry.id and m.source == "llm"),
+                None,
+            )
+            if existing_llm is not None:
+                seen_ids = {c.event_id for c in existing_llm.evidence}
+                new_citations = [c for c in grounded if c.event_id not in seen_ids]
+                if new_citations:
+                    existing_llm.evidence.extend(new_citations)
+                    logger.info(
+                        "merged %d citation(s) into %s from a later chunk's LLM proposal",
+                        len(new_citations),
+                        entry.id,
+                    )
+                else:
+                    logger.info(
+                        "dropped duplicate LLM proposal for %s: citations already "
+                        "present from an earlier chunk",
+                        entry.id,
+                    )
                 continue
 
             mapped.append(
