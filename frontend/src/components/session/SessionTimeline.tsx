@@ -1,10 +1,13 @@
 import {
+  CircleHelp,
   Download,
   FileCog,
   KeyRound,
   LogOut,
+  Network,
   Play,
   Plug,
+  Share2,
   TerminalSquare,
   type LucideIcon,
 } from "lucide-react";
@@ -21,6 +24,9 @@ const KIND_ICON: Record<SessionTimelineEvent["kind"], LucideIcon> = {
   download: Download,
   file: FileCog,
   execution: Play,
+  tunnel: Share2,
+  protocol: Network,
+  other: CircleHelp,
   disconnect: LogOut,
 };
 

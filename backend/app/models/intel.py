@@ -41,4 +41,14 @@ class AttackerProfileOut(CamelModel):
     indicator_ids: list[str]
     geo: dict | None
     similarity: list[SimilarAttacker]
+    # How many neighbours scored above zero in total. `similarity` itself is
+    # cut to the top few for display, so without this a consumer cannot tell a
+    # complete list of 5 from the first 5 of 30.
+    similarity_total: int = 0
+    # False when the command sets behind `similarity` were truncated by an
+    # aggregation cap. `similarity` is then empty: a score computed from a
+    # subset of an attacker's commands is wrong, and presenting it as exact is
+    # the failure mode this project exists to avoid.
+    similarity_complete: bool = True
+    similarity_incomplete_reason: str | None = None
     attack_pattern: list[str]

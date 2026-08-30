@@ -249,7 +249,7 @@ function SessionRow({ session }: { session: AttackSession }) {
       </td>
       <td className="whitespace-nowrap px-3 py-2">
         <Mono tone="muted" className="text-xs">
-          {session.sourcePort} &rarr; {session.destinationPort}
+          {session.sourcePort ?? "unknown"} &rarr; {session.destinationPort ?? "unknown"}
         </Mono>
       </td>
       <td className="whitespace-nowrap px-3 py-2 text-xs text-foreground/85">

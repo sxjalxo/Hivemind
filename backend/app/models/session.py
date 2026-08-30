@@ -4,8 +4,11 @@ from app.serialization import CamelModel
 class AttackSession(CamelModel):
     id: str
     attacker_ip: str
-    source_port: int
-    destination_port: int
+    # Omitted, never 0, when the source never recorded a port: "not
+    # recorded" and "recorded as zero" are different claims. Same precedent as
+    # DownloadedFile.size and destination.ip.
+    source_port: int | None = None
+    destination_port: int | None = None
     honeypot_id: str
     honeypot_name: str
     protocol: str

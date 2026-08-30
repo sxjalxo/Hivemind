@@ -29,10 +29,13 @@ export interface TechniqueMapping {
   techniqueId: string;
   techniqueName: string;
   tactic: string;
+  /** True only for rule-backed mappings, mirroring MitreTechnique.observed. */
+  observed: boolean;
   confidence: number;
   evidence: EvidenceRef[];
   relatedCommands: string[];
-  aiExplanation: string;
+  /** Present only on LLM gap-fill proposals; the backend sends null for rule hits. */
+  aiExplanation: string | null;
   timestamp: string;
 }
 

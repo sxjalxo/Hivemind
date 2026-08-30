@@ -374,8 +374,12 @@ function eventFor(session: AttackSession, index: number, tl: SessionTimelineEven
   return {
     id: `${session.id}-ev-${index}`,
     timestamp: tl.timestamp,
-    source: { ip: session.attackerIp, port: session.sourcePort, country: session.country },
-    destination: { ip: "10.20.4.11", port: session.destinationPort },
+    source: {
+      ip: session.attackerIp,
+      port: session.sourcePort ?? undefined,
+      country: session.country,
+    },
+    destination: { ip: "10.20.4.11", port: session.destinationPort ?? undefined },
     event: {
       action: isCommand ? "command.execute" : tl.kind,
       category: isCommand ? "process" : tl.kind === "auth" ? "authentication" : "network",
@@ -437,10 +441,14 @@ export const allEvents: HoneypotEvent[] = (() => {
       extra.push({
         id: `${session.id}-x-${ci}`,
         timestamp: new Date(startedMs + stepMs * (ci + 1)).toISOString(),
-        source: { ip: session.attackerIp, port: session.sourcePort + ci, country: session.country },
+        source: {
+          ip: session.attackerIp,
+          port: session.sourcePort === null ? undefined : session.sourcePort + ci,
+          country: session.country,
+        },
         destination: {
           ip: honeypots.find((h) => h.id === session.honeypotId)!.ip,
-          port: session.destinationPort,
+          port: session.destinationPort ?? undefined,
         },
         event: { action: "command.execute", category: "process", outcome: "success" },
         network: { protocol: session.protocol.toLowerCase() },
@@ -486,7 +494,7 @@ const derivedTimelines: Record<string, SessionTimelineEvent[]> = Object.fromEntr
           timestamp: events[0]?.timestamp ?? session.startedAt,
           kind: "connection",
           label: `${session.protocol} connection established`,
-          detail: `${session.attackerIp}:${session.sourcePort} -> :${session.destinationPort}`,
+          detail: `${session.attackerIp}:${session.sourcePort ?? "?"} -> :${session.destinationPort ?? "?"}`,
           severity: "informational",
         },
         ...events.map((event, index) => ({
@@ -693,6 +701,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
   techniques: [
     {
       techniqueId: "T1110",
+      observed: false,
       techniqueName: "Brute Force",
       tactic: "Credential Access",
       confidence: 0.88,
@@ -711,6 +720,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
     },
     {
       techniqueId: "T1087",
+      observed: false,
       techniqueName: "Account Discovery",
       tactic: "Discovery",
       confidence: 0.93,
@@ -734,6 +744,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
     },
     {
       techniqueId: "T1082",
+      observed: true,
       techniqueName: "System Information Discovery",
       tactic: "Discovery",
       confidence: 0.96,
@@ -758,6 +769,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
     },
     {
       techniqueId: "T1105",
+      observed: true,
       techniqueName: "Ingress Tool Transfer",
       tactic: "Command and Control",
       confidence: 0.97,
@@ -776,6 +788,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
     },
     {
       techniqueId: "T1222",
+      observed: false,
       techniqueName: "File and Directory Permissions Modification",
       tactic: "Defense Evasion",
       confidence: 0.81,
@@ -793,6 +806,7 @@ export const analysisFor8F42A1: SessionAnalysis = {
     },
     {
       techniqueId: "T1059",
+      observed: false,
       techniqueName: "Command and Scripting Interpreter",
       tactic: "Execution",
       confidence: 0.95,
@@ -1063,6 +1077,9 @@ export const attackerProfiles: Record<string, AttackerProfile> = {
       { ip: "91.240.118.222", score: 0.82 },
       { ip: "45.155.205.233", score: 0.64 },
     ],
+    similarityTotal: 2,
+    similarityComplete: true,
+    similarityIncompleteReason: null,
     attackPattern: [
       "SSH Brute Force",
       "System Discovery",

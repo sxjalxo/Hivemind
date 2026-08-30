@@ -163,8 +163,18 @@ async def test_rule_backed_techniques_are_marked_observed() -> None:
 
         assert analysis is not None
         ingress = next(t for t in analysis.techniques if t.technique_id == "T1105")
+        assert ingress.observed is True
         assert ingress.confidence == 1.0
         assert ingress.ai_explanation is None
+
+        # An LLM gap-fill proposal must never reach the session view marked as
+        # observed. GET /api/mitre already draws this line via
+        # MitreTechniqueOut.observed; the analysis payload the session page
+        # actually renders has to draw exactly the same one, or the two panels
+        # on that page disagree about which techniques the telemetry proves.
+        for technique in analysis.techniques:
+            if technique.ai_explanation is not None:
+                assert technique.observed is False, technique.technique_id
     finally:
         await _delete_analysis_and_children(analysis_id)
         await _delete_indicators_for_session("seed-botnet-01")

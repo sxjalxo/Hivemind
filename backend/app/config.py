@@ -23,6 +23,16 @@ class Settings(BaseSettings):
 
     cors_origins: list[str] = ["http://localhost:8080"]
 
+    # Caps on the attacker-similarity aggregation. A terms aggregation returns
+    # at most `size` buckets and reports nothing about what it dropped, so
+    # these are paired with an explicit completeness check: a profile whose
+    # command set was truncated withholds its similarity scores rather than
+    # computing them from the surviving subset. Raise them (env:
+    # ATTACKER_COMMAND_CARDINALITY_LIMIT / ATTACKER_IP_CARDINALITY_LIMIT)
+    # rather than accepting a truncated score.
+    attacker_command_cardinality_limit: int = 2000
+    attacker_ip_cardinality_limit: int = 500
+
 
 @lru_cache
 def get_settings() -> Settings:

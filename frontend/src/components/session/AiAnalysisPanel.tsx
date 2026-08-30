@@ -278,6 +278,7 @@ function AnalysisResult({
                 key={technique.techniqueId}
                 techniqueId={technique.techniqueId}
                 name={technique.techniqueName}
+                observed={technique.observed}
                 {...(onTechniqueSelect
                   ? { onClick: () => onTechniqueSelect(technique.techniqueId) }
                   : {})}
@@ -285,7 +286,9 @@ function AnalysisResult({
             ))}
           </div>
           <p className="mt-2 text-[11px] text-muted-foreground">
-            Each mapping carries its own confidence and evidence in the ATT&amp;CK panel below.
+            Highlighted techniques are rule-backed and appear with their evidence in the ATT&amp;CK
+            panel below. Muted ones are LLM proposals: they are listed here only, and no ATT&amp;CK
+            identifier is written back to the event index for them.
           </p>
         </SubSection>
       ) : null}

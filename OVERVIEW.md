@@ -156,7 +156,7 @@ its accumulation across sessions is derived, so an indicator seen in more than o
 session becomes `CORRELATED`. Extraction is deterministic regex and direct field reads —
 no model involvement — covering IPs, URLs, file hashes, filenames, usernames and commands.
 
-**Attacker profiles** with Jaccard similarity over command sets. Deterministic and
+**Attacker profiles** with Jaccard similarity over normalised command sets. Deterministic and
 explainable rather than embedding-based: a reviewer can verify why two attackers were
 called similar.
 
@@ -217,8 +217,11 @@ imagined — rather than by the test suite.
   multiple uvicorn workers would require Redis pub/sub.
 - **The pinned corpus sits in the past**, so short dashboard ranges show nothing until live
   traffic arrives. This is a property of a fixed fixture set, not a fault.
-- **Similarity compares raw command strings**, without normalisation, so two near-identical
-  attacks differing only in an embedded IP score as dissimilar.
+- **Similarity normalises only the literals that vary between runs of one campaign** — IPv4
+  addresses and file hashes become placeholders, so two runs of a dropper pointed at different
+  C2 hosts match. Arguments are deliberately not stripped further: `cat /etc/passwd` and
+  `cat /tmp/notes` map to different techniques, and `chmod 777` is not `chmod 644`. Attacks that
+  differ by some other volatile literal still score lower than they should.
 - **Attacker profile queries are O(sessions) per request** — fine at this corpus size,
   needing an aggregation if live traffic grows into the thousands.
 - **Prompt-injection fencing is a mitigation, not a guarantee.** Honeypot commands are

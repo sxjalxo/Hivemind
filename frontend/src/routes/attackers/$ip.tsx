@@ -162,6 +162,8 @@ function AttackerProfilePage() {
         >
           <SimilarityList
             entries={data.similarity}
+            complete={data.similarityComplete}
+            reason={data.similarityIncompleteReason}
             onSelect={(other) => void navigate({ to: "/attackers/$ip", params: { ip: other } })}
           />
         </Panel>

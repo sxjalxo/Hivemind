@@ -141,7 +141,7 @@ function SessionInvestigationPage() {
             </Fact>
             <Fact label="Ports">
               <Mono className="text-[13px]">
-                {data.sourcePort} &rarr; {data.destinationPort}
+                {data.sourcePort ?? "unknown"} &rarr; {data.destinationPort ?? "unknown"}
               </Mono>
             </Fact>
             <Fact label="Started">

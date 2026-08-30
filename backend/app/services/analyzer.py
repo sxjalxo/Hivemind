@@ -467,6 +467,7 @@ async def _hydrate(db, analysis: Analysis) -> SessionAnalysis:
                 technique_id=mapping.technique_id,
                 technique_name=mapping.technique_name,
                 tactic=mapping.tactic,
+                observed=mapping.source == "rule",
                 confidence=mapping.confidence,
                 evidence=_refs_to_out(refs),
                 related_commands=[r.artifact for r in refs],

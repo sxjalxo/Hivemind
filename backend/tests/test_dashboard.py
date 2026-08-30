@@ -2,6 +2,8 @@ from datetime import datetime
 
 import pytest
 
+from app.config import get_settings
+from app.es.client import get_es
 from app.seed.seeder import seed
 from app.services.dashboard import _trend, build_dashboard, list_honeypots, range_to_bounds
 
@@ -110,14 +112,50 @@ async def test_top_attackers_lists_seeded_source_ips() -> None:
 
 
 @pytest.mark.asyncio
-async def test_trend_is_flat_when_previous_window_is_empty() -> None:
+async def test_total_events_kpi_trend_agrees_with_the_windows_it_summarises() -> None:
+    # This asserted the trend was "flat" whenever the CURRENT window held no
+    # events, though its name spoke about the previous one. Those are not the
+    # same thing: no events now against events an hour ago is a real decrease,
+    # so the assertion started failing the moment live traffic existed -- while
+    # the dashboard was right.
+    #
+    # _trend's zero-baseline behaviour is already covered directly by
+    # test_trend_flat_on_zero_baseline. What is worth checking at this level is
+    # that the dashboard hands _trend the two counts it claims to compare.
     await seed(reset=True)
     data = await build_dashboard("1h")
 
+    start, end = range_to_bounds("1h")
+    start_at, end_at = _parse(start), _parse(end)
+    previous_start = start_at - (end_at - start_at)
+
+    es = get_es()
+    index = get_settings().es_index
+
+    async def _window(begin, finish) -> int:
+        return (
+            await es.count(
+                index=index,
+                query={
+                    "range": {"@timestamp": {"gte": begin.isoformat(), "lt": finish.isoformat()}}
+                },
+            )
+        )["count"]
+
+    # Only the PREVIOUS window is recounted here. It is entirely in the past,
+    # so no ingest can change it between the dashboard's call and this one.
+    # Recounting the CURRENT window would race live Cowrie traffic: the
+    # dashboard fixed its bounds moments earlier, and an event arriving in
+    # between would fail an equality assertion on a correct dashboard. The
+    # dashboard's own reported value is used as the current count instead,
+    # which still proves it fed _trend the right previous window.
+    previous = await _window(previous_start, start_at)
+
     events_kpi = next(k for k in data.kpis if k.id == "total_events")
-    if events_kpi.value == 0:
-        assert events_kpi.trend_direction == "flat"
-        assert events_kpi.trend_pct == 0
+    expected_pct, expected_direction = _trend(events_kpi.value, previous)
+
+    assert events_kpi.trend_direction == expected_direction
+    assert events_kpi.trend_pct == expected_pct
 
 
 @pytest.mark.asyncio
@@ -164,16 +202,36 @@ async def test_timeline_spans_the_full_requested_window_not_just_observed_data()
 
 
 @pytest.mark.asyncio
-async def test_empty_enrichment_fields_are_honestly_empty_not_fabricated() -> None:
-    # No document in the index has risk.level, ai_classification, or
-    # mitre.technique_id populated yet (that's Task 14's job). The
-    # dashboard must reflect that honestly: zeros and empty lists, not
-    # invented values.
+async def test_dashboard_enrichment_fields_are_never_fabricated() -> None:
+    # This test used to assert these fields were *empty*, on the premise that
+    # no document in the index carried risk.level, ai_classification or
+    # mitre.technique_id. That premise only held while the index contained
+    # nothing but unanalysed seed data. Write-back enrichment stamps those
+    # fields onto real events, so the moment any live session is analysed --
+    # ordinary use of the product -- the assertion failed while the dashboard
+    # was behaving correctly.
+    #
+    # What the test is actually for is that the dashboard never reports a
+    # value the index cannot back. Checking that against Elasticsearch ground
+    # truth covers the empty index and the populated one, and still fails if a
+    # number is invented.
     await seed(reset=True)
     data = await build_dashboard("30d")
 
-    assert data.classifications == []
-    assert all(bucket.value == 0 for bucket in data.risk_distribution)
+    es = get_es()
+    index = get_settings().es_index
+
+    async def _count(query: dict) -> int:
+        return (await es.count(index=index, query=query))["count"]
+
+    # Every classification named must be one some document actually carries.
+    for bucket in data.classifications:
+        assert bucket.value > 0, bucket.name
+        assert await _count({"term": {"ai_classification": bucket.name}}) > 0, bucket.name
+
+    # All five levels are always present so the chart has a stable domain even
+    # when nothing has been assessed, and no level may claim events that do
+    # not exist.
     assert {bucket.level for bucket in data.risk_distribution} == {
         "critical",
         "high",
@@ -181,9 +239,38 @@ async def test_empty_enrichment_fields_are_honestly_empty_not_fabricated() -> No
         "low",
         "informational",
     }
-    assert all(command.technique_id is None for command in data.top_commands)
+    for bucket in data.risk_distribution:
+        if bucket.value:
+            backing = await _count({"term": {"risk.level": bucket.level}})
+            assert backing >= bucket.value, (bucket.level, bucket.value, backing)
+
+    # A top command may only carry a technique id its own documents carry.
+    for command in data.top_commands:
+        if command.technique_id is not None:
+            assert (
+                await _count(
+                    {
+                        "bool": {
+                            "filter": [
+                                {"term": {"process.command_line.keyword": command.command}},
+                                {"term": {"mitre.technique_id": command.technique_id}},
+                            ]
+                        }
+                    }
+                )
+                > 0
+            ), command.command
 
     high_risk_kpi = next(k for k in data.kpis if k.id == "high_risk")
     techniques_kpi = next(k for k in data.kpis if k.id == "techniques")
-    assert high_risk_kpi.value == 0
-    assert techniques_kpi.value == 0
+
+    # The KPI must agree with the distribution it is drawn from...
+    assert high_risk_kpi.value == sum(
+        bucket.value for bucket in data.risk_distribution if bucket.level in {"critical", "high"}
+    )
+    # ...and no technique may be counted unless a document is mapped to one.
+    mapped = await _count({"exists": {"field": "mitre.technique_id"}})
+    if mapped == 0:
+        assert techniques_kpi.value == 0
+    else:
+        assert 0 < techniques_kpi.value <= mapped

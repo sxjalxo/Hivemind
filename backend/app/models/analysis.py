@@ -32,6 +32,17 @@ class TechniqueMappingOut(CamelModel):
     technique_id: str
     technique_name: str
     tactic: str
+    # True only when a deterministic rule produced this mapping, matching
+    # MitreTechniqueOut.observed. Without it the session view cannot tell an
+    # LLM proposal apart from telemetry, which is the one distinction this
+    # system exists to preserve.
+    #
+    # It carries a default because reports are stored as immutable JSONB
+    # snapshots and re-validated on read: snapshots written before this field
+    # existed have no value for it. False is the safe direction -- it
+    # understates provenance on those legacy rows rather than presenting an
+    # inference as recorded fact.
+    observed: bool = False
     confidence: float
     evidence: list[EvidenceRefOut]
     related_commands: list[str]

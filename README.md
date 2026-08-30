@@ -177,11 +177,3 @@ Attacker-controlled text is treated as untrusted throughout: it is never interpo
 into a shell, and inside LLM prompts it is fenced and labelled as data. Captured
 malware is referenced by hash only and never executed. Elasticsearch, Postgres and
 model credentials stay server-side — the browser knows one API base URL.
-
----
-
-## Further reading
-
-- [`docs/superpowers/specs/`](docs/superpowers/specs/) — architecture and design decisions
-- [`docs/reports/`](docs/reports/) — a per-task engineering report for each of the 17 build stages
-- [`OVERVIEW.md`](OVERVIEW.md) — problem statement, approach, and what the system offers

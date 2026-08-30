@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -13,7 +14,7 @@ from app.services.chunking import (
 from app.services.compaction import CompactedCommand
 from app.services.llm.base import LLMClient, LLMValidationError
 from app.services.llm.schemas import EvidenceCitation, TechniqueProposals
-from app.services.mitre.catalog import load_catalog
+from app.services.mitre.catalog import CatalogEntry, load_catalog
 from app.services.mitre.rules import apply_rules
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,80 @@ class MappedTechnique(BaseModel):
 class MappingResult(BaseModel):
     techniques: list[MappedTechnique]
     rejected: int
+
+
+@dataclass
+class _LlmProposal:
+    """One chunk's proposal for one technique, its citations already deduped."""
+
+    confidence: float
+    ai_explanation: str | None
+    citations: list[EvidenceCitation]
+
+
+def _merge_llm_proposals(
+    entry: CatalogEntry, proposals: list[_LlmProposal]
+) -> MappedTechnique | None:
+    """Combine every chunk's proposal for one technique into a single entry.
+
+    Chunking exists only because the context window is finite, so it must not
+    be visible in the result: analysing a session as one chunk or as five has
+    to yield the same confidence and the same explanation. This previously
+    kept whichever chunk was processed FIRST and threw the rest away, which
+    made the output a function of chunk ordering.
+
+    Confidence is the evidence-weighted mean,
+    `sum(confidence_i * weight_i) / sum(weight_i)`, where the weight is the
+    number of distinct events the proposal grounded. Three chunks reporting
+    0.55, 0.60 and 0.65 should not silently become 0.65 (`max` ignores two of
+    them), and a proposal resting on one command should not count as heavily
+    as one resting on six (a plain mean ignores that). Both the sum and the
+    union below are commutative, so the result does not depend on order.
+
+    Citations are deduped within a proposal before it gets here, so a model
+    repeating the same event id cannot inflate that proposal's weight.
+    """
+    # A proposal with no citations has nothing to weight and nothing to sort
+    # by; `min()` over an empty sequence would raise. The caller already drops
+    # ungrounded proposals, but keeping the invariant local means a second
+    # caller cannot turn it into a mid-analysis crash. An entry with no
+    # evidence at all is not a claim this system may store, so None means
+    # "nothing to record".
+    proposals = [p for p in proposals if p.citations]
+    if not proposals:
+        return None
+
+    # Ordered by earliest cited event so the explanation reads in session
+    # order, and so the ordering itself is a property of the evidence rather
+    # than of the order chunks happened to be processed in.
+    ordered = sorted(proposals, key=lambda p: min(c.event_id for c in p.citations))
+
+    evidence: dict[str, EvidenceCitation] = {}
+    for proposal in ordered:
+        for citation in proposal.citations:
+            evidence.setdefault(citation.event_id, citation)
+
+    weight_total = sum(len(p.citations) for p in proposals)
+    weighted = sum(p.confidence * len(p.citations) for p in proposals)
+    confidence = round(weighted / weight_total, 3) if weight_total else 0.0
+
+    explanations: list[str] = []
+    for proposal in ordered:
+        explanation = (proposal.ai_explanation or "").strip()
+        if explanation and explanation not in explanations:
+            explanations.append(explanation)
+
+    return MappedTechnique(
+        technique_id=entry.id,
+        technique_name=entry.name,
+        tactic=entry.tactic,
+        confidence=confidence,
+        ai_explanation=" ".join(explanations) or None,
+        source="llm",
+        rule_id=None,
+        observed=False,
+        evidence=list(evidence.values()),
+    )
 
 
 def _render_prompt(commands: list[CompactedCommand], ruled_ids: set[str]) -> str:
@@ -134,6 +209,10 @@ async def map_techniques(
 
     catalog = load_catalog()
     rejected = 0
+    # Every chunk's proposals are collected first and merged once at the end.
+    # Merging incrementally is what made the result order-dependent.
+    llm_proposals: dict[str, list[_LlmProposal]] = {}
+    llm_entries: dict[str, CatalogEntry] = {}
 
     for group in groups:
         try:
@@ -178,51 +257,45 @@ async def map_techniques(
                 )
                 continue
 
-            # A technique already produced by an *earlier chunk's* LLM call
-            # in this same run is chunking-as-implementation-detail, not a
-            # second, independent finding -- but unlike the rule-duplicate
-            # case above, the earlier chunk's citations are NOT stronger
-            # evidence than this chunk's: both are equally-provenanced model
-            # inference, just grounded in different (chunk-local) commands.
-            # Dropping this proposal outright would silently lose real,
-            # grounded evidence the barrier is supposed to preserve. Merge
-            # the new grounded citations into the existing LLM entry instead,
-            # deduplicated by event_id so an event already cited from a
-            # previous chunk is never cited twice.
-            existing_llm = next(
-                (m for m in mapped if m.technique_id == entry.id and m.source == "llm"),
-                None,
-            )
-            if existing_llm is not None:
-                seen_ids = {c.event_id for c in existing_llm.evidence}
-                new_citations = [c for c in grounded if c.event_id not in seen_ids]
-                if new_citations:
-                    existing_llm.evidence.extend(new_citations)
-                    logger.info(
-                        "merged %d citation(s) into %s from a later chunk's LLM proposal",
-                        len(new_citations),
-                        entry.id,
-                    )
-                else:
-                    logger.info(
-                        "dropped duplicate LLM proposal for %s: citations already "
-                        "present from an earlier chunk",
-                        entry.id,
-                    )
-                continue
+            # A technique proposed by more than one chunk is
+            # chunking-as-implementation-detail, not several independent
+            # findings -- but unlike the rule-duplicate case above, no chunk's
+            # citations are stronger evidence than another's: all are
+            # equally-provenanced model inference, grounded in different
+            # (chunk-local) commands. Collect them all and reconcile once,
+            # below, so no chunk's assessment is discarded for arriving late.
+            #
+            # Deduplicate within this proposal first: a model that cites the
+            # same event twice has offered one piece of evidence, and must not
+            # earn double weight for it.
+            seen_ids: set[str] = set()
+            citations: list[EvidenceCitation] = []
+            for citation in grounded:
+                if citation.event_id not in seen_ids:
+                    seen_ids.add(citation.event_id)
+                    citations.append(citation)
 
-            mapped.append(
-                MappedTechnique(
-                    technique_id=entry.id,
-                    technique_name=entry.name,
-                    tactic=entry.tactic,
+            llm_entries[entry.id] = entry
+            llm_proposals.setdefault(entry.id, []).append(
+                _LlmProposal(
                     confidence=proposal.confidence,
                     ai_explanation=proposal.ai_explanation,
-                    source="llm",
-                    rule_id=None,
-                    observed=False,
-                    evidence=grounded,
+                    citations=citations,
                 )
             )
+
+    # Sorted so the technique order in the result is stable too, not an
+    # artefact of which chunk mentioned what first.
+    for technique_id in sorted(llm_proposals):
+        proposals_for_technique = llm_proposals[technique_id]
+        if len(proposals_for_technique) > 1:
+            logger.info(
+                "merged %d chunk proposals for %s into one evidence-weighted entry",
+                len(proposals_for_technique),
+                technique_id,
+            )
+        merged = _merge_llm_proposals(llm_entries[technique_id], proposals_for_technique)
+        if merged is not None:
+            mapped.append(merged)
 
     return MappingResult(techniques=mapped, rejected=rejected)

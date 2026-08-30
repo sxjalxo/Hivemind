@@ -56,13 +56,41 @@ export function AttackPatternGraph({
 }
 
 /** Behavioural similarity to other known attackers, 0-1 scored. */
+const SIMILARITY_UNAVAILABLE: Record<string, string> = {
+  command_cardinality_limit:
+    "This attacker recorded more distinct commands than the similarity analysis compares in one pass, so any score would be computed from part of the evidence.",
+  attacker_cardinality_limit:
+    "More attackers were recorded than the similarity analysis compares in one pass, so a closer neighbour may not have been considered.",
+};
+
 export function SimilarityList({
   entries,
+  complete,
+  reason,
   onSelect,
 }: {
   entries: { ip: string; score: number }[];
+  // Required, not defaulted: defaulting to `true` would let a call site that
+  // forgets them render an unavailable comparison as "no neighbours found",
+  // which is the false statement this component exists to prevent.
+  complete: boolean;
+  reason: string | null;
   onSelect?: (ip: string) => void;
 }) {
+  // An empty list and an unavailable comparison are different findings, and
+  // the second one must never be rendered as the first.
+  if (!complete) {
+    return (
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium text-foreground">Similarity unavailable</p>
+        <p className="text-xs text-muted-foreground">
+          {(reason && SIMILARITY_UNAVAILABLE[reason]) ??
+            "The comparison could not be completed over the full command set."}
+        </p>
+      </div>
+    );
+  }
+
   if (entries.length === 0) {
     return <p className="text-xs text-muted-foreground">No behavioural neighbours found.</p>;
   }

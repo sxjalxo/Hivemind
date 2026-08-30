@@ -29,7 +29,7 @@ export interface MitreTechnique {
   confidence?: number | undefined;
   evidence: EvidenceRef[];
   relatedCommands: string[];
-  aiExplanation?: string | undefined;
+  aiExplanation?: string | null | undefined;
   lastSeen?: string | undefined;
 }
 

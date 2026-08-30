@@ -14,10 +14,41 @@ _KIND_BY_ACTION = {
     "cowrie.login.success": "auth",
     "cowrie.login.failed": "auth",
     "cowrie.command.input": "command",
-    "cowrie.command.failed": "command",
+    # A command Cowrie could not resolve. It is an execution attempt, not a
+    # second thing the attacker typed: Cowrie emits it alongside the
+    # `cowrie.command.input` for the same keystrokes, so counting it as a
+    # command would show more commands in the timeline than the session
+    # header reports.
+    "cowrie.command.failed": "execution",
     "cowrie.session.file_download": "download",
     "cowrie.session.file_upload": "file",
+    # SSH transport and session metadata that Cowrie records for every real
+    # connection. None of it is attacker input.
+    "cowrie.client.version": "protocol",
+    "cowrie.client.kex": "protocol",
+    "cowrie.client.size": "protocol",
+    "cowrie.client.var": "protocol",
+    "cowrie.client.fingerprint": "protocol",
+    "cowrie.session.params": "protocol",
+    "cowrie.log.closed": "protocol",
+    # Port forwarding is the attacker asking the honeypot to relay traffic on
+    # their behalf (ATT&CK T1090). It is an action they took, not transport
+    # metadata the daemon recorded, and burying it next to the key exchange
+    # would hide the honeypot being used as a proxy.
+    "cowrie.direct-tcpip.request": "tunnel",
+    "cowrie.direct-tcpip.data": "tunnel",
 }
+
+# Anything this module does not recognise is reported as "other" rather than
+# guessed at. The previous default was "command", which meant every eventid
+# absent from the map above was rendered to the analyst as a command the
+# attacker typed. The seed corpus contains only mapped eventids, so the
+# fallback was never exercised until live Cowrie traffic arrived carrying the
+# protocol events above -- four fabricated command rows per session.
+_UNKNOWN_KIND = "other"
+
+# Kinds whose label is the command line the attacker submitted.
+_COMMAND_LINE_KINDS = {"command", "execution"}
 
 
 def _parse(ts: str) -> datetime:
@@ -51,9 +82,9 @@ def _assemble(session_id: str, events: list[HoneypotEvent]) -> AttackSession:
     return AttackSession(
         id=session_id,
         attacker_ip=first.source.ip,
-        source_port=first.source.port or 0,
+        source_port=first.source.port,
         destination_port=next(
-            (e.destination.port for e in events if e.destination.port), 0
+            (e.destination.port for e in events if e.destination.port), None
         ),
         honeypot_id=first.honeypot.id,
         honeypot_name=first.honeypot.name,
@@ -159,9 +190,9 @@ async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:
 
     for event in events:
         action = event.event.action
-        kind = _KIND_BY_ACTION.get(action, "command")
+        kind = _KIND_BY_ACTION.get(action, _UNKNOWN_KIND)
 
-        if kind == "command" and event.process and event.process.command_line:
+        if kind in _COMMAND_LINE_KINDS and event.process and event.process.command_line:
             label = event.process.command_line
         elif kind == "auth":
             outcome = "succeeded" if action.endswith("success") else "failed"
@@ -179,7 +210,10 @@ async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:
                 timestamp=event.timestamp,
                 kind=kind,
                 label=label,
-                detail=None if kind == "command" else action,
+                # The eventid adds nothing next to a command line, and
+                # repeating it under a label that already IS the eventid
+                # renders the same string twice.
+                detail=None if kind == "command" or label == action else action,
                 severity=event.risk.level,
                 technique_id=event.mitre.technique_id if event.mitre else None,
             )
