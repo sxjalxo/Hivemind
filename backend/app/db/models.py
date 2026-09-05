@@ -145,3 +145,142 @@ class AttackerProfile(SQLModel, table=True):
     last_seen: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
     geo: dict | None = Field(default=None, sa_column=Column(JSONB))
     updated_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
+
+
+# --- Phase 2: honeypot-realism evaluation schema ---------------------------
+
+
+class RunStatus(StrEnum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class EvaluatorStatus(StrEnum):
+    COMPLETED = "completed"
+    UNAVAILABLE = "unavailable"
+    EVALUATOR_FAILED = "evaluator_failed"
+
+
+class ModuleStatus(StrEnum):
+    COMPLETED = "completed"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    SKIPPED = "skipped"
+
+
+class FactStatus(StrEnum):
+    OBSERVED = "observed"
+    NOT_OBSERVED = "not_observed"
+    UNKNOWN = "unknown"
+
+
+class EvidenceKind(StrEnum):
+    EVENT = "event"
+    CHAIN_STEP = "chain_step"
+    PROBE = "probe"
+
+
+class Characteristic(StrEnum):
+    BASIC_COMMANDS = "basic_commands"
+    FILE_SYSTEM = "file_system"
+    SERVICES = "services"
+    ATTACK_POSSIBILITIES = "attack_possibilities"
+    SANITY = "sanity"
+    CONTEXT = "context"
+
+
+class EvaluationRun(SQLModel, table=True):
+    __tablename__ = "evaluation_runs"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    honeypot_id: str = Field(index=True)
+    status: str
+    started_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
+    finished_at: datetime | None = Field(default=None, sa_column=Column(_TZDateTime))
+    agent_model: str
+    evaluator_model: str | None = None
+    evaluator_status: str
+    honeypot_fingerprint: str
+    evaluation_config_fingerprint: str
+
+
+class EvaluationModuleResult(SQLModel, table=True):
+    __tablename__ = "evaluation_module_results"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    run_id: uuid.UUID = Field(foreign_key="evaluation_runs.id", index=True)
+    module: str
+    # Distinct from a fact's own status: a module that TIMEOUT-ed leaves its
+    # facts unknown, and scoring must not read those as negative evidence.
+    module_status: str
+    detail: str | None = None
+    started_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
+    finished_at: datetime | None = Field(default=None, sa_column=Column(_TZDateTime))
+
+
+class EvaluationProbeResult(SQLModel, table=True):
+    __tablename__ = "evaluation_probe_results"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    run_id: uuid.UUID = Field(foreign_key="evaluation_runs.id", index=True)
+    module: str
+    probe_id: str
+    target: str
+    establishes: str | None = None
+    value: str | None = None
+    fact_status: str
+    raw_output: str | None = None
+    completed_at: datetime | None = Field(default=None, sa_column=Column(_TZDateTime))
+
+
+class EvaluationChainStep(SQLModel, table=True):
+    __tablename__ = "evaluation_chain_steps"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    run_id: uuid.UUID = Field(foreign_key="evaluation_runs.id", index=True)
+    chain_id: str
+    step_index: int
+    command: str
+    cowrie_event_id: str | None = None
+    matched_rule_id: str | None = None
+    expected_technique_id: str
+    fact_status: str
+
+
+class EvaluationCategoryScore(SQLModel, table=True):
+    __tablename__ = "evaluation_category_scores"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    run_id: uuid.UUID = Field(foreign_key="evaluation_runs.id", index=True)
+    characteristic: str
+    # NULL means "not established" and must never render as 0.
+    deterministic_score: float | None = None
+    evaluator_rating: float | None = None
+
+
+class EvaluationFinding(SQLModel, table=True):
+    __tablename__ = "evaluation_findings"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    run_id: uuid.UUID = Field(foreign_key="evaluation_runs.id", index=True)
+    characteristic: str
+    severity: str
+    finding: str
+    recommendation: str | None = None
+    source: str
+
+
+class EvaluationEvidence(SQLModel, table=True):
+    __tablename__ = "evaluation_evidence"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    finding_id: uuid.UUID = Field(foreign_key="evaluation_findings.id", index=True)
+    kind: str
+    es_event_id: str | None = None
+    chain_step_id: uuid.UUID | None = Field(default=None, foreign_key="evaluation_chain_steps.id")
+    probe_result_id: uuid.UUID | None = Field(
+        default=None, foreign_key="evaluation_probe_results.id"
+    )
