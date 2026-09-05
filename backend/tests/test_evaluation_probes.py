@@ -29,7 +29,7 @@ def test_at_least_two_sanity_probes_share_one_fact() -> None:
     # A contradiction needs two independent probes establishing the same
     # fact. With one probe per fact the detector can never fire.
     sanity = [p for p in load_probes() if p.characteristic == "sanity"]
-    facts = [p.establishes for p in sanity]
+    facts = [p.establishes for p in sanity if p.establishes]
     assert any(facts.count(f) >= 2 for f in facts)
 
 

@@ -2,12 +2,14 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 _PROBES_PATH = Path(__file__).resolve().parent / "probes.yaml"
 
 
 class Probe(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     id: str
     characteristic: str
     command: str
