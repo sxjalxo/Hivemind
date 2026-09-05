@@ -23,7 +23,7 @@ from app.seed.seeder import seed
 from app.services.analyzer import load_analysis, run_analysis
 from app.services.compaction import chunk_session, compact
 from app.services.session_builder import get_session_events
-from app.workers.queue import get_queue
+from app.workers.queue import analysis_job_key, get_queue
 
 # Cleanup runs INLINE, at the end of each test's own coroutine (try/finally),
 # the same pattern tests/test_evidence_barrier.py already uses -- not as a
@@ -187,7 +187,7 @@ async def test_progress_events_cover_every_stage_in_order() -> None:
     received: list[int] = []
 
     async def collect() -> None:
-        async for event in queue.subscribe("seed-recon-01"):
+        async for event in queue.subscribe(analysis_job_key("seed-recon-01")):
             received.append(event.stage_index)
 
     import asyncio

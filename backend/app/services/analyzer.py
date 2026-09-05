@@ -40,7 +40,7 @@ from app.services.llm.schemas import (
 from app.services.mitre.mapper import MappingResult, map_techniques
 from app.services.persistence import Claim, persist_analysis
 from app.services.session_builder import get_session_events
-from app.workers.queue import get_queue
+from app.workers.queue import analysis_job_key, get_queue
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,7 @@ def _parse(ts: str) -> datetime:
 
 async def _emit(session_id: str, stage_index: int, **metrics: int) -> None:
     await get_queue().publish(
-        session_id,
+        analysis_job_key(session_id),
         AnalysisProgressEvent(
             stage_index=stage_index,
             stage=ANALYSIS_STAGES[stage_index],

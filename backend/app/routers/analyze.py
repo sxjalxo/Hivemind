@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from app.models.analysis import SessionAnalysis
 from app.services.analyzer import load_analysis, run_analysis
-from app.workers.queue import get_queue
+from app.workers.queue import analysis_job_key, get_queue
 
 router = APIRouter()
 
@@ -28,7 +28,7 @@ async def progress(websocket: WebSocket, session_id: str) -> None:
     # GET /api/analysis/{id} (or the overlaid /api/sessions/{id}) instead.
     await websocket.accept()
     try:
-        async for event in get_queue().subscribe(session_id):
+        async for event in get_queue().subscribe(analysis_job_key(session_id)):
             await websocket.send_json(event.model_dump(by_alias=True))
     except WebSocketDisconnect:
         return
