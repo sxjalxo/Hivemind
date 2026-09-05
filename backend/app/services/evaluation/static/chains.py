@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 from app.db.models import FactStatus
 from app.services.compaction import CompactedCommand
-from app.services.mitre.rules import apply_rules
+from app.services.mitre.rules import RuleHit, apply_rules
 
 _CHAINS_PATH = Path(__file__).resolve().parent / "chains.yaml"
 
@@ -47,9 +47,35 @@ def verify_chain(chain: Chain, executed: list[CompactedCommand]) -> list[ChainSt
     is used here, so a chain result is never a bare "T1105 = pass": each
     expected technique keeps the command, the Cowrie event id and the rule
     that matched, and the event id resolves through GET /api/events/{id}.
+
+    A single technique can be hit by several executed commands (e.g. the
+    miner chain's T1496 pattern has no {CMD_START} anchor, so "xmrig"
+    matches the wget, the chmod and the exec alike). Exactly one hit is
+    cited as evidence -- never more, since the deterministic score is
+    observed-over-expected across `ChainStepResult` rows and duplicating
+    rows would inflate it. The hit chosen is the one whose command appears
+    LATEST in the chain's own declared `steps` list: the most advanced step
+    exhibiting a technique is the one that best justifies it (for the miner
+    chain, `./xmrig` rather than the `wget` that only downloaded it). This
+    ranks by position in `chain.steps`, not by the order commands happen to
+    arrive in `executed`, so the choice is stable under reordering, retries
+    or duplicated events. A hit whose command does not appear in
+    `chain.steps` at all ranks below every hit that does, and among such
+    unmatched hits the first one encountered wins.
     """
     hits, _ = apply_rules(executed)
-    by_technique = {hit.rule.id: hit for hit in hits}
+
+    def step_rank(hit: RuleHit) -> int:
+        try:
+            return chain.steps.index(hit.command)
+        except ValueError:
+            return -1
+
+    by_technique: dict[str, RuleHit] = {}
+    for hit in hits:
+        current = by_technique.get(hit.rule.id)
+        if current is None or step_rank(hit) > step_rank(current):
+            by_technique[hit.rule.id] = hit
 
     results: list[ChainStepResult] = []
     for index, technique_id in enumerate(chain.expected_technique_ids):
