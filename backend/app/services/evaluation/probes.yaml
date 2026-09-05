@@ -1,0 +1,34 @@
+version: "1"
+probes:
+  - id: uname
+    characteristic: basic_commands
+    command: "uname -a"
+    establishes: os.identity
+  - id: os_release
+    characteristic: sanity
+    command: "cat /etc/os-release"
+    establishes: os.identity
+  - id: hostname_cmd
+    characteristic: sanity
+    command: "hostname"
+    establishes: host.name
+  - id: hostname_file
+    characteristic: sanity
+    command: "cat /etc/hostname"
+    establishes: host.name
+  - id: whoami
+    characteristic: basic_commands
+    command: "whoami"
+    establishes: user.identity
+  - id: passwd_present
+    characteristic: file_system
+    command: "cat /etc/passwd"
+    establishes: fs.etc_passwd
+  - id: tmp_writable
+    characteristic: file_system
+    command: "touch /tmp/.probe && ls -l /tmp/.probe"
+    establishes: fs.tmp_writable
+  - id: proc_cpuinfo
+    characteristic: file_system
+    command: "cat /proc/cpuinfo"
+    establishes: fs.proc_cpuinfo
