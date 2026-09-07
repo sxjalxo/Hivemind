@@ -1,5 +1,10 @@
 import asyncio
+import os
+import posixpath
 import shutil
+import subprocess
+import sys
+import threading
 import uuid as uuid_module
 from pathlib import PurePosixPath
 
@@ -37,8 +42,14 @@ def test_reset_never_touches_operator_authored_state() -> None:
 
 
 def test_reset_covers_state_an_evaluation_creates() -> None:
-    joined = " ".join(reset.RESET_PATHS)
-    assert "downloads" in joined
+    # Asserted as the exact tuple, not by substring. This module's failure
+    # mode is resetting *nothing* while reporting success, and a substring
+    # check still passes after tty is dropped from the tuple or after a path
+    # is retargeted at /tmp -- both of which are that exact failure.
+    assert reset.RESET_PATHS == (
+        "/cowrie/cowrie-git/var/lib/cowrie/downloads",
+        "/cowrie/cowrie-git/var/lib/cowrie/tty",
+    )
 
 
 def test_ssh_host_keys_and_uuid_are_not_under_any_reset_path() -> None:
@@ -122,6 +133,82 @@ def test_boundary_guard_rejects_glob_suffixes_in_reset_paths() -> None:
             reset_paths=("/cowrie/cowrie-git/var/lib/cowrie/downloads/*",),
             preserved_paths=(),
         )
+
+
+def test_boundary_guard_rejects_a_traversal_out_of_a_reset_path() -> None:
+    traversal = "/cowrie/cowrie-git/var/lib/cowrie/downloads/.."
+
+    # First, what makes this dangerous rather than merely untidy. PurePosixPath
+    # keeps ".." as a literal component, so the path *compares* as something
+    # below downloads -- but the kernel resolves it to the directory holding
+    # the honeypot's cryptographic identity, and that is what would be listed
+    # and deleted at runtime.
+    assert ".." in PurePosixPath(traversal).parts
+    resolved = posixpath.normpath(traversal)
+    assert resolved == "/cowrie/cowrie-git/var/lib/cowrie"
+    reached = [p for p in reset.PRESERVED_PATHS if _covers(resolved, p)]
+    assert "/cowrie/cowrie-git/var/lib/cowrie/uuid" in reached
+    assert "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_rsa_key" in reached
+    assert "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_ed25519_key" in reached
+
+    # So the guard must refuse it outright. Not rewrite it: a ".." in a
+    # hardcoded safety constant is a mistake to fail loudly on.
+    with pytest.raises(reset.ResetBoundaryError) as exc:
+        reset.assert_boundary_holds(
+            reset_paths=(traversal,), preserved_paths=reset.PRESERVED_PATHS
+        )
+    assert ".." in str(exc.value)
+
+
+def test_boundary_guard_normalises_a_double_slash_root() -> None:
+    # POSIX lets an implementation treat exactly two leading slashes as a
+    # distinct root and pathlib does, so "//cowrie/..." compares as unrelated
+    # to "/cowrie/..." while Linux resolves both to the same directory.
+    assert PurePosixPath("//cowrie") != PurePosixPath("/cowrie")
+
+    with pytest.raises(reset.ResetBoundaryError) as exc:
+        reset.assert_boundary_holds(
+            reset_paths=("//cowrie/cowrie-git/var/lib/cowrie",),
+            preserved_paths=("/cowrie/cowrie-git/var/lib/cowrie/uuid",),
+        )
+    assert "uuid" in str(exc.value)
+
+    # Normalised, not banned: the same directory spelled with two slashes is
+    # still the same directory, and a safe target stays acceptable.
+    reset.assert_boundary_holds(
+        reset_paths=("//cowrie/cowrie-git/var/lib/cowrie/downloads",),
+        preserved_paths=reset.PRESERVED_PATHS,
+    )
+
+
+@pytest.mark.parametrize(
+    "preserved",
+    [
+        # A missing leading slash: the typo that reads as protection and is
+        # none. Before the guard validated this side, it let a reset path
+        # wipe the whole of var/lib/cowrie while reporting the boundary held.
+        "var/lib/cowrie/uuid",
+        "",
+        "/cowrie/cowrie-git/var/lib/cowrie/downloads/../uuid",
+        "/cowrie/cowrie-git/var/lib/cowrie/*",
+    ],
+)
+def test_boundary_guard_validates_preserved_paths_too(preserved: str) -> None:
+    with pytest.raises(reset.ResetBoundaryError):
+        reset.assert_boundary_holds(
+            reset_paths=("/cowrie/cowrie-git/var/lib/cowrie",),
+            preserved_paths=(preserved,),
+        )
+
+
+def test_preserved_names_survive_the_transport_to_the_container() -> None:
+    # They are comma-joined into one argv slot and split on "," at the far
+    # end; a name carrying a comma or a slash would arrive as something that
+    # matches no directory entry and protects nothing.
+    for name in reset.PRESERVED_NAMES:
+        assert name
+        assert "," not in name
+        assert "/" not in name
 
 
 def test_the_real_configuration_holds() -> None:
@@ -212,9 +299,32 @@ async def test_a_hanging_docker_exec_is_bounded_and_raises(monkeypatch) -> None:
     with pytest.raises(reset.ResetError) as exc:
         await reset.reset_target("hivemind-cowrie-1", timeout_seconds=0.05)
 
-    assert "timed out" in str(exc.value).lower()
-    # A hung docker exec left running would still be holding the container.
+    message = str(exc.value).lower()
+    assert "timed out" in message
+    # Killing the client reaps the local `docker exec`; it does not signal the
+    # process inside the container, which keeps deleting. The error has to say
+    # so, because a Task 14 retry would otherwise race a live rmtree.
     assert proc.killed is True
+    assert "may still be running" in message
+
+
+@pytest.mark.asyncio
+async def test_the_in_container_script_is_given_its_own_deadline(monkeypatch) -> None:
+    # Killing the client cannot stop the deletion, so the script has to be
+    # able to stop itself.
+    spawned: list[list[str]] = []
+
+    async def _fake_spawn(argv):
+        spawned.append(argv)
+        return _FakeProc(0)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+    await reset.reset_target("hivemind-cowrie-1", timeout_seconds=17.0)
+
+    for argv in spawned:
+        assert float(argv[-2]) == 17.0
+    assert "signal.alarm" in reset._CLEAR_SCRIPT
+    assert "deadline" in reset._CLEAR_SCRIPT
 
 
 @pytest.mark.asyncio
@@ -330,6 +440,126 @@ async def test_a_success_is_only_claimed_when_every_path_succeeded(monkeypatch) 
         await reset.reset_target("hivemind-cowrie-1")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "path",
+    [
+        # The state directory itself: the SSH host keys and the uuid.
+        "/cowrie/cowrie-git/var/lib/cowrie",
+        # The same directory reached by traversal out of a legitimate target.
+        "/cowrie/cowrie-git/var/lib/cowrie/downloads/..",
+        # And by the second POSIX root.
+        "//cowrie/cowrie-git/var/lib/cowrie",
+        # The evidence every session is read back from.
+        "/cowrie/cowrie-git/var/log/cowrie",
+        "relative/path",
+    ],
+)
+async def test_clear_one_refuses_an_out_of_boundary_path_before_spawning(
+    monkeypatch, path: str
+) -> None:
+    # `assert_boundary_holds` runs at import against the constants only.
+    # `_clear_one` is the deletion primitive and the tests below call it
+    # directly, so it must check the path it is actually about to clear --
+    # otherwise every route to deletion except `reset_target` is unguarded.
+    spawned: list[list[str]] = []
+
+    async def _fake_spawn(argv):
+        spawned.append(argv)
+        return _FakeProc(0)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetBoundaryError):
+        await reset._clear_one("hivemind-cowrie-1", path, timeout_seconds=30)
+    assert spawned == []
+
+
+# ---------------------------------------------------------------------------
+# Residue. A reset that reports success while the directory is not empty
+# hands run B run A's malware and breaks the only promise this module makes.
+# ---------------------------------------------------------------------------
+
+
+def test_a_directory_that_gains_a_file_during_the_clear_is_not_a_success(
+    tmp_path,
+) -> None:
+    # The real script, run by this interpreter against a scratch directory --
+    # the container is not needed to prove the guarantee, and this must not be
+    # skippable. Cowrie finishing a download mid-reset is the live version.
+    root = tmp_path / "downloads"
+    root.mkdir()
+    (root / ".gitignore").write_text("*\n")
+    for index in range(2000):
+        (root / f"f{index:04d}").write_text("x")
+    seeded = set(os.listdir(root))
+
+    stop = threading.Event()
+
+    def _write_once_clearing_starts() -> None:
+        # The file lands after the script's os.listdir snapshot was taken, so
+        # the loop never considers it.
+        while not stop.wait(0.001):
+            if not seeded.issubset(os.listdir(root)):
+                (root / "LATE_ARRIVAL").write_text("x")
+                return
+
+    writer = threading.Thread(target=_write_once_clearing_starts)
+    writer.start()
+    try:
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                reset._CLEAR_SCRIPT,
+                ",".join(reset.PRESERVED_NAMES),
+                "60",
+                str(root),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    finally:
+        stop.set()
+        writer.join()
+
+    assert "LATE_ARRIVAL" in os.listdir(root), "the writer never raced the clear"
+    assert completed.returncode != 0, completed.stdout + completed.stderr
+    assert "LATE_ARRIVAL" in completed.stderr
+    # The count the script computes is reported, not discarded.
+    assert "removed 2000 entries" in completed.stderr
+
+
+def test_a_clean_directory_is_a_success(tmp_path) -> None:
+    # The other half: the residue check must not turn a real reset into a
+    # failure. An empty directory is a legitimate success, and the placeholder
+    # that keeps it in the git checkout is not residue.
+    root = tmp_path / "downloads"
+    root.mkdir()
+    (root / ".gitignore").write_text("*\n")
+    (root / "payload").write_text("x")
+    (root / "sub").mkdir()
+    (root / "sub" / "nested").write_text("x")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            reset._CLEAR_SCRIPT,
+            ",".join(reset.PRESERVED_NAMES),
+            "60",
+            str(root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert sorted(os.listdir(root)) == [".gitignore"]
+
+
 # ---------------------------------------------------------------------------
 # The mechanism itself, exercised in the real container against a scratch
 # directory. Skipped when docker or the honeypot is not available so the
@@ -423,6 +653,8 @@ async def test_live_clear_of_a_missing_directory_raises() -> None:
         pytest.skip("docker not available")
 
     scratch = f"/tmp/hivemind-reset-absent-{uuid_module.uuid4().hex}"
+    # A scratch path, never a real reset path.
+    assert not any(_covers(p, scratch) for p in reset.RESET_PATHS)
     try:
         code, out = await _container_python(LIVE_CONTAINER, "print('ok')")
     except (OSError, TimeoutError) as exc:
@@ -435,3 +667,80 @@ async def test_live_clear_of_a_missing_directory_raises() -> None:
     # the same silent no-op the original implementation had.
     with pytest.raises(reset.ResetError):
         await reset._clear_one(LIVE_CONTAINER, scratch, timeout_seconds=30)
+
+
+_SEED_MANY = (
+    "import os, sys\n"
+    "root = sys.argv[1]\n"
+    "os.makedirs(root)\n"
+    "for i in range(3000):\n"
+    "    open(os.path.join(root, 'f%04d' % i), 'w').write('x')\n"
+    "print(len(os.listdir(root)))\n"
+)
+
+_WRITE_LATE = (
+    "import os, sys, time\n"
+    "root = sys.argv[1]\n"
+    "seeded = int(sys.argv[2])\n"
+    "open(root + '-ready', 'w').write('x')\n"
+    "deadline = time.monotonic() + 30\n"
+    # Wait for the clear to be under way rather than sleeping a fixed time:
+    # the file has to land after the script's snapshot, and docker exec
+    # startup makes any fixed delay a coin flip.
+    "while time.monotonic() < deadline and len(os.listdir(root)) >= seeded:\n"
+    "    time.sleep(0.005)\n"
+    "open(os.path.join(root, 'LATE_ARRIVAL'), 'w').write('x')\n"
+)
+
+_READY = (
+    "import os, sys, time\n"
+    "deadline = time.monotonic() + 30\n"
+    "while time.monotonic() < deadline and not os.path.exists(sys.argv[1] + '-ready'):\n"
+    "    time.sleep(0.02)\n"
+    "print('ready', os.path.exists(sys.argv[1] + '-ready'))\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_live_clear_raises_when_the_honeypot_writes_during_the_reset() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("docker not available")
+
+    scratch = f"/tmp/hivemind-reset-race-{uuid_module.uuid4().hex}"
+    assert not any(_covers(p, scratch) for p in reset.RESET_PATHS)
+
+    try:
+        code, out = await _container_python(LIVE_CONTAINER, _SEED_MANY, scratch)
+    except (OSError, TimeoutError) as exc:
+        pytest.skip(f"cowrie container not reachable: {exc}")
+    if code != 0:
+        pytest.skip(f"cowrie container not reachable: {out.strip()}")
+
+    try:
+        # Cowrie finishing a download while the reset runs. The file lands
+        # after the script's directory snapshot, so the clear never sees it --
+        # and run B would inherit it while the report called the runs
+        # comparable.
+        writer = asyncio.create_task(
+            _container_python(LIVE_CONTAINER, _WRITE_LATE, scratch, "3000")
+        )
+        # Do not start clearing until the writer is actually polling, or
+        # docker exec startup decides the outcome instead of the code.
+        code, out = await _container_python(LIVE_CONTAINER, _READY, scratch)
+        assert "ready True" in out, out
+
+        with pytest.raises(reset.ResetError) as exc:
+            await reset._clear_one(LIVE_CONTAINER, scratch, timeout_seconds=60)
+        await writer
+        assert "LATE_ARRIVAL" in str(exc.value)
+    finally:
+        await _container_python(LIVE_CONTAINER, _TEARDOWN, scratch)
+        await _container_python(
+            LIVE_CONTAINER,
+            "import os, sys\n"
+            "try:\n"
+            "    os.unlink(sys.argv[1] + '-ready')\n"
+            "except OSError:\n"
+            "    pass\n",
+            scratch,
+        )

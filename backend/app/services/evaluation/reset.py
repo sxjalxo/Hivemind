@@ -59,6 +59,17 @@ RESET_PATHS: tuple[str, ...] = (
 # SHA-256 hex, tty logs are timestamped.
 PRESERVED_NAMES: tuple[str, ...] = (".gitignore",)
 
+# These names travel to the container joined by commas in a single argv slot
+# and are split on "," at the far end. A name containing a comma would arrive
+# as two names that protect nothing; a name containing "/" would not match an
+# `os.listdir` entry at all. Both would silently remove a file's protection,
+# which is the failure mode this module cannot afford, so they are rejected at
+# import rather than discovered by a deleted .gitignore.
+for _name in PRESERVED_NAMES:
+    if not _name or "," in _name or "/" in _name:
+        raise ValueError(f"preserved name must be a bare filename: {_name!r}")
+del _name
+
 # State that must survive a reset. Every path here was confirmed to exist in
 # the running container; a boundary that lists absent files reads as
 # protection that is not there.
@@ -115,6 +126,47 @@ class ResetBoundaryError(ValueError):
     """A reset path would destroy state that must be preserved."""
 
 
+def _checked(path: str, *, kind: str) -> PurePosixPath:
+    """Validate one path and return the form the kernel will actually use.
+
+    `PurePosixPath` normalises only some of what a filesystem does, and the
+    gap is not obvious: `.`, trailing slashes and interior `//` are collapsed,
+    so a comparison written against them looks complete -- but `..` is kept as
+    a literal component, because pathlib cannot know whether the preceding
+    component is a symlink. So `.../downloads/..` compares as a path *below*
+    `downloads` while the kernel resolves it to `var/lib/cowrie`, the
+    directory holding the SSH host keys and the sensor uuid.
+
+    `..` is therefore rejected outright rather than rewritten. These are
+    hardcoded safety constants: a `..` in one is a mistake to fail loudly on,
+    not something to quietly clean up into a path nobody wrote.
+
+    A leading `//` is different in kind. POSIX permits an implementation to
+    treat exactly two leading slashes as a distinct root and pathlib does, so
+    `//cowrie/...` compares as unrelated to `/cowrie/...`; Linux resolves both
+    to the same directory. That one *is* normalised, because the two spellings
+    genuinely name the same place.
+    """
+    if not path:
+        raise ResetBoundaryError(f"{kind} path must not be empty")
+    if not path.startswith("/"):
+        raise ResetBoundaryError(f"{kind} path must be absolute: {path!r}")
+    if "*" in path or "?" in path:
+        # No shell is involved, so a glob is never expanded. It would be
+        # passed through literally, match a file named `*`, and quietly
+        # do nothing -- as a reset path that clears nothing, as a preserved
+        # path that protects nothing.
+        raise ResetBoundaryError(
+            f"{kind} path must name a directory, not a glob: {path!r}"
+        )
+    if ".." in PurePosixPath(path).parts:
+        raise ResetBoundaryError(
+            f"{kind} path must not contain '..': {path!r} -- it resolves "
+            f"outside the path it appears to name"
+        )
+    return PurePosixPath("/" + path.lstrip("/"))
+
+
 def assert_boundary_holds(
     *, reset_paths: tuple[str, ...], preserved_paths: tuple[str, ...]
 ) -> None:
@@ -123,25 +175,20 @@ def assert_boundary_holds(
     Uses real path containment, not substring matching. A substring check
     passes `/cowrie/cowrie-git/etc/*` -- which contains neither the string
     "cowrie.cfg" nor "userdb" -- while that path deletes the config.
-    """
-    for path in reset_paths:
-        if not path.startswith("/"):
-            raise ResetBoundaryError(f"reset path must be absolute: {path!r}")
-        if "*" in path or "?" in path:
-            # No shell is involved, so a glob is never expanded. It would be
-            # passed through literally, match a file named `*`, and quietly
-            # do nothing.
-            raise ResetBoundaryError(
-                f"reset path must name a directory, not a glob: {path!r}"
-            )
 
-    for reset_path in reset_paths:
-        parent = PurePosixPath(reset_path)
-        for preserved in preserved_paths:
-            child = PurePosixPath(preserved)
+    Both sides are validated. An unvalidated preserved path is the quieter
+    half of the same bug: `var/lib/cowrie/uuid` written without its leading
+    slash matches nothing, so the uuid loses its protection while the guard
+    still reports that the boundary holds.
+    """
+    parents = [(raw, _checked(raw, kind="reset")) for raw in reset_paths]
+    children = [(raw, _checked(raw, kind="preserved")) for raw in preserved_paths]
+
+    for raw_reset, parent in parents:
+        for raw_preserved, child in children:
             if child == parent or parent in child.parents:
                 raise ResetBoundaryError(
-                    f"reset path {reset_path!r} covers preserved path {preserved!r}"
+                    f"reset path {raw_reset!r} covers preserved path {raw_preserved!r}"
                 )
 
 
@@ -162,11 +209,33 @@ assert_boundary_holds(reset_paths=RESET_PATHS, preserved_paths=PRESERVED_PATHS)
 _CLEAR_SCRIPT = """
 import os
 import shutil
+import signal
 import stat
 import sys
+import time
 
 keep = {name for name in sys.argv[1].split(",") if name}
-root = sys.argv[2]
+deadline_seconds = float(sys.argv[2])
+root = sys.argv[3]
+
+
+def _out_of_time(*_args):
+    raise SystemExit(
+        "reset of %s exceeded its %gs in-container deadline and aborted "
+        "part-way; the directory is neither clean nor untouched"
+        % (root, deadline_seconds)
+    )
+
+
+# The client cannot stop this process -- killing `docker exec` kills only the
+# local CLI -- so the deletion carries its own deadline and ends itself.
+# SIGALRM is what makes that real: it interrupts a blocking syscall, which a
+# clock read between entries cannot. The clock check is the fallback for
+# platforms without SIGALRM, where this script runs only under test.
+if hasattr(signal, "SIGALRM"):
+    signal.signal(signal.SIGALRM, _out_of_time)
+    signal.alarm(max(1, int(deadline_seconds)))
+started = time.monotonic()
 
 if os.path.islink(root):
     raise SystemExit("reset target is a symlink, refusing to clear: " + root)
@@ -177,6 +246,8 @@ removed = 0
 for name in sorted(os.listdir(root)):
     if name in keep:
         continue
+    if time.monotonic() - started > deadline_seconds:
+        _out_of_time()
     path = os.path.join(root, name)
     # lstat, so a symlink to a directory is unlinked rather than followed --
     # recursing through one would delete state outside the reset root.
@@ -186,7 +257,17 @@ for name in sorted(os.listdir(root)):
         os.unlink(path)
     removed += 1
 
-print(removed)
+# The listing above is a snapshot taken before any deletion. Cowrie writing a
+# download while this runs produces an entry that was never in it, so the loop
+# never considers it -- and exiting 0 here would report a clean reset while
+# run B inherits run A's malware. Re-list and fail instead: `reset_target`
+# promises the path was actually cleared.
+residue = sorted(name for name in os.listdir(root) if name not in keep)
+if residue:
+    raise SystemExit(
+        "reset of %s removed %d entries but %d remain (%s); the honeypot is "
+        "still writing into it" % (root, removed, len(residue), ", ".join(residue[:10]))
+    )
 """
 
 
@@ -200,6 +281,12 @@ async def _spawn(argv: list[str]):
 
 
 async def _clear_one(container: str, path: str, timeout_seconds: float) -> None:
+    # The boundary is checked here, on the path actually about to be deleted,
+    # not only at import on the constants. This function is the module's
+    # deletion primitive and its own tests call it directly, so an import-time
+    # check on RESET_PATHS leaves every other route to it unguarded.
+    assert_boundary_holds(reset_paths=(path,), preserved_paths=PRESERVED_PATHS)
+
     argv = [
         "docker",
         "exec",
@@ -208,6 +295,9 @@ async def _clear_one(container: str, path: str, timeout_seconds: float) -> None:
         "-c",
         _CLEAR_SCRIPT,
         ",".join(PRESERVED_NAMES),
+        # The script's own deadline. It goes before the path so the path stays
+        # last in argv, where the container command is easiest to read.
+        str(timeout_seconds),
         path,
     ]
 
@@ -223,14 +313,18 @@ async def _clear_one(container: str, path: str, timeout_seconds: float) -> None:
             process.communicate(), timeout=timeout_seconds
         )
     except TimeoutError as exc:
-        # A hung docker exec left running holds a process against the
-        # container for the rest of the session.
+        # This kills the local `docker exec` client only -- the process inside
+        # the container is not signalled and keeps running to completion. It
+        # is reaped so no stray CLI is left behind, but the deletion is what
+        # the script's own deadline above is for.
         with contextlib.suppress(ProcessLookupError, OSError):
             process.kill()
         with contextlib.suppress(Exception):
             await process.wait()
         raise ResetError(
-            f"reset of {path} in {container!r} timed out after {timeout_seconds}s"
+            f"reset of {path} in {container!r} timed out after "
+            f"{timeout_seconds}s; the deletion inside the container may still "
+            f"be running, so a retry can race it"
         ) from exc
 
     if process.returncode != 0:
