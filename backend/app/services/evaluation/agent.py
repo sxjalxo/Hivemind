@@ -72,13 +72,16 @@ def _open_session(target: EvaluationTarget) -> _Session:
     return _Session(target)
 
 
-async def _execute(session: _Session, command: str) -> str:
-    """Run one command over the session. Separated from run_probes so tests
-    can replace it without a real SSH round trip."""
+async def _execute(session: _Session, command: str) -> tuple[str, int]:
+    """Run one command over the session, returning its output and exit
+    status. Separated from run_probes so tests can replace it without a real
+    SSH round trip."""
 
-    def _run() -> str:
+    def _run() -> tuple[str, int]:
         _, stdout, _ = session.client.exec_command(command, timeout=20)
-        return stdout.read().decode("utf-8", "replace").strip()
+        output = stdout.read().decode("utf-8", "replace").strip()
+        exit_status = stdout.channel.recv_exit_status()
+        return output, exit_status
 
     return await asyncio.to_thread(_run)
 
@@ -116,17 +119,29 @@ async def run_probes(target: EvaluationTarget, budget: AgentBudget) -> ModuleOut
                     detail = f"time budget of {budget.max_seconds}s reached"
                     break
 
-                output = await _execute(session, probe.command)
+                output, exit_status = await _execute(session, probe.command)
                 executed += 1
+                if output:
+                    # The command told us something, whether or not it
+                    # reported success -- a non-zero exit with output still
+                    # observed a fact (e.g. a permission-denied message).
+                    fact_status = FactStatus.OBSERVED
+                elif exit_status == 0:
+                    # Ran cleanly and found nothing: a genuine absence.
+                    fact_status = FactStatus.NOT_OBSERVED
+                else:
+                    # Failed and told us nothing: we did not determine the
+                    # fact, so it must not read as evidence of absence.
+                    fact_status = FactStatus.UNKNOWN
                 observations[probe.id] = Observation(
                     probe_id=probe.id,
                     establishes=probe.establishes,
                     value=output or None,
-                    fact_status=FactStatus.OBSERVED if output else FactStatus.NOT_OBSERVED,
+                    fact_status=fact_status,
                 )
     except TimeoutError:
         status, detail = ModuleStatus.TIMEOUT, "ssh session timed out"
-    except OSError as exc:
+    except (OSError, paramiko.SSHException) as exc:
         status, detail = ModuleStatus.ERROR, str(exc)
 
     return ModuleOutcome(
