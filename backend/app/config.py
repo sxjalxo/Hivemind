@@ -33,6 +33,15 @@ class Settings(BaseSettings):
     attacker_command_cardinality_limit: int = 2000
     attacker_ip_cardinality_limit: int = 500
 
+    # The agent's target is a fixed compose service name, never a
+    # user-supplied address: there must be no code path from an HTTP request
+    # to an arbitrary host, or the agent becomes an attack tool.
+    evaluation_target_host: str = "cowrie"
+    evaluation_ssh_port: int = 2222
+    evaluation_capture_interface: str = "eth0"
+    evaluation_agent_max_commands: int = 40
+    evaluation_agent_max_seconds: int = 120
+
 
 @lru_cache
 def get_settings() -> Settings:
