@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import re
 from contextlib import asynccontextmanager
 
@@ -69,8 +70,45 @@ class Capture:
                 self.outcome = _unknown_outcome("capture never started")
             return self.outcome
 
-        self._process.terminate()
-        stdout, _ = await self._process.communicate()
+        # stop() must never raise. It runs in a `finally` alongside whatever
+        # exception is propagating from the capture body (e.g. the agent
+        # stage blowing up) -- if stop() itself raised, Python would replace
+        # that exception with stop()'s, and the orchestrator would report
+        # the wrong cause for the run's failure. Every failure mode here is
+        # captured into the outcome instead.
+        try:
+            try:
+                self._process.terminate()
+            except ProcessLookupError:
+                # tcpdump already exited on its own (interface disappeared,
+                # permission revoked mid-run) -- a normal way for a capture
+                # to end. Still drain whatever output is available.
+                pass
+
+            stdout, _ = await asyncio.wait_for(
+                self._process.communicate(), timeout=self._timeout_seconds
+            )
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                self._process.kill()
+            self.outcome = ModuleOutcome(
+                module="tcpdump",
+                module_status=ModuleStatus.TIMEOUT,
+                detail=f"tcpdump drain exceeded {self._timeout_seconds}s",
+                observations=[
+                    Observation(
+                        probe_id="network.activity",
+                        establishes="network.activity",
+                        value=None,
+                        fact_status=FactStatus.UNKNOWN,
+                    )
+                ],
+            )
+            return self.outcome
+        except Exception as exc:  # noqa: BLE001 - must not propagate, see above
+            self.outcome = _unknown_outcome(f"failed to stop tcpdump: {exc}")
+            return self.outcome
+
         text = stdout.decode("utf-8", "replace")
         match = _PACKETS.search(text)
 
