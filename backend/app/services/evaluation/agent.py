@@ -30,6 +30,18 @@ class AgentBudget(BaseModel):
     max_seconds: int
 
 
+# paramiko's Channel.recv_exit_status() blocks on an internal event with no
+# timeout of its own -- its docstring warns it "may block forever" if the
+# remote never completes the exit-status exchange. The `timeout=` passed to
+# exec_command only bounds Channel.recv()/send() (i.e. stdout.read()), not
+# this wait. Cowrie, the target here, is a deliberately imperfect SSH
+# implementation that can leave a channel open without ever sending an exit
+# status, so _execute polls exit_status_ready() against this wall-clock
+# deadline instead of ever calling recv_exit_status() directly.
+PER_COMMAND_TIMEOUT_SECONDS = 20
+_EXIT_STATUS_POLL_INTERVAL_SECONDS = 0.05
+
+
 class _Session:
     """A live SSH session against the honeypot."""
 
@@ -72,16 +84,26 @@ def _open_session(target: EvaluationTarget) -> _Session:
     return _Session(target)
 
 
-async def _execute(session: _Session, command: str) -> tuple[str, int]:
+async def _execute(session: _Session, command: str) -> tuple[str, int | None]:
     """Run one command over the session, returning its output and exit
     status. Separated from run_probes so tests can replace it without a real
-    SSH round trip."""
+    SSH round trip.
 
-    def _run() -> tuple[str, int]:
+    The exit-status wait is bounded by PER_COMMAND_TIMEOUT_SECONDS: rather
+    than call the blocking recv_exit_status(), we poll exit_status_ready()
+    and give up once the deadline passes, returning exit_status=None. Nothing
+    is left blocked -- the poll loop simply stops looking."""
+
+    def _run() -> tuple[str, int | None]:
         _, stdout, _ = session.client.exec_command(command, timeout=20)
         output = stdout.read().decode("utf-8", "replace").strip()
-        exit_status = stdout.channel.recv_exit_status()
-        return output, exit_status
+
+        deadline = time.monotonic() + PER_COMMAND_TIMEOUT_SECONDS
+        while not stdout.channel.exit_status_ready():
+            if time.monotonic() >= deadline:
+                return output, None
+            time.sleep(_EXIT_STATUS_POLL_INTERVAL_SECONDS)
+        return output, stdout.channel.recv_exit_status()
 
     return await asyncio.to_thread(_run)
 
@@ -121,7 +143,14 @@ async def run_probes(target: EvaluationTarget, budget: AgentBudget) -> ModuleOut
 
                 output, exit_status = await _execute(session, probe.command)
                 executed += 1
-                if output:
+                if exit_status is None:
+                    # The exit-status wait exceeded PER_COMMAND_TIMEOUT_SECONDS
+                    # -- we gave up rather than block, so we did not determine
+                    # this fact either way. Any partial output already read is
+                    # not enough to call it observed: move on to the next
+                    # probe rather than aborting the run.
+                    fact_status = FactStatus.UNKNOWN
+                elif output:
                     # The command told us something, whether or not it
                     # reported success -- a non-zero exit with output still
                     # observed a fact (e.g. a permission-denied message).
