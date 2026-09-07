@@ -1,0 +1,437 @@
+import asyncio
+import shutil
+import uuid as uuid_module
+from pathlib import PurePosixPath
+
+import pytest
+
+from app.services.evaluation import reset
+
+# ---------------------------------------------------------------------------
+# The safety boundary: what reset must never touch.
+# ---------------------------------------------------------------------------
+
+
+def _covers(parent: str, child: str) -> bool:
+    """True when `child` is at or beneath `parent` as a real path.
+
+    Substring matching is not good enough here: "/cowrie/cowrie-git/etc/*"
+    does not contain the substring "cowrie.cfg", yet it covers the config
+    file. Every boundary assertion in this file uses path containment.
+    """
+    p = PurePosixPath(parent)
+    c = PurePosixPath(child)
+    return c == p or p in c.parents
+
+
+def test_reset_never_touches_operator_authored_state() -> None:
+    # Resetting cowrie.cfg or the userdb would mean every run evaluates a
+    # pristine default honeypot rather than the one the developer is trying
+    # to improve, which makes the whole feedback loop meaningless.
+    for preserved in reset.PRESERVED_PATHS:
+        for reset_path in reset.RESET_PATHS:
+            assert not _covers(reset_path, preserved), (
+                f"reset path {reset_path} covers preserved path {preserved}"
+            )
+    assert any("cowrie.cfg" in p for p in reset.PRESERVED_PATHS)
+
+
+def test_reset_covers_state_an_evaluation_creates() -> None:
+    joined = " ".join(reset.RESET_PATHS)
+    assert "downloads" in joined
+
+
+def test_ssh_host_keys_and_uuid_are_not_under_any_reset_path() -> None:
+    # These sit in the SAME directory as the reset targets. Deleting them
+    # would regenerate the honeypot's SSH fingerprint on every run -- itself
+    # a realism tell -- and change what the honeypot *is* between runs, so
+    # the two runs would no longer be comparable.
+    identity = (
+        "/cowrie/cowrie-git/var/lib/cowrie/uuid",
+        "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_rsa_key",
+        "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_rsa_key.pub",
+        "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_ecdsa_key",
+        "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_ecdsa_key.pub",
+        "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_ed25519_key",
+        "/cowrie/cowrie-git/var/lib/cowrie/ssh_host_ed25519_key.pub",
+    )
+    for key_path in identity:
+        for reset_path in reset.RESET_PATHS:
+            assert not _covers(reset_path, key_path)
+        assert key_path in reset.PRESERVED_PATHS
+
+
+def test_cowrie_json_is_preserved() -> None:
+    # cowrie.json is the source of every session the whole system analyses.
+    # It is the most tempting thing to "clean between runs" and deleting it
+    # would destroy the evidence the evaluation is about to read.
+    log_dir = "/cowrie/cowrie-git/var/log/cowrie"
+    assert log_dir in reset.PRESERVED_PATHS
+    for reset_path in reset.RESET_PATHS:
+        assert not _covers(reset_path, f"{log_dir}/cowrie.json")
+
+
+# ---------------------------------------------------------------------------
+# The boundary is enforced in code, not just documented.
+# ---------------------------------------------------------------------------
+
+
+def test_boundary_guard_rejects_a_reset_path_that_is_a_preserved_path() -> None:
+    with pytest.raises(reset.ResetBoundaryError):
+        reset.assert_boundary_holds(
+            reset_paths=("/cowrie/cowrie-git/etc/cowrie.cfg",),
+            preserved_paths=("/cowrie/cowrie-git/etc/cowrie.cfg",),
+        )
+
+
+def test_boundary_guard_rejects_a_parent_directory_of_a_preserved_path() -> None:
+    # The failure the plan's substring check could not catch: a glob over the
+    # parent directory contains no preserved filename as a substring, yet it
+    # deletes the preserved file.
+    with pytest.raises(reset.ResetBoundaryError) as exc:
+        reset.assert_boundary_holds(
+            reset_paths=("/cowrie/cowrie-git/etc",),
+            preserved_paths=("/cowrie/cowrie-git/etc/cowrie.cfg",),
+        )
+    assert "cowrie.cfg" in str(exc.value)
+
+    # ...and the same path written as the plan wrote it, with a glob suffix.
+    with pytest.raises(reset.ResetBoundaryError):
+        reset.assert_boundary_holds(
+            reset_paths=("/cowrie/cowrie-git/etc/*",),
+            preserved_paths=("/cowrie/cowrie-git/etc/cowrie.cfg",),
+        )
+
+
+def test_boundary_guard_rejects_wiping_the_state_directory() -> None:
+    # The concrete catastrophe: a glob over var/lib/cowrie destroys the SSH
+    # host keys that define the honeypot's identity.
+    with pytest.raises(reset.ResetBoundaryError):
+        reset.assert_boundary_holds(
+            reset_paths=("/cowrie/cowrie-git/var/lib/cowrie",),
+            preserved_paths=("/cowrie/cowrie-git/var/lib/cowrie/uuid",),
+        )
+
+
+def test_boundary_guard_rejects_glob_suffixes_in_reset_paths() -> None:
+    # `asyncio.create_subprocess_exec` runs no shell, so a `*` is passed
+    # through literally and matches a file named `*`. A reset path with a
+    # glob in it is always a bug, never an expansion.
+    with pytest.raises(reset.ResetBoundaryError):
+        reset.assert_boundary_holds(
+            reset_paths=("/cowrie/cowrie-git/var/lib/cowrie/downloads/*",),
+            preserved_paths=(),
+        )
+
+
+def test_the_real_configuration_holds() -> None:
+    reset.assert_boundary_holds(
+        reset_paths=reset.RESET_PATHS, preserved_paths=reset.PRESERVED_PATHS
+    )
+
+
+def test_no_reset_path_carries_a_glob() -> None:
+    for path in reset.RESET_PATHS:
+        assert "*" not in path
+        assert "?" not in path
+
+
+# ---------------------------------------------------------------------------
+# Failure must be loud. A silent no-op reset lets run B inherit run A's
+# residue while the report claims the runs are comparable.
+# ---------------------------------------------------------------------------
+
+
+class _FakeProc:
+    def __init__(self, returncode: int, stderr: bytes = b"") -> None:
+        self.returncode = returncode
+        self._stderr = stderr
+        self.killed = False
+
+    async def communicate(self):
+        return (b"", self._stderr)
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_nonzero_exit_raises_instead_of_returning_cleanly(monkeypatch) -> None:
+    async def _fake_spawn(argv):
+        return _FakeProc(1, b"PermissionError: [Errno 13] Permission denied\n")
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError):
+        await reset.reset_target("hivemind-cowrie-1")
+
+
+@pytest.mark.asyncio
+async def test_missing_rm_regression_is_reported_with_code_and_stderr(monkeypatch) -> None:
+    # The exact observed failure of the original implementation: the Cowrie
+    # image is distroless, so `rm` does not exist and docker exec returns
+    # 127. The original swallowed this, so reset was a permanent silent
+    # no-op. Whatever the cause, the reset must now say so out loud.
+    observed_stderr = (
+        b'OCI runtime exec failed: exec failed: unable to start container '
+        b'process: exec: "rm": executable file not found in $PATH\n'
+    )
+
+    async def _fake_spawn(argv):
+        return _FakeProc(127, observed_stderr)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError) as exc:
+        await reset.reset_target("hivemind-cowrie-1")
+
+    message = str(exc.value)
+    assert "127" in message
+    assert "executable file not found" in message
+    assert "hivemind-cowrie-1" in message
+    assert reset.RESET_PATHS[0] in message
+
+
+@pytest.mark.asyncio
+async def test_a_hanging_docker_exec_is_bounded_and_raises(monkeypatch) -> None:
+    proc = _FakeProc(0)
+
+    async def _never_returns():
+        await asyncio.Event().wait()
+
+    proc.communicate = _never_returns  # type: ignore[method-assign]
+
+    async def _fake_spawn(argv):
+        return proc
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError) as exc:
+        await reset.reset_target("hivemind-cowrie-1", timeout_seconds=0.05)
+
+    assert "timed out" in str(exc.value).lower()
+    # A hung docker exec left running would still be holding the container.
+    assert proc.killed is True
+
+
+@pytest.mark.asyncio
+async def test_docker_binary_missing_raises_rather_than_passing_silently(monkeypatch) -> None:
+    async def _fake_spawn(argv):
+        raise FileNotFoundError("docker")
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError):
+        await reset.reset_target("hivemind-cowrie-1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container", ["", "   ", "bad name", "-leading-dash", "a/b"])
+async def test_an_invalid_container_name_is_rejected_before_shelling_out(
+    monkeypatch, container: str
+) -> None:
+    spawned: list[list[str]] = []
+
+    async def _fake_spawn(argv):
+        spawned.append(argv)
+        return _FakeProc(0)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError):
+        await reset.reset_target(container)
+    assert spawned == []
+
+
+# ---------------------------------------------------------------------------
+# What is actually executed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_reset_path_is_acted_on_exactly_once(monkeypatch) -> None:
+    spawned: list[list[str]] = []
+
+    async def _fake_spawn(argv):
+        spawned.append(argv)
+        return _FakeProc(0)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+    await reset.reset_target("hivemind-cowrie-1")
+
+    targeted = [argv[-1] for argv in spawned]
+    assert targeted == list(reset.RESET_PATHS)
+    assert len(targeted) == len(set(targeted))
+
+
+@pytest.mark.asyncio
+async def test_invocation_targets_the_container_python_not_a_shell_utility(
+    monkeypatch,
+) -> None:
+    spawned: list[list[str]] = []
+
+    async def _fake_spawn(argv):
+        spawned.append(argv)
+        return _FakeProc(0)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+    await reset.reset_target("hivemind-cowrie-1")
+
+    for argv in spawned:
+        assert argv[:3] == ["docker", "exec", "hivemind-cowrie-1"]
+        # The image is distroless: python3 is the only executable present,
+        # and docker exec does not apply the image entrypoint, so the
+        # interpreter must be named by absolute path.
+        assert argv[3] == reset.CONTAINER_PYTHON
+        assert argv[3].startswith("/")
+        assert argv[4] == "-c"
+        for utility in ("rm", "sh", "bash", "find"):
+            assert utility not in argv[:4]
+
+
+@pytest.mark.asyncio
+async def test_paths_are_passed_as_argv_never_interpolated_into_the_script(
+    monkeypatch,
+) -> None:
+    spawned: list[list[str]] = []
+
+    async def _fake_spawn(argv):
+        spawned.append(argv)
+        return _FakeProc(0)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+    await reset.reset_target("hivemind-cowrie-1")
+
+    # The script source is a fixed constant. If a path ever appears inside
+    # it, some caller is building Python source by concatenating a path.
+    for argv in spawned:
+        source = argv[5]
+        assert source == reset._CLEAR_SCRIPT
+        for path in reset.RESET_PATHS:
+            assert path not in source
+        assert "sys.argv" in source
+
+
+@pytest.mark.asyncio
+async def test_a_success_is_only_claimed_when_every_path_succeeded(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def _fake_spawn(argv):
+        calls.append(argv)
+        # The second path fails; the first succeeded.
+        return _FakeProc(0 if len(calls) == 1 else 1, b"boom")
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError):
+        await reset.reset_target("hivemind-cowrie-1")
+
+
+# ---------------------------------------------------------------------------
+# The mechanism itself, exercised in the real container against a scratch
+# directory. Skipped when docker or the honeypot is not available so the
+# default suite stays hermetic.
+# ---------------------------------------------------------------------------
+
+
+async def _container_python(container: str, source: str, *args: str) -> tuple[int, str]:
+    process = await asyncio.create_subprocess_exec(
+        "docker",
+        "exec",
+        container,
+        reset.CONTAINER_PYTHON,
+        "-c",
+        source,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    return process.returncode, (stdout + stderr).decode("utf-8", "replace")
+
+
+_SETUP = (
+    "import os, sys\n"
+    "root = sys.argv[1]\n"
+    "os.makedirs(os.path.join(root, 'sub', 'deeper'), exist_ok=True)\n"
+    "open(os.path.join(root, 'payload'), 'w').write('x')\n"
+    "open(os.path.join(root, '.gitignore'), 'w').write('*\\n')\n"
+    "open(os.path.join(root, 'sub', 'deeper', 'nested'), 'w').write('x')\n"
+    "outside = root + '-outside'\n"
+    "os.makedirs(outside, exist_ok=True)\n"
+    "open(os.path.join(outside, 'must-survive'), 'w').write('x')\n"
+    "link = os.path.join(root, 'escape')\n"
+    "os.path.islink(link) or os.symlink(outside, link)\n"
+    "print(sorted(os.listdir(root)))\n"
+)
+
+_INSPECT = (
+    "import os, sys\n"
+    "root = sys.argv[1]\n"
+    "print('root_exists', os.path.isdir(root))\n"
+    "print('contents', sorted(os.listdir(root)) if os.path.isdir(root) else None)\n"
+    "print('outside_survived', sorted(os.listdir(root + '-outside')))\n"
+)
+
+_TEARDOWN = (
+    "import shutil, sys\n"
+    "shutil.rmtree(sys.argv[1], ignore_errors=True)\n"
+    "shutil.rmtree(sys.argv[1] + '-outside', ignore_errors=True)\n"
+)
+
+LIVE_CONTAINER = "hivemind-cowrie-1"
+
+
+@pytest.mark.asyncio
+async def test_live_clear_empties_a_directory_without_removing_it() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("docker not available")
+
+    # A scratch directory, never a real reset path -- this test must not be
+    # able to damage the honeypot's captured session data.
+    scratch = f"/tmp/hivemind-reset-{uuid_module.uuid4().hex}"
+    assert not any(_covers(p, scratch) for p in reset.RESET_PATHS)
+
+    try:
+        code, out = await _container_python(LIVE_CONTAINER, _SETUP, scratch)
+    except (OSError, TimeoutError) as exc:
+        pytest.skip(f"cowrie container not reachable: {exc}")
+    if code != 0:
+        pytest.skip(f"cowrie container not reachable: {out.strip()}")
+
+    try:
+        await reset._clear_one(LIVE_CONTAINER, scratch, timeout_seconds=30)
+
+        code, out = await _container_python(LIVE_CONTAINER, _INSPECT, scratch)
+        assert code == 0, out
+        assert "root_exists True" in out
+        # Cowrie expects downloads/ and tty/ to exist; the reset clears the
+        # contents and leaves the directory in place.
+        assert "contents ['.gitignore']" in out
+        # A symlink out of the reset root is unlinked, never followed.
+        assert "outside_survived ['must-survive']" in out
+    finally:
+        await _container_python(LIVE_CONTAINER, _TEARDOWN, scratch)
+
+
+@pytest.mark.asyncio
+async def test_live_clear_of_a_missing_directory_raises() -> None:
+    if shutil.which("docker") is None:
+        pytest.skip("docker not available")
+
+    scratch = f"/tmp/hivemind-reset-absent-{uuid_module.uuid4().hex}"
+    try:
+        code, out = await _container_python(LIVE_CONTAINER, "print('ok')")
+    except (OSError, TimeoutError) as exc:
+        pytest.skip(f"cowrie container not reachable: {exc}")
+    if code != 0:
+        pytest.skip(f"cowrie container not reachable: {out.strip()}")
+
+    # A reset target that is not there means the container is not the
+    # honeypot we think it is. Reporting that as a successful reset would be
+    # the same silent no-op the original implementation had.
+    with pytest.raises(reset.ResetError):
+        await reset._clear_one(LIVE_CONTAINER, scratch, timeout_seconds=30)
