@@ -1,9 +1,13 @@
 import asyncio
+import contextlib
 import logging
 import uuid
 from collections.abc import AsyncIterator, Coroutine
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
+
+from fastapi import WebSocket, WebSocketDisconnect
 
 from app.models.analysis import AnalysisProgressEvent
 
@@ -86,6 +90,40 @@ class JobQueue:
         for queue in list(self._subscribers.get(job_key, [])):
             await queue.put(event)
 
+    def _unsubscribe(self, job_key: str, queue: "asyncio.Queue") -> None:
+        """Drop one subscriber -- and the key itself once it holds none.
+
+        Removing only the queue leaves `{job_key: []}` behind forever. That
+        matters twice over. Ordinary use grows it: one empty list per run
+        anyone ever opened a progress socket for, never reclaimed. And the
+        key is caller-supplied -- there is no authentication anywhere in this
+        app -- so a retained empty list per distinct key is a dict whose size
+        and contents a caller chooses.
+        """
+        subscribers = self._subscribers.get(job_key)
+        if subscribers is None:
+            return
+        with contextlib.suppress(ValueError):
+            subscribers.remove(queue)
+        if not subscribers:
+            self._subscribers.pop(job_key, None)
+
+    @asynccontextmanager
+    async def subscription(self, job_key: str) -> AsyncIterator["asyncio.Queue"]:
+        """Register a subscriber queue for `job_key`, and always deregister it.
+
+        The one place a subscriber is added and removed. `subscribe` and
+        `stream_progress` both go through it precisely so neither can grow a
+        cleanup path of its own -- a handler that forgot to release its
+        subscriber is the leak this exists to make unrepeatable.
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        self._subscribers.setdefault(job_key, []).append(queue)
+        try:
+            yield queue
+        finally:
+            self._unsubscribe(job_key, queue)
+
     async def subscribe(self, job_key: str) -> AsyncIterator[AnalysisProgressEvent]:
         """Stream progress events for `job_key` as they're published.
 
@@ -98,14 +136,85 @@ class JobQueue:
         the outcome of a possibly-already-finished analysis should read it
         back via `GET /api/analysis/{id}` (or `/api/sessions/{id}`, once
         overlaid) instead of relying on this stream.
+
+        Note that a consumer of this generator only ever releases its
+        subscriber when the generator is closed or exhausted. A WebSocket
+        handler cannot guarantee that on its own, which is why one should
+        call `stream_progress` rather than iterate this directly.
         """
-        queue: asyncio.Queue = asyncio.Queue()
-        self._subscribers.setdefault(job_key, []).append(queue)
-        try:
+        async with self.subscription(job_key) as queue:
             while True:
                 yield await queue.get()
+
+
+async def _wait_for_disconnect(websocket: WebSocket) -> None:
+    """Return as soon as the client's half of `websocket` is gone.
+
+    ASGI delivers a disconnect as a message on the RECEIVE channel and
+    nowhere else. A handler that never reads that channel therefore cannot
+    observe a client going away, no matter how long it waits.
+    """
+    try:
+        while True:
+            message = await websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+    except WebSocketDisconnect:
+        return
+    except RuntimeError:
+        # Starlette raises this if the disconnect was already consumed
+        # elsewhere; either way there is no client left to send to.
+        return
+
+
+async def stream_progress(
+    websocket: WebSocket, job_key: str, *, queue: "JobQueue | None" = None
+) -> None:
+    """Accept `websocket` and forward `job_key`'s events until either side ends.
+
+    Every progress route in this app goes through here, so that none of them
+    can reintroduce the leak this closes.
+
+    Why the receive side is raced against the next event, rather than simply
+    iterating the subscription: a handler that only awaits the next event
+    never learns its client has gone, because a disconnect arrives on the
+    receive channel and nothing was reading it. A closed socket was then
+    noticed only when some later event happened to be published on that exact
+    key -- which, for a run that has already published its last stage, is
+    never. The handler task, its queue, the socket and the `_subscribers`
+    entry all outlived the client, and uvicorn, which waits for its ASGI
+    tasks at shutdown, could not stop at all: after any client had opened a
+    progress socket the process could only be force-killed. That is not an
+    abuse case; it is what happens when someone watches a run and closes the
+    tab.
+
+    Nothing is read FROM the client: the receive task exists to detect the
+    disconnect, and any frame a client sends is discarded. This channel is
+    one-way by design.
+    """
+    jobs = queue if queue is not None else get_queue()
+    await websocket.accept()
+    async with jobs.subscription(job_key) as events:
+        closed = asyncio.ensure_future(_wait_for_disconnect(websocket))
+        try:
+            while True:
+                nxt = asyncio.ensure_future(events.get())
+                try:
+                    await asyncio.wait({nxt, closed}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    # Never leave the pending get() behind: it holds a
+                    # reference to the very queue we are about to release.
+                    if not nxt.done():
+                        nxt.cancel()
+                if closed.done():
+                    return
+                await websocket.send_json(nxt.result().model_dump(by_alias=True))
+        except WebSocketDisconnect:
+            return
         finally:
-            self._subscribers[job_key].remove(queue)
+            closed.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await closed
 
 
 @lru_cache

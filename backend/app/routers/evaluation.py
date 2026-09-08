@@ -38,7 +38,7 @@ import hashlib
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, Query, WebSocket
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -55,7 +55,7 @@ from app.models.evaluation import (
 )
 from app.services.dashboard import list_honeypots
 from app.services.evaluation import runs
-from app.workers.queue import evaluation_job_key, get_queue
+from app.workers.queue import evaluation_job_key, get_queue, stream_progress
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +283,7 @@ async def get_evaluation(run_id: uuid.UUID) -> EvaluationRunOut:
 
 
 @router.websocket("/evaluations/{run_id}/progress")
-async def progress(websocket: WebSocket, run_id: str) -> None:
+async def progress(websocket: WebSocket, run_id: uuid.UUID) -> None:
     """Live stages for a run, from the moment this connects.
 
     No history and no replay -- see `JobQueue.subscribe`. Events published
@@ -295,10 +295,14 @@ async def progress(websocket: WebSocket, run_id: str) -> None:
     One terminal frame is possible without any stage frames before it:
     `stage == "failed"` with an `error`, meaning the run aborted before its
     row existed and nothing will follow.
+
+    `uuid.UUID` and not `str`, matching `GET /api/evaluations/{run_id}`.
+    Publishers key on `str(run_id)`, which is canonical lowercase, so a raw
+    string parameter meant the uppercase or braced spelling of an id -- which
+    the GET accepts and normalises -- opened a channel nobody publishes on:
+    the socket connected, was accepted, and then silently received nothing
+    forever, with no error and no close frame. Parsing here normalises both
+    routes to the same channel, and rejects an id that is not one at all
+    rather than allocating it a channel of its own.
     """
-    await websocket.accept()
-    try:
-        async for event in get_queue().subscribe(evaluation_job_key(run_id)):
-            await websocket.send_json(event.model_dump(by_alias=True))
-    except WebSocketDisconnect:
-        return
+    await stream_progress(websocket, evaluation_job_key(str(run_id)))

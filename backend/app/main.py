@@ -40,12 +40,17 @@ async def lifespan(app: FastAPI):
     # the system to finish it, and that honeypot is then refused a new
     # evaluation. `start_run` only ever reconciles the honeypot it was called
     # for -- which is the run the orphan is blocking -- so the sweep has to
-    # happen here, with no argument, before any request is served. Only rows
-    # too old to still be in progress are touched, so nothing live is
-    # disturbed. Logged rather than fatal: failing to clean up is not a
-    # reason to refuse to serve reads, but it is never silent either.
+    # happen here, with no argument, before any request is served.
+    #
+    # The STARTUP variant, not the age-based `reconcile_stale_runs`: we are
+    # here before the first request, so this process has no run in progress
+    # and every RUNNING row is an orphan whatever its age. The age-based sweep
+    # would leave a row killed two minutes ago alone for 45 minutes and 409
+    # that honeypot with "an evaluation is already running" the whole time.
+    # Logged rather than fatal: failing to clean up is not a reason to refuse
+    # to serve reads, but it is never silent either.
     try:
-        await runs.reconcile_stale_runs()
+        await runs.reconcile_orphaned_runs_at_startup()
     except Exception:  # noqa: BLE001
         logger.exception("could not reconcile stale evaluation runs at startup")
 

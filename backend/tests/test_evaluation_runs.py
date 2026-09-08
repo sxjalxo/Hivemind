@@ -1095,3 +1095,87 @@ def _stub_modules(monkeypatch) -> None:
     monkeypatch.setattr(runs, "_honeypot_fingerprint", _fixed("sha256:BASE"))
     monkeypatch.setattr(runs, "_capture", runs._null_capture)
     monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
+
+
+@pytest.mark.asyncio
+async def test_the_startup_sweep_clears_a_fresh_row_the_in_run_sweep_must_not(started) -> None:
+    """Both halves, or the distinction between the two sweeps is untested.
+
+    The advisory lock a killed process held is already gone -- Postgres drops
+    session locks when the connection dies -- but its row still says `running`.
+    The age-based sweep cannot clear it, because at any other moment a row that
+    young might belong to a live run in another process, and terminating that
+    row underneath it would lose the run it is about to persist. So the next
+    POST for that honeypot takes the lock, reads `is_running` True, and is
+    refused with "an evaluation is already running" -- which is false -- for
+    the full 45-minute cutoff.
+
+    At startup that reasoning does not apply: no run of a process that has
+    only just begun can be live, so every RUNNING row is an orphan whatever
+    its age. Hence two entry points and not a lowered cutoff.
+    """
+    honeypot = "cowrie-startup-sweep-test"
+    run_id = uuid.uuid4()
+    started.track(run_id)
+    # A process killed two minutes into a run: far too recent for the cutoff.
+    killed_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    async with get_session_factory()() as db:
+        db.add(
+            EvaluationRun(
+                id=run_id,
+                honeypot_id=honeypot,
+                status="running",
+                started_at=killed_at,
+                agent_model="deterministic-probes@1",
+                evaluator_status="unavailable",
+                honeypot_fingerprint="sha256:BASE",
+                evaluation_config_fingerprint="sha256:CFG",
+            )
+        )
+        await db.commit()
+
+    # Half one: the sweep `start_run` makes leaves it alone, because a row
+    # this young could belong to a live run in another process.
+    assert await runs.reconcile_stale_runs(honeypot) == []
+    assert await runs.is_running(honeypot) is True
+
+    # Half two: the startup sweep clears it, age notwithstanding.
+    assert run_id in await runs.reconcile_orphaned_runs_at_startup()
+    assert await runs.is_running(honeypot) is False
+
+    run = await runs.load_run(run_id)
+    assert run.status == "failed"
+    assert run.finished_at is not None
+    # FAILED with no explanation would be a worse artefact than the lockout,
+    # and the explanation must be the startup one, not the age-based one.
+    orchestrator = next(m for m in run.modules if m.module == "orchestrator")
+    assert "reconciled as failed" in orchestrator.detail
+    assert "when this process started" in orchestrator.detail
+
+
+@pytest.mark.asyncio
+async def test_the_startup_sweep_does_not_disturb_a_finished_run(started) -> None:
+    """Sweeping every age must not mean sweeping every row."""
+    honeypot = "cowrie-startup-sweep-untouched"
+    run_id = uuid.uuid4()
+    started.track(run_id)
+    now = datetime.now(timezone.utc)
+    async with get_session_factory()() as db:
+        db.add(
+            EvaluationRun(
+                id=run_id,
+                honeypot_id=honeypot,
+                status="completed",
+                started_at=now,
+                finished_at=now,
+                agent_model="deterministic-probes@1",
+                evaluator_status="unavailable",
+                honeypot_fingerprint="sha256:BASE",
+                evaluation_config_fingerprint="sha256:CFG",
+            )
+        )
+        await db.commit()
+
+    assert run_id not in await runs.reconcile_orphaned_runs_at_startup()
+    run = await runs.load_run(run_id)
+    assert run.status == "completed"

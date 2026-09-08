@@ -465,3 +465,33 @@ async def test_oversized_synthetic_session_completes_via_chunk_and_merge() -> No
             await _delete_analysis_and_children(analysis_id)
             await _delete_indicators_for_session(_SYNTHETIC_SESSION_ID)
         await _delete_oversized_session_docs()
+
+
+@pytest.mark.asyncio
+async def test_a_closed_analysis_progress_socket_leaves_no_subscriber_behind() -> None:
+    """The analysis channel has exactly the evaluation channel's failure mode.
+
+    Both handlers went through the same subscribe-and-block body, so both held
+    a task, a queue, a socket and a `_subscribers` entry for the life of the
+    process once a client closed a tab -- and uvicorn, which waits for its
+    ASGI tasks, could then not shut down at all. Both now route through
+    `app.workers.queue.stream_progress`; this asserts it for the analysis
+    route, against the real app so the real route body is what runs.
+    """
+    import asyncio
+
+    from app.main import app
+    from tests.conftest import asgi_websocket
+
+    queue = get_queue()
+    key = analysis_job_key("seed-recon-01")
+    assert key not in queue._subscribers
+
+    async with asgi_websocket(app, "/api/analyze/seed-recon-01/progress") as session:
+        assert session.accepted
+        assert len(queue._subscribers[key]) == 1
+
+        session.disconnect()
+        await asyncio.wait_for(session.task, timeout=5)
+
+    assert key not in queue._subscribers

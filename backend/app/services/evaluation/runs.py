@@ -133,6 +133,7 @@ __all__ = [
     "is_running",
     "list_runs",
     "load_run",
+    "reconcile_orphaned_runs_at_startup",
     "reconcile_stale_runs",
     "start_run",
 ]
@@ -1107,6 +1108,21 @@ def _stale_run_cutoff() -> datetime:
     return datetime.now(timezone.utc) - timedelta(seconds=longest_possible_run)
 
 
+_AGE_BASED_DETAIL = (
+    "still marked running long after any run can take; the process "
+    "that started it never finished it, so the row was reconciled as "
+    "failed. Nothing was measured -- this is not a result about the "
+    "honeypot."
+)
+
+_STARTUP_DETAIL = (
+    "still marked running when this process started, so no run could "
+    "have been in progress; the process that started it never finished "
+    "it, so the row was reconciled as failed. Nothing was measured -- "
+    "this is not a result about the honeypot."
+)
+
+
 async def reconcile_stale_runs(honeypot_id: str | None = None) -> list[uuid.UUID]:
     """Mark RUNNING rows that can no longer be in progress as FAILED.
 
@@ -1117,9 +1133,21 @@ async def reconcile_stale_runs(honeypot_id: str | None = None) -> list[uuid.UUID
     that would ever finish it, `is_running` answers True for that honeypot
     forever, and the honeypot is locked out of evaluation permanently.
 
-    Only rows older than `_stale_run_cutoff()` are touched, so a genuinely
-    concurrent run is never disturbed -- which is what makes it safe to call
-    this on the way into `start_run` as well as at process startup.
+    AGE-BASED, and deliberately so: this is the sweep called on the way into
+    `start_run`, where a run started by ANOTHER process may genuinely be in
+    progress right now. Nothing here can tell a live run's row from an
+    orphan except its age, so only rows older than `_stale_run_cutoff()` --
+    older than every bound a run is subject to -- are touched. Terminating a
+    live run's row underneath it would lose the run it is about to persist.
+
+    At process startup that restriction is unnecessary and actively harmful:
+    no run of a process that has only just begun can be live, so a row killed
+    two minutes ago is as certainly dead as one killed three days ago, yet
+    would survive this sweep and produce a false "already running" 409 for
+    the length of the cutoff. That case has its own entry point,
+    `reconcile_orphaned_runs_at_startup`; do not lower the cutoff here to
+    cover it, because lowering it is exactly what makes the in-`start_run`
+    sweep unsafe.
 
     FAILED, not COMPLETED: the run's modules, probes and scores were never
     persisted, so it established nothing that survived. The reconciliation is
@@ -1129,12 +1157,47 @@ async def reconcile_stale_runs(honeypot_id: str | None = None) -> list[uuid.UUID
 
     Returns the ids it reconciled, so a caller can log or report them.
     """
-    cutoff = _stale_run_cutoff()
+    return await _reconcile(honeypot_id, _stale_run_cutoff(), _AGE_BASED_DETAIL)
+
+
+async def reconcile_orphaned_runs_at_startup() -> list[uuid.UUID]:
+    """Mark EVERY RUNNING row FAILED, regardless of age. STARTUP ONLY.
+
+    Safe here and nowhere else. `JobQueue` and every run task live only in
+    this process's memory (see `app/workers/queue.py`) and this runs before
+    the first request is served, so at this instant this process has no run
+    in progress and cannot acquire one. A `status=running, finished_at=NULL`
+    row is therefore an orphan whatever its age: whichever process wrote it
+    is gone, and Postgres has already dropped the advisory lock that process
+    held, so the honeypot is free while its row says otherwise.
+
+    That gap is the whole point. The age-based `reconcile_stale_runs` leaves
+    a row killed two minutes ago alone for the full cutoff; the next POST for
+    that honeypot then takes the advisory lock, finds `is_running` True, and
+    is refused with "an evaluation is already running" -- which is false --
+    for up to 45 minutes after a restart. Refusing is the safe direction, so
+    this was never a correctness hole, but the message is wrong and the
+    window is long enough to look like a broken feature.
+
+    Called with no honeypot id on purpose: an orphan blocks the run that
+    would otherwise have cleared it, so the sweep cannot be scoped to a
+    honeypot somebody has to ask about first.
+    """
+    return await _reconcile(None, None, _STARTUP_DETAIL)
+
+
+async def _reconcile(
+    honeypot_id: str | None, cutoff: datetime | None, detail: str
+) -> list[uuid.UUID]:
+    """Reconcile RUNNING rows, optionally narrowed by honeypot and by age.
+
+    `cutoff=None` means "every RUNNING row" and is only ever correct when the
+    caller can prove no run is live; see `reconcile_orphaned_runs_at_startup`.
+    """
     async with get_session_factory()() as db:
-        query = select(EvaluationRun).where(
-            EvaluationRun.status == RunStatus.RUNNING,
-            EvaluationRun.started_at < cutoff,
-        )
+        query = select(EvaluationRun).where(EvaluationRun.status == RunStatus.RUNNING)
+        if cutoff is not None:
+            query = query.where(EvaluationRun.started_at < cutoff)
         if honeypot_id is not None:
             query = query.where(EvaluationRun.honeypot_id == honeypot_id)
         stale = (await db.execute(query)).scalars().all()
@@ -1151,12 +1214,7 @@ async def reconcile_stale_runs(honeypot_id: str | None = None) -> list[uuid.UUID
                     run.id,
                     "orchestrator",
                     ModuleStatus.ERROR,
-                    (
-                        "still marked running long after any run can take; the process "
-                        "that started it never finished it, so the row was reconciled as "
-                        "failed. Nothing was measured -- this is not a result about the "
-                        "honeypot."
-                    ),
+                    detail,
                     run.started_at,
                 )
             )

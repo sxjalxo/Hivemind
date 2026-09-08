@@ -21,6 +21,7 @@ test passed or failed.
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -30,11 +31,13 @@ import pytest_asyncio
 from app.db.models import EvaluationCategoryScore, EvaluationRun
 from app.db.session import get_session_factory
 from app.main import app
+from app.models.evaluation import EvaluationProgressEvent
 from app.models.honeypot import Honeypot
 from app.routers import evaluation
 from app.services.evaluation import runs
 from app.services.evaluation.reset import ResetError
 from app.workers.queue import evaluation_job_key, get_queue
+from tests.conftest import asgi_websocket
 
 HONEYPOT_ID = "cowrie-01"
 
@@ -230,22 +233,34 @@ async def test_the_progress_channel_uses_an_id_the_client_already_has(
     class _Socket:
         def __init__(self) -> None:
             self.accepted = False
+            self._incoming: asyncio.Queue = asyncio.Queue()
 
         async def accept(self) -> None:
             self.accepted = True
 
+        async def receive(self) -> dict:
+            # A connected client that sends nothing. The handler now watches
+            # this channel for the disconnect ASGI delivers on it, so a fake
+            # without `receive` is no longer a WebSocket -- see
+            # `app.workers.queue.stream_progress`.
+            return await self._incoming.get()
+
         async def send_json(self, payload: dict) -> None:
             await received.put(payload)
 
+        def disconnect(self) -> None:
+            self._incoming.put_nowait({"type": "websocket.disconnect", "code": 1000})
+
     socket = _Socket()
-    listener = asyncio.create_task(evaluation.progress(socket, run_id))
+    listener = asyncio.create_task(evaluation.progress(socket, uuid.UUID(run_id)))
     for _ in range(20):  # let the handler accept and register its subscription
         await asyncio.sleep(0)
     assert socket.accepted
 
     gate.set()
     event = await asyncio.wait_for(received.get(), timeout=5)
-    listener.cancel()
+    socket.disconnect()
+    await asyncio.wait_for(listener, timeout=5)
 
     assert event["stage"] == "scanning_services"
     assert event["stageIndex"] == 1
@@ -424,14 +439,24 @@ async def test_stale_runs_are_reconciled_at_startup(monkeypatch) -> None:
     `start_run` reconciles only the honeypot it was called for, so without a
     startup sweep an orphan is cleared only by the next run of that same
     honeypot -- which is the run the orphan is blocking.
+
+    Startup must use the AGE-BLIND sweep. The age-based one leaves a row
+    killed two minutes ago alone for the full 45-minute cutoff, and every POST
+    for that honeypot in the meantime is refused with "an evaluation is
+    already running" -- which is false. Nothing this process started can be
+    live here, so age is not a question worth asking.
     """
     from app import main
     from app.seed import seeder
 
-    calls: list[str | None] = []
+    calls: list[str] = []
 
-    async def _reconcile(honeypot_id: str | None = None) -> list:
-        calls.append(honeypot_id)
+    async def _age_based(honeypot_id: str | None = None) -> list:
+        calls.append(f"age-based:{honeypot_id}")
+        return []
+
+    async def _at_startup() -> list:
+        calls.append("startup")
         return []
 
     async def _noop(*args, **kwargs) -> None:
@@ -447,7 +472,8 @@ async def test_stale_runs_are_reconciled_at_startup(monkeypatch) -> None:
         async def dispose(self) -> None:
             return None
 
-    monkeypatch.setattr(runs, "reconcile_stale_runs", _reconcile)
+    monkeypatch.setattr(runs, "reconcile_stale_runs", _age_based)
+    monkeypatch.setattr(runs, "reconcile_orphaned_runs_at_startup", _at_startup)
     monkeypatch.setattr(main, "bootstrap_es", _noop)
     monkeypatch.setattr(main, "get_es", lambda: _Closable())
     monkeypatch.setattr(main, "get_engine", lambda: _Closable())
@@ -456,4 +482,85 @@ async def test_stale_runs_are_reconciled_at_startup(monkeypatch) -> None:
     async with main.lifespan(app):
         pass
 
-    assert calls == [None], "startup must sweep every honeypot, not one"
+    assert calls == ["startup"], (
+        "startup must sweep every honeypot and every age, not one honeypot "
+        "and only rows older than the cutoff"
+    )
+
+
+# --- the progress channel -----------------------------------------------
+#
+# The channel's failure modes are both silent. A handler that cannot see its
+# client disconnect holds a task, a queue, a socket and a `_subscribers` entry
+# for the life of the process -- and uvicorn, which waits for its ASGI tasks,
+# then cannot shut down at all, so the backend can only be force-killed once
+# anyone has watched a run. A run id spelled differently on the WebSocket than
+# on the GET connects, is accepted, and receives nothing forever.
+
+
+async def test_a_client_that_closes_cleanly_leaves_no_subscriber_behind() -> None:
+    """One per viewed run, otherwise, and never reclaimed.
+
+    Not an abuse case: the last stage publishes, the user closes the tab, and
+    nothing is ever published on that key again -- so a handler that only
+    wakes on the next event never wakes.
+    """
+    queue = get_queue()
+    run_id = uuid.uuid4()
+    key = evaluation_job_key(str(run_id))
+    assert key not in queue._subscribers
+
+    async with asgi_websocket(app, f"/api/evaluations/{run_id}/progress") as session:
+        assert session.accepted
+        assert len(queue._subscribers[key]) == 1
+
+        session.disconnect()
+        # The handler task COMPLETES. Before the fix it never returned, which
+        # is precisely what stopped uvicorn from shutting down.
+        await asyncio.wait_for(session.task, timeout=5)
+
+    assert key not in queue._subscribers, "the key itself is retained, not just the queue"
+
+
+async def test_a_run_id_spelled_differently_still_reaches_the_same_channel() -> None:
+    """`GET /api/evaluations/{run_id}` normalises these; the socket must too.
+
+    Publishers key on `str(run_id)`, which is canonical lowercase. With a raw
+    `str` path parameter, a client that passed the uppercase spelling to both
+    endpoints got a valid GET and a WebSocket that connected, was accepted,
+    and then sat silent forever with no error and no close frame.
+    """
+    queue = get_queue()
+    run_id = uuid.uuid4()
+    canonical = evaluation_job_key(str(run_id))
+
+    for spelling in (str(run_id).upper(), "{" + str(run_id) + "}", str(run_id).replace("-", "")):
+        async with asgi_websocket(app, f"/api/evaluations/{spelling}/progress") as session:
+            assert session.accepted, spelling
+            assert canonical in queue._subscribers, spelling
+
+            # Proof it is the same channel and not merely a plausible key:
+            # a publish under the canonical key arrives on this socket.
+            await queue.publish(
+                canonical,
+                EvaluationProgressEvent(stage_index=1, stage="scanning_services"),
+            )
+            frame = await session.receive()
+            assert json.loads(frame["text"])["stage"] == "scanning_services", spelling
+
+            session.disconnect()
+            await asyncio.wait_for(session.task, timeout=5)
+
+        assert canonical not in queue._subscribers, spelling
+
+
+async def test_an_id_that_is_not_a_run_id_at_all_is_refused_a_channel() -> None:
+    """No subscriber is allocated for something that cannot name a run."""
+    queue = get_queue()
+    before = set(queue._subscribers)
+
+    async with asgi_websocket(app, "/api/evaluations/not-a-run-id/progress") as session:
+        assert not session.accepted
+        assert session.opening["type"] == "websocket.close"
+
+    assert set(queue._subscribers) == before

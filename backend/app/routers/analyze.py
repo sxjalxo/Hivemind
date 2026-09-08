@@ -1,8 +1,8 @@
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket
 
 from app.models.analysis import SessionAnalysis
 from app.services.analyzer import load_analysis, run_analysis
-from app.workers.queue import analysis_job_key, get_queue
+from app.workers.queue import analysis_job_key, stream_progress
 
 router = APIRouter()
 
@@ -26,9 +26,10 @@ async def progress(websocket: WebSocket, session_id: str) -> None:
     # connects here after the session's analysis has already finished gets
     # no frames and waits indefinitely; it should read the outcome back via
     # GET /api/analysis/{id} (or the overlaid /api/sessions/{id}) instead.
-    await websocket.accept()
-    try:
-        async for event in get_queue().subscribe(analysis_job_key(session_id)):
-            await websocket.send_json(event.model_dump(by_alias=True))
-    except WebSocketDisconnect:
-        return
+    #
+    # `stream_progress` and not a subscribe loop here: a loop that only awaits
+    # the next event cannot see its client disconnect, and this session's
+    # analysis is exactly the kind that publishes its last frame and then
+    # nothing ever again -- so the subscriber, the task and the socket would
+    # never be released. See `app.workers.queue.stream_progress`.
+    await stream_progress(websocket, analysis_job_key(session_id))
