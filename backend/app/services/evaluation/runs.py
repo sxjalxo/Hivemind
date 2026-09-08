@@ -49,6 +49,18 @@ sketch has them the other way round). tcpdump's `network.activity` fact only
 exists once the capture has been drained, and scoring is a pure function over
 whatever observations exist -- running it after the drain is what lets that
 fact be scored at all, and costs nothing.
+
+**A measurement is never lost to our own crash.** Both of the steps above --
+recording the drained capture, and scoring -- run in `_execute_run`'s
+`finally`, not on its happy path. Anything raised in the orchestration frame
+itself (an `_emit` to a dead queue, the capture failing to start, the
+chain-row build) used to skip them, so `_persist` saw no scores and wrote
+FAILED over probe rows holding `observed` facts in the very same transaction.
+That is the module's own first discipline inverted: our failure erasing a real
+measurement and reporting it as the honeypot's. For the same reason
+`_run_status` falls back to the collected rows when scoring itself could not
+run, and `reconcile_stale_runs` clears a RUNNING row left behind by a process
+that died before any `finally` could run at all.
 """
 
 import asyncio
@@ -120,6 +132,7 @@ __all__ = [
     "is_running",
     "list_runs",
     "load_run",
+    "reconcile_stale_runs",
     "start_run",
 ]
 
@@ -159,6 +172,23 @@ TRUNCATION_NOTICE_ID = "package-truncation-notice"
 # or run B verifies its chains against run A's events.
 CHAIN_INGEST_TIMEOUT_SECONDS = 30.0
 CHAIN_INGEST_POLL_SECONDS = 1.0
+# --- stale-run reconciliation ------------------------------------------
+#
+# A run that dies between its INSERT and `_persist` -- the process is killed,
+# or the database goes away and `_force_terminal` fails too -- leaves
+# `status=running, finished_at=NULL` with nothing left in the system to
+# finish it. `is_running` then answers True for that honeypot forever, and
+# Task 15's 409 would lock the honeypot out permanently with no code path to
+# clear it. So this module reconciles those rows itself.
+#
+# The cutoff is DERIVED, not guessed: a run cannot outlive the sum of every
+# bound it is subject to. A row older than that cannot still be in progress,
+# so reconciling it can never terminate a live run -- which is what makes it
+# safe to sweep on the way into `start_run` rather than only at startup.
+STALE_RUN_MARGIN_SECONDS = 600
+# `ByokClient` gives httpx a 300s timeout and `_evaluate` issues one call per
+# characteristic, sequentially, with no retry.
+_EVALUATOR_WORST_CASE_SECONDS = 300 * len(Characteristic)
 # Cowrie stamps `@timestamp` from the container's clock and Filebeat ships
 # asynchronously. The window is widened by this much on both sides so a small
 # clock offset cannot drop a command that really was executed -- being
@@ -259,6 +289,13 @@ def _evaluator_client() -> LLMClient | None:
     and a shallow-but-plausible realism verdict is the exact failure this
     system exists to prevent. No key means `evaluator_status=UNAVAILABLE`,
     reported as such, with the deterministic measurement fully intact.
+
+    A key WITH an unsupported `BYOK_PROVIDER` is a different thing entirely:
+    `ByokClient.__init__` raises `ValueError`, and that exception is left to
+    propagate to `_evaluate`, which reports it as EVALUATOR_FAILED. It must
+    never be swallowed into `None` -- UNAVAILABLE means "no evaluator was
+    configured", i.e. we never tried, and a misconfiguration reported that way
+    is indistinguishable from an empty .env.
     """
     settings = get_settings()
     if settings.byok_api_key and settings.byok_provider and settings.byok_model:
@@ -295,6 +332,12 @@ async def _run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
     at all, and feeding it a partial command list would score our own ingest
     lag as a honeypot defect. Omitting the chain leaves it `unknown` by
     absence, which scoring excludes from both numerator and denominator.
+
+    The read-back is scoped to the SOURCE PORT of the session opened here, so
+    a concurrent attacker session cannot complete one of our chains. If that
+    port cannot be determined the read-back is not attempted at all: an
+    unscoped one would attribute somebody else's command to this run, and
+    evidence provenance is the promise this whole system rests on.
     """
     loaded = chains_module.load_chains()
     if not loaded:
@@ -302,13 +345,29 @@ async def _run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
 
     started = datetime.now(timezone.utc)
     async with agent_module._open_session(target) as session:
+        source_port = _session_source_port(session)
         for chain in loaded:
             for step in chain.steps:
                 await agent_module._execute(session, step)
     finished = datetime.now(timezone.utc)
 
+    if source_port is None:
+        # The commands WERE executed; we simply cannot prove which log entries
+        # are ours. Every chain is left unverified -- `unknown` by absence,
+        # excluded from numerator and denominator alike -- rather than
+        # verified from events that may belong to another session.
+        return ChainRun(
+            results=[],
+            module_status=ModuleStatus.ERROR,
+            detail=(
+                "could not determine the SSH source port of the chain session, so the "
+                "read-back could not be scoped to it; chains were left unverified rather "
+                "than verified from events that may belong to another session"
+            ),
+        )
+
     wanted = {step for chain in loaded for step in chain.steps}
-    found = await _read_back_commands(honeypot_id, started, finished, wanted)
+    found = await _read_back_commands(honeypot_id, started, finished, wanted, source_port)
 
     results: list[ChainStepResult] = []
     incomplete: list[str] = []
@@ -331,18 +390,53 @@ async def _run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
     return ChainRun(results=results, module_status=ModuleStatus.COMPLETED)
 
 
-async def _search_commands(honeypot_id: str, start: datetime, end: datetime) -> list[dict]:
-    """Cowrie command events for ONE honeypot inside ONE time window.
+def _session_source_port(session) -> int | None:
+    """The local TCP port our SSH connection was opened from, or None.
+
+    This is what scopes the chain read-back to OUR session. Cowrie stamps the
+    client port on every event it writes (`src_port`, renamed to
+    `source.port` by the `cowrie-ecs` ingest pipeline), so it is the one
+    identifier that is BOTH knowable here -- before any of our commands has
+    been indexed, so there is nothing to look up -- and present on the
+    command documents we are about to read back. Cowrie's own `session.id`
+    would be the more natural key, but it only exists once Cowrie has written
+    an event, which is exactly what we are still waiting for.
+
+    None is a real outcome (a stubbed session, a transport already torn
+    down), and the caller must NOT fall back to an unscoped read-back. Without
+    this filter, a real attacker session running `cd /tmp` or `chmod 777
+    xmrig` inside our window would complete a chain's `found` set and put a
+    FOREIGN `cowrie_event_id` into `evaluation_chain_steps`, where it is then
+    cited as this run's evidence.
+    """
+    try:
+        return int(session.client.get_transport().sock.getsockname()[1])
+    except Exception:  # noqa: BLE001 - any failure here means "not known"
+        logger.exception("could not determine the SSH source port of the chain session")
+        return None
+
+
+async def _search_commands(
+    honeypot_id: str, start: datetime, end: datetime, source_port: int
+) -> list[dict]:
+    """Cowrie command events for ONE honeypot session inside ONE time window.
 
     Every filter here is load-bearing:
 
       * `honeypot.id` -- another sensor's traffic is not this run's.
       * `labels.seeded: false` -- the demo corpus is indexed into the same
         index and its synthetic timestamps must never verify a live chain.
+      * `source.port` -- the port OUR chain session was opened from. This is
+        the only filter that separates us from a concurrent attacker: this is
+        a live sensor, and the time window and honeypot id are both things a
+        real session shares with us. Without it, a stranger's `cd /tmp` inside
+        our window completes the `dropper` chain and its event id is stored
+        and cited as our evidence.
       * the `@timestamp` range -- this is what stops run B reading run A's
         commands. Reset preserves cowrie.json by design, so the log is NOT
-        empty when a run starts and time is the only thing separating the
-        two runs' events.
+        empty when a run starts, and source ports are reused over time, so
+        time still has to separate two of OUR OWN runs. Kept as defence in
+        depth alongside the port.
     """
     settings = get_settings()
     result = await get_es().search(
@@ -353,6 +447,7 @@ async def _search_commands(honeypot_id: str, start: datetime, end: datetime) -> 
                     {"term": {"honeypot.id": honeypot_id}},
                     {"term": {"event.action": "cowrie.command.input"}},
                     {"term": {"labels.seeded": False}},
+                    {"term": {"source.port": source_port}},
                     {
                         "range": {
                             "@timestamp": {
@@ -371,7 +466,7 @@ async def _search_commands(honeypot_id: str, start: datetime, end: datetime) -> 
 
 
 async def _read_back_commands(
-    honeypot_id: str, start: datetime, end: datetime, wanted: set[str]
+    honeypot_id: str, start: datetime, end: datetime, wanted: set[str], source_port: int
 ) -> dict[str, CompactedCommand]:
     """Poll until every wanted command is indexed, or the deadline passes.
 
@@ -383,8 +478,18 @@ async def _read_back_commands(
     deadline = time.monotonic() + CHAIN_INGEST_TIMEOUT_SECONDS
     found: dict[str, CompactedCommand] = {}
     while True:
-        for hit in await _search_commands(honeypot_id, start, end):
+        for hit in await _search_commands(honeypot_id, start, end, source_port):
             source = hit["_source"]
+            # The same session scoping the query already applies, re-checked
+            # here on the document itself. The query filter is the efficient
+            # half; this one is the half that cannot be silently lost by a
+            # mapping or pipeline change (`source.port` is renamed from
+            # Cowrie's `src_port` by `cowrie-ecs`, and an unmapped field
+            # makes a term filter match nothing -- or, on a differently
+            # shaped index, everything). An event we cannot attribute to our
+            # own session is not ours.
+            if (source.get("source") or {}).get("port") != source_port:
+                continue
             process = source.get("process") or {}
             command = process.get("command_line")
             # Only the chain's own declared steps. The window is deliberately
@@ -397,6 +502,12 @@ async def _read_back_commands(
                 event_id=hit["_id"],
                 timestamp=source.get("@timestamp", ""),
                 command=command,
+                # NOTE: no live `cowrie.command.input` document carries
+                # `process.output` (the ingest pipeline maps no such field),
+                # so this is always None on the chain path. Harmless today --
+                # `chains.verify_chain` matches on command text -- but a
+                # future output-matching rule would silently never fire for
+                # chains. Fix it here, not in the rulebook.
                 output_excerpt=process.get("output"),
             )
         if len(found) >= len(wanted) or time.monotonic() >= deadline:
@@ -555,7 +666,16 @@ def _chain_summary(row: EvaluationChainStep) -> str:
 
 
 def _bound_package(items: list[EvidenceItem]) -> list[EvidenceItem]:
-    """Bound the WHOLE package, not just each item. See MAX_PACKAGE_CHARS."""
+    """Bound the WHOLE package, not just each item. See MAX_PACKAGE_CHARS.
+
+    The truncation notice is deliberately still an ordinary package item, and
+    therefore still citable as far as `evaluate_characteristic` is concerned:
+    the model has to SEE that items were omitted, and anything rendered into
+    the prompt is by construction in that function's `offered` set. What stops
+    it grounding a verdict is downstream, in `_evaluate`: its id does not parse
+    as a row id, so a verdict citing only it resolves to no evidence and is
+    dropped -- finding AND rating together.
+    """
     kept = items[:MAX_PACKAGE_ITEMS]
     dropped = len(items) - len(kept)
     if kept:
@@ -687,7 +807,21 @@ async def _evaluate(
     than assumed: UNAVAILABLE (both reasons) and EVALUATOR_FAILED all return
     `verdict is None`.
     """
-    client = _evaluator_client()
+    try:
+        client = _evaluator_client()
+    except ValueError as exc:
+        # An unsupported `BYOK_PROVIDER` with a key and a model set. This is
+        # OUR misconfiguration and it must not report as UNAVAILABLE, which
+        # means "no evaluator was configured" -- i.e. we never tried. Reported
+        # that way, `BYOK_PROVIDER=gemini` with a real key is indistinguishable
+        # from an empty .env. EVALUATOR_FAILED is the status that means
+        # "something broke on our side and a rating you would expect is
+        # missing", which is exactly what happened.
+        logger.error("BYOK evaluator is misconfigured on run %s: %s", run_id, exc)
+        collected.evaluator_model = None
+        collected.evaluator_status = EvaluatorStatus.EVALUATOR_FAILED
+        return
+
     collected.evaluator_model = client.model_name if client is not None else None
 
     statuses: list[str] = []
@@ -705,7 +839,6 @@ async def _evaluate(
             continue
 
         verdict = outcome.verdict
-        collected.ratings[characteristic] = verdict.rating
         finding = EvaluationFinding(
             run_id=run_id,
             characteristic=characteristic,
@@ -716,16 +849,28 @@ async def _evaluate(
         )
         evidence = _evidence_for(finding.id, verdict.cited_evidence_ids)
         if not evidence:
-            # Every citation resolved to nothing persistable. A finding with
-            # no evidence is rejected at COMMIT by design, and writing one
-            # would abort the whole transaction -- so it is dropped here,
-            # loudly, rather than taking the run's other results with it.
+            # Every citation resolved to nothing persistable -- reachable via
+            # TRUNCATION_NOTICE_ID, which is a legitimate member of `offered`
+            # (so `evaluate_characteristic` accepts the verdict) but does not
+            # parse as a row id (so `_evidence_for` skips it).
+            #
+            # The finding is dropped here, loudly: one with no evidence is
+            # rejected at COMMIT by design, and writing it would take the
+            # run's other results down with it. The RATING is dropped WITH it,
+            # which is why the assignment below sits under this check and not
+            # above it. `evaluator.py`'s own rule is that an uncited rating is
+            # as ungrounded as an invented one; a rating that outlived its
+            # finding would render as a realism verdict with no critique, no
+            # recommendation and no evidence, indistinguishable from a
+            # grounded one -- the shallow-but-plausible verdict this system
+            # exists to prevent.
             logger.warning(
                 "dropping evaluator finding for %s on run %s: no cited evidence resolved",
                 characteristic,
                 run_id,
             )
             continue
+        collected.ratings[characteristic] = verdict.rating
         collected.findings.append(PendingFinding(finding=finding, evidence=evidence))
 
     collected.evaluator_status = _aggregate_evaluator_status(statuses)
@@ -808,6 +953,26 @@ async def _flush_findings(db) -> None:
     await db.flush()
 
 
+def _established_anything(collected: _Collected) -> bool:
+    """Did the run determine even one fact, either way?
+
+    Exactly `scoring._fraction_observed`'s own boundary, read off the collected
+    rows instead of the scores: a fact counts as established when its status is
+    not `unknown`, and `observed` and `not_observed` both count (a honeypot
+    that genuinely failed a check was still measured).
+
+    This exists so the run's status does not depend on scoring having run.
+    Scoring is a pure function and a failure in it -- or anywhere else in the
+    orchestration frame -- is OURS. Deciding the status from `scores` alone
+    made our own failure erase a real measurement and report it as the
+    honeypot establishing nothing.
+    """
+    return any(
+        row.fact_status != FactStatus.UNKNOWN
+        for row in (*collected.probe_rows, *collected.chain_rows)
+    )
+
+
 def _run_status(collected: _Collected) -> str:
     """COMPLETED unless the run established nothing at all.
 
@@ -820,10 +985,23 @@ def _run_status(collected: _Collected) -> str:
     measurement of a honeypot that failed every checkable thing -- is
     COMPLETED.
 
+    `collected.scores` alone is not enough to decide that, which is the point
+    of the second check. Scores are computed in `_execute_run`'s `finally` so
+    an exception in the orchestration frame cannot lose them, but `_score`
+    itself can fail, and then the dict is empty while `evaluation_probe_results`
+    holds `observed` facts that would have scored. FAILED there would state
+    that the honeypot established nothing, on the evidence of rows saying it
+    did -- our failure reported as its own. So a run that established any fact
+    is COMPLETED whether or not scoring got as far as expressing it as a
+    number. Nothing is invented to fill the gap: the score stays absent.
+
     A run is never left RUNNING: `start_run`'s `finally` always writes one of
-    these two.
+    these two, and `reconcile_stale_runs` covers the case where the process
+    died before that `finally` could run at all.
     """
     if any(score is not None for score in collected.scores.values()):
+        return RunStatus.COMPLETED
+    if _established_anything(collected):
         return RunStatus.COMPLETED
     return RunStatus.FAILED
 
@@ -905,6 +1083,89 @@ async def _force_terminal(run_id: uuid.UUID) -> None:
         logger.exception("could not mark run %s terminal", run_id)
 
 
+def _stale_run_cutoff() -> datetime:
+    """The instant before which a RUNNING row cannot still be in progress.
+
+    Derived from the bounds a run is actually subject to, rather than picked:
+    the capture drain, the nmap timeout, the agent's own time budget, the
+    chain ingest deadline and the evaluator's worst case, plus a margin for
+    everything unbounded but short (three database round trips, the reset and
+    the two fingerprints). Over-estimating is the safe direction -- it only
+    delays reconciliation -- while under-estimating would terminate a live
+    run's row underneath it.
+    """
+    settings = get_settings()
+    longest_possible_run = (
+        settings.evaluation_capture_timeout_seconds
+        + settings.evaluation_nmap_timeout_seconds
+        + settings.evaluation_agent_max_seconds
+        + CHAIN_INGEST_TIMEOUT_SECONDS
+        + _EVALUATOR_WORST_CASE_SECONDS
+        + STALE_RUN_MARGIN_SECONDS
+    )
+    return datetime.now(timezone.utc) - timedelta(seconds=longest_possible_run)
+
+
+async def reconcile_stale_runs(honeypot_id: str | None = None) -> list[uuid.UUID]:
+    """Mark RUNNING rows that can no longer be in progress as FAILED.
+
+    `start_run`'s `finally` covers every failure the process survives. It
+    cannot cover the process not surviving: killed mid-run, or `_persist` AND
+    `_force_terminal` both failing because the database went away. The row is
+    then left `status=running, finished_at=NULL` with nothing in the system
+    that would ever finish it, `is_running` answers True for that honeypot
+    forever, and the honeypot is locked out of evaluation permanently.
+
+    Only rows older than `_stale_run_cutoff()` are touched, so a genuinely
+    concurrent run is never disturbed -- which is what makes it safe to call
+    this on the way into `start_run` as well as at process startup.
+
+    FAILED, not COMPLETED: the run's modules, probes and scores were never
+    persisted, so it established nothing that survived. The reconciliation is
+    recorded as an `orchestrator` module row, because `evaluation_runs` has no
+    detail column and a status with no explanation is a worse artefact than
+    the lockout it replaces.
+
+    Returns the ids it reconciled, so a caller can log or report them.
+    """
+    cutoff = _stale_run_cutoff()
+    async with get_session_factory()() as db:
+        query = select(EvaluationRun).where(
+            EvaluationRun.status == RunStatus.RUNNING,
+            EvaluationRun.started_at < cutoff,
+        )
+        if honeypot_id is not None:
+            query = query.where(EvaluationRun.honeypot_id == honeypot_id)
+        stale = (await db.execute(query)).scalars().all()
+        # Read the ids BEFORE the commit: the session expires its instances
+        # there, and touching an attribute afterwards would try to refresh
+        # from a session that is already closing.
+        reconciled = [run.id for run in stale]
+
+        for run in stale:
+            run.status = RunStatus.FAILED
+            run.finished_at = datetime.now(timezone.utc)
+            db.add(
+                _module_row(
+                    run.id,
+                    "orchestrator",
+                    ModuleStatus.ERROR,
+                    (
+                        "still marked running long after any run can take; the process "
+                        "that started it never finished it, so the row was reconciled as "
+                        "failed. Nothing was measured -- this is not a result about the "
+                        "honeypot."
+                    ),
+                    run.started_at,
+                )
+            )
+        await db.commit()
+
+    for run_id in reconciled:
+        logger.warning("reconciled orphaned evaluation run %s as failed", run_id)
+    return reconciled
+
+
 # --- the run ------------------------------------------------------------
 
 
@@ -915,12 +1176,37 @@ async def _execute_run(
     budget: AgentBudget,
     collected: _Collected,
 ) -> None:
+    """Run every module, then score and evaluate what they established.
+
+    Two results are deliberately NOT allowed to depend on this frame finishing
+    cleanly, because both are measurements the run really made:
+
+      * tcpdump's drained outcome. `Capture.stop` runs in the context
+        manager's own `finally` and sets `.outcome` even while an exception
+        propagates past it, so the fact exists whatever went wrong above --
+        but recording it AFTER the `async with` meant a propagating exception
+        skipped the recording, and the drained fact became neither a module
+        row nor an observation.
+      * `collected.scores`. `_persist` decides the run's status from what was
+        established, and an exception anywhere in this frame -- an `_emit` to
+        a dead queue, the capture failing to start, the chain-row build loop
+        -- must not erase a real measurement and report it as the honeypot
+        having failed.
+
+    Both therefore happen in `_finalize`, called from a `finally`, and neither
+    half of it may raise: an exception there would replace the exception
+    actually propagating and misreport the cause of the run's failure.
+    """
     settings = get_settings()
     by_probe_id = {probe.id: probe.characteristic for probe in probes.load_probes()}
     observations_by_characteristic: dict[str, list[sanity.Observation]] = {}
     all_observations: list[sanity.Observation] = []
     chain_results: list[ChainStepResult] = []
     endpoint = f"{target.host}:{target.port}"
+    # Bound before the `async with` so `_finalize` is safe even when
+    # `_capture.__aenter__` itself raises (`tcpdump.Capture.start` catches
+    # only OSError; anything else propagates and `cap` is never assigned).
+    cap: _NoCapture | tcpdump.Capture = _NoCapture()
 
     def record(outcome: ModuleOutcome, module_target: str, started: datetime) -> None:
         _record_outcome(
@@ -934,77 +1220,101 @@ async def _execute_run(
             all_observations,
         )
 
-    await _emit(run_id, 0)
-    async with _capture(
-        settings.evaluation_capture_interface, settings.evaluation_capture_timeout_seconds
-    ) as cap:
-        # nmap
-        started = datetime.now(timezone.utc)
-        await _emit(run_id, 1)
+    def _finalize() -> None:
+        """Keep what the run actually established. Must never raise."""
         try:
-            record(
-                await _run_nmap(target.host, settings.evaluation_nmap_timeout_seconds),
-                target.host,
-                started,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("nmap stage failed on run %s", run_id)
-            collected.modules.append(
-                _module_row(run_id, "nmap", ModuleStatus.ERROR, str(exc), started)
-            )
-
-        # agent probes
-        started = datetime.now(timezone.utc)
-        await _emit(run_id, 2)
-        try:
-            record(await _run_agent(target, budget), endpoint, started)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("agent stage failed on run %s", run_id)
-            record(
-                ModuleOutcome(
-                    module="agent",
-                    module_status=ModuleStatus.ERROR,
-                    detail=str(exc),
-                    observations=_unknown_probe_observations(),
-                ),
-                endpoint,
-                started,
-            )
-
-        # chains
-        started = datetime.now(timezone.utc)
-        await _emit(run_id, 3, probes_executed=len(collected.probe_rows))
-        try:
-            chain_run = _as_chain_run(await _run_chains(target, honeypot_id))
-            chain_results = chain_run.results
-            collected.modules.append(
-                _module_row(
-                    run_id, "chains", chain_run.module_status, chain_run.detail, started
+            # The capture is drained on the way out of the context manager --
+            # including while an exception propagates through it -- so
+            # tcpdump's fact exists by the time we get here, and recording it
+            # here rather than after the `async with` is what stops a
+            # propagating exception from dropping it. Recording it before
+            # scoring is also what lets it be scored at all.
+            if cap.outcome is not None:
+                record(
+                    cap.outcome,
+                    settings.evaluation_capture_interface,
+                    datetime.now(timezone.utc),
                 )
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("chain stage failed on run %s", run_id)
-            collected.modules.append(
-                _module_row(run_id, "chains", ModuleStatus.ERROR, str(exc), started)
-            )
+        except Exception:  # noqa: BLE001 - see this function's contract
+            logger.exception("could not record the capture outcome on run %s", run_id)
+        try:
+            collected.scores = _score(observations_by_characteristic, chain_results)
+            # `attack_possibilities` is OMITTED, not None, when there were no
+            # chains (`scoring.py` adds the key only `if chain_results:`).
+            # Nothing reads it by name, so its absence stays an absence: no
+            # KeyError, and never a 0.0 conjured to fill the gap.
+        except Exception:  # noqa: BLE001 - see this function's contract
+            # Scoring is a pure function over observations, so a failure here
+            # is entirely ours. The probe and chain rows it would have scored
+            # are already collected and still persist, and `_run_status` reads
+            # them directly, so the run is not reported as the honeypot having
+            # established nothing. No score is invented to fill the gap.
+            logger.exception("scoring failed on run %s", run_id)
 
-        for result in chain_results:
-            collected.chain_rows.append(
-                EvaluationChainStep(run_id=run_id, **result.model_dump())
-            )
+    await _emit(run_id, 0)
+    try:
+        async with _capture(
+            settings.evaluation_capture_interface, settings.evaluation_capture_timeout_seconds
+        ) as started_capture:
+            cap = started_capture
+            # nmap
+            started = datetime.now(timezone.utc)
+            await _emit(run_id, 1)
+            try:
+                record(
+                    await _run_nmap(target.host, settings.evaluation_nmap_timeout_seconds),
+                    target.host,
+                    started,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("nmap stage failed on run %s", run_id)
+                collected.modules.append(
+                    _module_row(run_id, "nmap", ModuleStatus.ERROR, str(exc), started)
+                )
 
-    # The capture is drained on the way out of the context manager above --
-    # including when a stage raised -- so tcpdump's fact exists by here and
-    # can be scored like any other.
-    if cap.outcome is not None:
-        record(cap.outcome, settings.evaluation_capture_interface, datetime.now(timezone.utc))
+            # agent probes
+            started = datetime.now(timezone.utc)
+            await _emit(run_id, 2)
+            try:
+                record(await _run_agent(target, budget), endpoint, started)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("agent stage failed on run %s", run_id)
+                record(
+                    ModuleOutcome(
+                        module="agent",
+                        module_status=ModuleStatus.ERROR,
+                        detail=str(exc),
+                        observations=_unknown_probe_observations(),
+                    ),
+                    endpoint,
+                    started,
+                )
 
-    await _emit(run_id, 4, chain_steps_verified=len(collected.chain_rows))
-    collected.scores = _score(observations_by_characteristic, chain_results)
-    # `attack_possibilities` is OMITTED, not None, when there were no chains
-    # (`scoring.py` adds the key only `if chain_results:`). Nothing below
-    # reads it by name, so its absence stays an absence: no KeyError, and
-    # never a 0.0 conjured to fill the gap.
+            # chains
+            started = datetime.now(timezone.utc)
+            await _emit(run_id, 3, probes_executed=len(collected.probe_rows))
+            try:
+                chain_run = _as_chain_run(await _run_chains(target, honeypot_id))
+                chain_results = chain_run.results
+                collected.modules.append(
+                    _module_row(
+                        run_id, "chains", chain_run.module_status, chain_run.detail, started
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("chain stage failed on run %s", run_id)
+                collected.modules.append(
+                    _module_row(run_id, "chains", ModuleStatus.ERROR, str(exc), started)
+                )
+
+            for result in chain_results:
+                collected.chain_rows.append(
+                    EvaluationChainStep(run_id=run_id, **result.model_dump())
+                )
+
+        await _emit(run_id, 4, chain_steps_verified=len(collected.chain_rows))
+    finally:
+        _finalize()
 
     _contradiction_findings(run_id, collected, all_observations)
 
@@ -1035,6 +1345,16 @@ async def start_run(honeypot_id: str) -> uuid.UUID:
         max_seconds=settings.evaluation_agent_max_seconds,
     )
     container = settings.evaluation_container_name
+
+    # A crashed run leaves `status=running` with nothing left in the system to
+    # clear it, and `is_running` would then answer True for this honeypot
+    # forever. Sweep those first so a crash cannot lock the honeypot out. Only
+    # rows too old to still be in progress are touched, so a genuinely
+    # concurrent run is never disturbed -- and this is deliberately NOT an
+    # admission check: enforcing one-run-at-a-time (the TOCTOU between
+    # `is_running` and the INSERT, and the 409) is Task 15's job at the API
+    # layer. This only makes sure the flag it reads can ever be cleared.
+    await reconcile_stale_runs(honeypot_id)
 
     # --- preconditions. No run row can exist before all three succeed. ---
     await _reset_target(container)
@@ -1237,6 +1557,15 @@ async def is_running(honeypot_id: str) -> bool:
 
     Concurrent runs interleave their traffic, which makes tcpdump attribution
     and the chain read-back's time window meaningless.
+
+    This is a plain read and enforces nothing on its own. Two callers can both
+    see False and both insert, and there is no partial unique index on
+    `(honeypot_id) WHERE status = 'running'` to stop them -- closing that
+    TOCTOU is Task 15's job at the API layer, and it needs a migration this
+    task must not add. What IS guaranteed here is that a True answer can
+    always be cleared: `reconcile_stale_runs`, called on the way into
+    `start_run`, fails any row that can no longer be in progress, so a crashed
+    run cannot lock a honeypot out permanently.
     """
     async with get_session_factory()() as db:
         found = (

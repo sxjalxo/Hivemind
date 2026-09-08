@@ -14,6 +14,20 @@ class Settings(BaseSettings):
     ollama_model: str = "llama3.1:8b"
     ollama_temperature: float = 0.3
 
+    # The cloud evaluator. `byok_provider` must be one of the providers
+    # `app.services.llm.byok.ByokClient` implements (`anthropic`, `openai`);
+    # anything else raises `ValueError` when the client is constructed.
+    #
+    # That check is deliberately NOT repeated as a validator here. These
+    # settings are loaded once for the whole process, by everything from the
+    # dashboard to session analysis, and rejecting the value at load time
+    # would turn one mistyped evaluator env var into a total application
+    # failure -- far past the blast radius of the feature it configures.
+    # Instead `runs._evaluate` lets the ValueError surface and reports the run
+    # as `evaluator_status=evaluator_failed`, which is what a misconfiguration
+    # is. It must never read as `unavailable`: that means "no evaluator was
+    # configured", i.e. we never tried, and it would make a wrong provider
+    # indistinguishable from an empty .env.
     byok_provider: str | None = None
     byok_api_key: str | None = None
     byok_model: str | None = None
