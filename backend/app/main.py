@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
@@ -12,6 +13,7 @@ from app.routers import (
     analyze,
     attackers,
     dashboard,
+    evaluation,
     events,
     honeypots,
     intel,
@@ -21,6 +23,9 @@ from app.routers import (
     sessions,
     status,
 )
+from app.services.evaluation import runs
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -30,6 +35,20 @@ async def lifespan(app: FastAPI):
     await bootstrap_es()
     if await seeded_count() == 0:
         await seed()
+
+    # A process killed mid-run leaves `status=running` with nothing left in
+    # the system to finish it, and that honeypot is then refused a new
+    # evaluation. `start_run` only ever reconciles the honeypot it was called
+    # for -- which is the run the orphan is blocking -- so the sweep has to
+    # happen here, with no argument, before any request is served. Only rows
+    # too old to still be in progress are touched, so nothing live is
+    # disturbed. Logged rather than fatal: failing to clean up is not a
+    # reason to refuse to serve reads, but it is never silent either.
+    try:
+        await runs.reconcile_stale_runs()
+    except Exception:  # noqa: BLE001
+        logger.exception("could not reconcile stale evaluation runs at startup")
+
     yield
     await get_es().close()
     await get_engine().dispose()
@@ -64,6 +83,7 @@ def create_app() -> FastAPI:
     api.include_router(mitre.router, tags=["mitre"])
     api.include_router(reports.router, tags=["reports"])
     api.include_router(events.router, tags=["events"])
+    api.include_router(evaluation.router, tags=["evaluation"])
     app.include_router(api)
     return app
 

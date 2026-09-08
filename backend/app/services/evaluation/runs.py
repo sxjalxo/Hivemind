@@ -98,6 +98,7 @@ from app.models.evaluation import (
     ChainStepOut,
     EvaluationProgressEvent,
     EvaluationRunOut,
+    EvaluationRunSummary,
     EvidenceOut,
     FindingOut,
     LiveEvaluationMetrics,
@@ -1323,13 +1324,20 @@ async def _execute_run(
     await _emit(run_id, 6, characteristics_evaluated=len(collected.ratings))
 
 
-async def start_run(honeypot_id: str) -> uuid.UUID:
+async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
     """Run one evaluation end to end and return its id.
 
     Raises before any row exists when the preconditions fail -- see the module
     docstring for why reset and the fingerprints abort rather than degrade.
     After the row exists, this never raises: every stage failure is recorded
     and the run always reaches a terminal status.
+
+    `run_id` lets the CALLER allocate the id. `POST /api/evaluations`
+    dispatches this to the background and must return the id immediately,
+    but progress is published under `evaluation_job_key(run_id)` -- an id
+    minted here and returned only after every stage finished would be a
+    channel key no client could subscribe to until the work was already over.
+    Omitting it keeps the original behaviour: an id is generated here.
     """
     settings = get_settings()
     # Built from settings ONLY. There must be no code path from an HTTP
@@ -1361,7 +1369,8 @@ async def start_run(honeypot_id: str) -> uuid.UUID:
     honeypot_fp = await _honeypot_fingerprint(container)
     config_fp = _evaluation_config_fingerprint(budget)
 
-    run_id = uuid.uuid4()
+    if run_id is None:
+        run_id = uuid.uuid4()
     async with get_session_factory()() as db:
         db.add(
             EvaluationRun(
@@ -1550,6 +1559,80 @@ async def list_runs() -> list[EvaluationRunOut]:
             .all()
         )
         return [await _hydrate(db, run) for run in runs]
+
+
+def _to_summary(
+    run: EvaluationRun, scores: list[EvaluationCategoryScore]
+) -> EvaluationRunSummary:
+    return EvaluationRunSummary(
+        id=str(run.id),
+        honeypot_id=run.honeypot_id,
+        status=run.status,
+        started_at=_iso(run.started_at),
+        finished_at=_iso(run.finished_at) if run.finished_at else None,
+        agent_model=run.agent_model,
+        evaluator_model=run.evaluator_model,
+        evaluator_status=run.evaluator_status,
+        honeypot_fingerprint=run.honeypot_fingerprint,
+        evaluation_config_fingerprint=run.evaluation_config_fingerprint,
+        category_scores=[
+            CategoryScoreOut(
+                characteristic=score.characteristic,
+                # Carried as stored. None means "not established" and is
+                # never coerced to 0, and the two scores stay separate.
+                deterministic_score=score.deterministic_score,
+                evaluator_rating=score.evaluator_rating,
+            )
+            for score in scores
+        ],
+    )
+
+
+async def list_run_summaries(limit: int) -> list[EvaluationRunSummary]:
+    """History rows, bounded, without the per-run hydration.
+
+    `list_runs` calls `_hydrate` per run: every probe result, finding,
+    evidence row and chain step, at ~7 queries each. A history page needs
+    only what renders a row and a trend, so this is two queries in total
+    however many runs are returned, and `limit` bounds the number of rows.
+    Full hydration stays on `load_run` -- this is an addition, not a
+    replacement.
+    """
+    async with get_session_factory()() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(EvaluationRun)
+                    .order_by(EvaluationRun.started_at.desc(), EvaluationRun.id)
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not rows:
+            return []
+        # Explicit ORDER BY for the same reason `_hydrate` gives: without one
+        # Postgres makes no ordering guarantee, and the scores would reshuffle
+        # between two reads of the same run.
+        scores = (
+            (
+                await db.execute(
+                    select(EvaluationCategoryScore)
+                    .where(EvaluationCategoryScore.run_id.in_([row.id for row in rows]))
+                    .order_by(
+                        EvaluationCategoryScore.run_id, EvaluationCategoryScore.characteristic
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    by_run: dict[uuid.UUID, list[EvaluationCategoryScore]] = {}
+    for score in scores:
+        by_run.setdefault(score.run_id, []).append(score)
+    return [_to_summary(row, by_run.get(row.id, [])) for row in rows]
 
 
 async def is_running(honeypot_id: str) -> bool:

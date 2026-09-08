@@ -13,6 +13,8 @@ it?" -- and are never combined. There is deliberately no composite field
 anywhere below.
 """
 
+from pydantic import ConfigDict
+
 from app.serialization import CamelModel
 
 # Mirrors ANALYSIS_STAGES in app.models.analysis: a run publishes one progress
@@ -53,12 +55,29 @@ class LiveEvaluationMetrics(CamelModel):
     characteristics_evaluated: int | None = None
 
 
+# A run dispatched to the background can fail BEFORE its row exists -- the
+# reset or either fingerprint aborts, by the deliberate ruling above. That
+# exception reaches no HTTP caller, `GET /evaluations/{id}` would 404 with no
+# explanation, and a subscriber would wait forever. So the router publishes
+# one terminal event under this stage instead: our own failure is reported,
+# never hidden. It is the only event that carries `error`, and the only one
+# with a negative `stage_index` -- it is not a position in EVALUATION_STAGES.
+EVALUATION_FAILED_STAGE = "failed"
+EVALUATION_FAILED_STAGE_INDEX = -1
+
+
 class EvaluationProgressEvent(CamelModel):
-    """Same shape as AnalysisProgressEvent, different stage vocabulary."""
+    """Same shape as AnalysisProgressEvent, different stage vocabulary.
+
+    `stage == EVALUATION_FAILED_STAGE` is terminal: the run never started and
+    nothing will follow on this channel. Every other event is a stage the run
+    entered, and `error` is None on all of them.
+    """
 
     stage_index: int
     stage: str
     metrics: LiveEvaluationMetrics | None = None
+    error: str | None = None
 
 
 class CategoryScoreOut(CamelModel):
@@ -128,6 +147,63 @@ class EvaluationRunOut(CamelModel):
     findings: list[FindingOut]
     chain_steps: list[ChainStepOut]
     probe_results: list[ProbeResultOut]
+
+
+class StartEvaluationRequest(CamelModel):
+    """The entire request body for starting a run: one honeypot id.
+
+    CONTAINMENT. There is deliberately no host, port, address, target,
+    command or timeout field here, and `extra="forbid"` means one cannot be
+    smuggled in either. The target is resolved from the honeypot registry to
+    a fixed compose service name in settings (see
+    `app.services.evaluation.runs.start_run`), so there is no code path from
+    an HTTP request to an arbitrary host. Adding a field to this model widens
+    the attack surface and is asserted against in
+    `tests/test_evaluation_api.py`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    honeypot_id: str
+
+
+class StartEvaluationResponse(CamelModel):
+    """202 Accepted. The run is dispatched, not finished.
+
+    The id is allocated by the router precisely so the client has the
+    progress channel's key before the run publishes anything. `JobQueue`
+    has no replay, so events between this response and the client's
+    subscription are lost -- `GET /api/evaluations/{run_id}` is the
+    authoritative record, the channel is only the live view.
+    """
+
+    run_id: str
+
+
+class EvaluationRunSummary(CamelModel):
+    """One history row: enough to render a list and a trend, and no more.
+
+    `EvaluationRunOut` carries every probe result, finding, evidence row and
+    chain step, hydrated with ~7 queries per run -- returning a list of those
+    would transfer the whole evaluation database to draw a table. The
+    category scores are here because a trend line needs them; everything
+    per-run-detail stays behind `GET /api/evaluations/{run_id}`.
+
+    `deterministic_score` and `evaluator_rating` travel side by side, never
+    combined, and None still means "not established".
+    """
+
+    id: str
+    honeypot_id: str
+    status: str
+    started_at: str
+    finished_at: str | None = None
+    agent_model: str
+    evaluator_model: str | None = None
+    evaluator_status: str
+    honeypot_fingerprint: str
+    evaluation_config_fingerprint: str
+    category_scores: list[CategoryScoreOut]
 
 
 class RunComparison(CamelModel):
