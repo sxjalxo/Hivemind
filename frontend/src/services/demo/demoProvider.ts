@@ -399,4 +399,43 @@ export const DemoProvider: DataProvider = {
     await delay(260);
     return dashboard(range);
   },
+
+  async listEvaluations(limit) {
+    await delay(220);
+    // The backend caps this at 100 and rejects more with a 422; the demo just
+    // slices, because there is nothing here to reject.
+    return limit === undefined
+      ? demo.evaluationRunSummaries
+      : demo.evaluationRunSummaries.slice(0, limit);
+  },
+
+  async getEvaluation(id) {
+    await delay(200);
+    const run = demo.evaluationRuns.find((r) => r.id === id);
+    if (!run) throw new Error(`Evaluation run ${id} not found in demo dataset`);
+    return run;
+  },
+
+  /**
+   * Mirrors the 202: a run id and nothing else. The demo returns an EXISTING
+   * run's id so the follow-up getEvaluation resolves — it does not fabricate a
+   * run that was never measured.
+   */
+  async startEvaluation(_honeypotId) {
+    await delay(400);
+    return { runId: demo.evaluationRuns[0]!.id };
+  },
+
+  async compareEvaluations(base, head) {
+    await delay(260);
+    const from = demo.evaluationRuns.find((r) => r.id === base);
+    const to = demo.evaluationRuns.find((r) => r.id === head);
+    if (!from || !to)
+      throw new Error(`Evaluation run ${from ? head : base} not found in demo dataset`);
+    return demo.compareEvaluationRuns(from, to);
+  },
+
+  // subscribeEvaluationProgress is deliberately omitted: there is no real
+  // stage source here, and inventing one would make a spinner imply knowledge
+  // no backend sent. The optional method exists for exactly this case.
 };

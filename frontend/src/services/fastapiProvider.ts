@@ -3,14 +3,19 @@ import type { AnalysisProgressEvent, DashboardData, DataProvider, Unsubscribe } 
 import type {
   AttackSession,
   AttackerProfile,
+  EvaluationProgressEvent,
+  EvaluationRun,
+  EvaluationRunSummary,
   Honeypot,
   HoneypotEvent,
   Indicator,
   MitreCoverage,
   Paginated,
+  RunComparison,
   ServiceStatus,
   SessionAnalysis,
   SessionTimelineEvent,
+  StartEvaluationResponse,
   ThreatReport,
 } from "@/types";
 
@@ -97,4 +102,49 @@ export const FastAPIProvider: DataProvider = {
     request<ThreatReport>(endpoints.reports, { method: "POST", body: { sessionId } }),
 
   getDashboard: (range) => request<DashboardData>("/api/dashboard", { query: { range } }),
+
+  listEvaluations: (limit) =>
+    request<EvaluationRunSummary[]>(endpoints.evaluations, { query: { limit } }),
+
+  getEvaluation: (id) => request<EvaluationRun>(endpoints.evaluation(id)),
+
+  /**
+   * POST /api/evaluations — 202 Accepted with only { runId }.
+   *
+   * The body is camelCase because StartEvaluationRequest declares camelCase
+   * aliases AND extra="forbid": a snake_case key or one extra field is a 422,
+   * not a silently ignored one.
+   */
+  startEvaluation: (honeypotId) =>
+    request<StartEvaluationResponse>(endpoints.evaluations, {
+      method: "POST",
+      body: { honeypotId },
+    }),
+
+  compareEvaluations: (base, head) =>
+    request<RunComparison>(endpoints.evaluationCompare, { query: { base, head } }),
+
+  /**
+   * Live stage channel for a running evaluation.
+   *
+   * Connects to WS /api/evaluations/{run_id}/progress and forwards each
+   * EvaluationProgressEvent frame. `runId` must be the exact string the 202
+   * returned: the route parses it as a UUID, so anything else is rejected at
+   * the handshake with a 403.
+   *
+   * There is no replay and no completion frame — a socket opened after the run
+   * finished stays silent. The one frame that matters on its own is the
+   * terminal `failed` frame, which reports a run that never got a row and so
+   * has no GET to read back.
+   */
+  subscribeEvaluationProgress(runId, onEvent): Unsubscribe {
+    const wsBase = API_BASE_URL.replace(/^http/, "ws");
+    const socket = new WebSocket(`${wsBase}${endpoints.evaluation(runId)}/progress`);
+
+    socket.onmessage = (message) => {
+      onEvent(JSON.parse(message.data as string) as EvaluationProgressEvent);
+    };
+
+    return () => socket.close();
+  },
 };

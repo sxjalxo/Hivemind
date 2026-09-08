@@ -2,6 +2,9 @@ import type {
   AnalysisStage,
   AttackSession,
   AttackerProfile,
+  EvaluationProgressEvent,
+  EvaluationRun,
+  EvaluationRunSummary,
   Honeypot,
   HoneypotEvent,
   Indicator,
@@ -9,9 +12,11 @@ import type {
   LogQuery,
   MitreCoverage,
   Paginated,
+  RunComparison,
   ServiceStatus,
   SessionAnalysis,
   SessionTimelineEvent,
+  StartEvaluationResponse,
   ThreatReport,
 } from "@/types";
 
@@ -78,6 +83,58 @@ export interface DataProvider {
 
   getReports(): Promise<ThreatReport[]>;
   createReport(sessionId: string): Promise<ThreatReport>;
+
+  /**
+   * Bounded history rows, newest first. NOT full runs: a summary carries no
+   * findings, modules, chain steps or probe results. Read one run in full with
+   * getEvaluation.
+   *
+   * `limit` defaults to DEFAULT_EVALUATION_LIMIT server-side and is capped at
+   * MAX_EVALUATION_LIMIT — 101 or more is rejected with a 422, not clamped.
+   */
+  listEvaluations(limit?: number): Promise<EvaluationRunSummary[]>;
+
+  /**
+   * One run in full, and the authoritative record of what it established.
+   *
+   * A 404 is not always "not yet started": a run that failed before its row
+   * existed 404s permanently, and its only record is the terminal progress
+   * frame. Do not poll this forever waiting for a row that will never appear.
+   */
+  getEvaluation(id: string): Promise<EvaluationRun>;
+
+  /**
+   * Dispatch a run. Resolves with only a run id — the run has NOT happened yet
+   * (the backend answers 202 Accepted). Take the id, subscribe to progress with
+   * that exact string, then getEvaluation when the run ends.
+   *
+   * Rejects with a 409 when an evaluation is already running for that honeypot.
+   */
+  startEvaluation(honeypotId: string): Promise<StartEvaluationResponse>;
+
+  /**
+   * Delta between two runs. Never refused: a configuration change is reported
+   * in `classification` and `differences` rather than hidden by a refusal.
+   */
+  compareEvaluations(base: string, head: string): Promise<RunComparison>;
+
+  /**
+   * Optional live stage channel for a running evaluation.
+   *
+   * Optional for the same reason as subscribeAnalysisProgress: a provider
+   * without a real source of stage updates omits it, and the UI shows an
+   * indeterminate running state rather than inventing progress.
+   *
+   * The channel has NO replay and NO completion frame. A subscription opened
+   * after the run finished receives nothing, forever. Treat this as decoration
+   * over getEvaluation, which is the authoritative record — except for the
+   * terminal `failed` frame, which may be the ONLY record of a run that never
+   * got a row.
+   */
+  subscribeEvaluationProgress?(
+    runId: string,
+    onEvent: (event: EvaluationProgressEvent) => void,
+  ): Unsubscribe;
 
   getDashboard(range: string): Promise<DashboardData>;
 }

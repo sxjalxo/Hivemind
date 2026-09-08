@@ -77,4 +77,7 @@ export const endpoints = {
   reports: "/api/reports",
   status: "/api/status",
   attacker: (ip: string) => `/api/attackers/${encodeURIComponent(ip)}`,
+  evaluations: "/api/evaluations",
+  evaluation: (id: string) => `/api/evaluations/${encodeURIComponent(id)}`,
+  evaluationCompare: "/api/evaluations/compare",
 } as const;

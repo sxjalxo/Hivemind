@@ -33,3 +33,4 @@ export * from "./analysis";
 export * from "./mitre";
 export * from "./threatIntel";
 export * from "./report";
+export * from "./evaluation";

