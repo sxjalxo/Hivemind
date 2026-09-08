@@ -28,6 +28,36 @@ CONTAINER_PYTHON = "/cowrie/cowrie-env/bin/python3"
 # name into a clear error instead of an obscure `docker exec` failure.
 CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
+# How much of a failed command's output survives into the exception message.
+# A command inside the container can emit megabytes on a bad day, and these
+# messages are not only read by a human at a terminal -- an evaluation run
+# persists its failure and logs it. An unbounded message turns one broken
+# `docker exec` into a multi-megabyte DB row and a log line nothing will
+# render. The HEAD is kept rather than the tail: the cause is what the
+# process printed first (`OCI runtime exec failed: ... not found in $PATH`,
+# a traceback's `SystemExit` line), and a scrolling wall of output after it
+# adds nothing a longer excerpt would recover.
+ERROR_DETAIL_LIMIT = 500
+
+
+def error_detail(stdout: bytes, stderr: bytes) -> str:
+    """The best available diagnostic from a failed docker call, bounded.
+
+    stderr first, then stdout. Falling back is not defensive padding: a
+    failed `docker exec` against this image reports on STDOUT with stderr
+    empty. Observed against the live container --
+    `docker exec hivemind-cowrie-1 /no/such/bin` exits 127 with 141 bytes on
+    stdout and 0 on stderr. Reading stderr alone yields an empty detail on
+    precisely the failure this project keeps hitting, and the honeypot is
+    distroless so there is no shell to go and look with afterwards.
+    """
+    detail = stderr.decode("utf-8", "replace").strip()
+    if not detail:
+        detail = stdout.decode("utf-8", "replace").strip()
+    if len(detail) > ERROR_DETAIL_LIMIT:
+        detail = detail[:ERROR_DETAIL_LIMIT] + f"... [{len(detail)} chars truncated]"
+    return detail
+
 
 class ContainerExecError(RuntimeError):
     """`docker` could not be run, or the process it started failed."""
@@ -77,13 +107,9 @@ async def run(argv: list[str], *, timeout_seconds: float) -> bytes:
         ) from exc
 
     if process.returncode != 0:
-        detail = stderr.decode("utf-8", "replace").strip()
-        if not detail:
-            # Some docker CLI failures (a failed `exec`, for one) report on
-            # stdout, so an empty stderr is not proof there is no message.
-            detail = stdout.decode("utf-8", "replace").strip()
         raise ContainerExecError(
-            f"{' '.join(argv[:3])} failed with exit code {process.returncode}: {detail}"
+            f"{' '.join(argv[:3])} failed with exit code {process.returncode}: "
+            f"{error_detail(stdout, stderr)}"
         )
 
     return stdout

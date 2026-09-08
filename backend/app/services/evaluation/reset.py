@@ -26,12 +26,15 @@ import contextlib
 from pathlib import PurePosixPath
 
 from app.services.evaluation.container import CONTAINER_NAME as _CONTAINER_NAME
-from app.services.evaluation.container import CONTAINER_PYTHON
+from app.services.evaluation.container import CONTAINER_PYTHON, error_detail
 
 # The Cowrie image is distroless -- `container.py` owns that fact, the
-# interpreter path it forces, and the container-name grammar. Both are
+# interpreter path it forces, and the container-name grammar. All are
 # imported rather than restated so this module and `fingerprints.py` cannot
-# drift apart on what is actually runnable inside the honeypot.
+# drift apart on what is actually runnable inside the honeypot. `error_detail`
+# comes from there for the same reason: which stream a failed `docker exec`
+# reports on, and how much of it is worth keeping, is a fact about this
+# container, not a policy each caller gets to re-derive.
 
 # Directories whose *contents* an evaluation creates. These name directories,
 # not globs: `asyncio.create_subprocess_exec` runs no shell, so a `*` would
@@ -305,7 +308,7 @@ async def _clear_one(container: str, path: str, timeout_seconds: float) -> None:
         ) from exc
 
     try:
-        _, stderr = await asyncio.wait_for(
+        stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=timeout_seconds
         )
     except TimeoutError as exc:
@@ -324,10 +327,15 @@ async def _clear_one(container: str, path: str, timeout_seconds: float) -> None:
         ) from exc
 
     if process.returncode != 0:
-        detail = stderr.decode("utf-8", "replace").strip()
+        # `error_detail` falls back to stdout and bounds the length. Reading
+        # stderr alone loses the message entirely on the failure this image
+        # actually produces: a `docker exec` naming a binary the distroless
+        # image does not have exits 127 with the OCI error on STDOUT and
+        # stderr empty. There is no shell in the container to go and
+        # investigate with, so that string is the only diagnostic there is.
         raise ResetError(
             f"reset of {path} in {container!r} failed with exit code "
-            f"{process.returncode}: {detail}"
+            f"{process.returncode}: {error_detail(stdout, stderr)}"
         )
 
 

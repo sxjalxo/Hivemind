@@ -7,12 +7,16 @@ through them. Every test below is aimed at that direction of failure.
 """
 
 import asyncio
+import hashlib
 import shutil
+from pathlib import Path
 
 import pytest
 
-from app.services.evaluation import container, fingerprints
+from app.services.evaluation import container, fingerprints, probes
 from app.services.evaluation.agent import AgentBudget
+from app.services.evaluation.static import chains
+from app.services.mitre import rules
 
 BUDGET = AgentBudget(max_commands=40, max_seconds=120)
 
@@ -62,6 +66,65 @@ def _fake_docker(monkeypatch, *, image: bytes, config_digest: bytes, spawned: li
 
 
 # ---------------------------------------------------------------------------
+# Redirecting the loaders. The config fingerprint is taken over the objects
+# the `@lru_cache`d loaders SERVED, not over whatever is on disk now, so a
+# test that wants a different configuration has to change what the loaders
+# hold -- which is the point of Finding 1 and is exercised directly below.
+# ---------------------------------------------------------------------------
+
+_LOADERS = {
+    # name -> (module, path attribute, caches to clear, extra yaml to append)
+    "probes": (
+        probes,
+        "_PROBES_PATH",
+        lambda: (probes._raw, probes.load_probes),
+        '  - id: extra_probe\n    characteristic: sanity\n    command: "id"\n',
+    ),
+    "chains": (
+        chains,
+        "_CHAINS_PATH",
+        lambda: (chains._raw, chains.load_chains),
+        '  - id: extra_chain\n    steps: ["whoami"]\n    expected_technique_ids: ["T1033"]\n',
+    ),
+    "rulebook": (
+        rules,
+        "_RULEBOOK_PATH",
+        lambda: (rules.load_rules, rules._compiled),
+        '  - id: T9999\n    name: extra\n    tactic: discovery\n    pattern: "zzz"\n',
+    ),
+}
+
+
+@pytest.fixture
+def reload_loader(monkeypatch):
+    """Point one loader at a file and force it to actually re-read it.
+
+    Clearing the `@lru_cache` is what makes a swap take effect at all; the
+    teardown restores the real path FIRST and then clears again, so no later
+    test in the session inherits a cache warmed from a temp file.
+    """
+    cleared: list = []
+
+    def swap(name: str, path: Path) -> None:
+        module, path_attr, caches, _ = _LOADERS[name]
+        monkeypatch.setattr(module, path_attr, path)
+        for cache in caches():
+            cache.cache_clear()
+            cleared.append(cache)
+
+    yield swap
+
+    monkeypatch.undo()
+    for cache in cleared:
+        cache.cache_clear()
+
+
+def _real_source(name: str) -> str:
+    module, path_attr, _, _ = _LOADERS[name]
+    return Path(getattr(module, path_attr)).read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # The evaluation-config fingerprint: everything on OUR side.
 # ---------------------------------------------------------------------------
 
@@ -101,45 +164,134 @@ def test_the_config_fingerprint_is_prefixed_and_hex() -> None:
     int(hexdigest, 16)
 
 
+def test_the_budget_is_dumped_whole_rather_than_field_by_field() -> None:
+    # Enumerating `max_commands` and `max_seconds` by hand means adding a
+    # third field to AgentBudget leaves two runs under materially different
+    # budgets fingerprinting byte-identically until somebody remembers to
+    # edit _config_parts. The fingerprint must not depend on that memory.
+    parts = fingerprints._config_parts(BUDGET)
+    assert parts["budget"] == BUDGET.model_dump(mode="json")
+    assert set(parts["budget"]) == set(AgentBudget.model_fields)
+
+
 # --- Finding 4: content, not a hand-maintained version string --------------
 
 
-@pytest.mark.parametrize(
-    "attribute",
-    ["_PROBES_PATH", "_CHAINS_PATH", "_RULEBOOK_PATH"],
-)
+@pytest.mark.parametrize("name", list(_LOADERS))
 def test_editing_a_config_file_changes_the_fingerprint_without_a_version_bump(
-    monkeypatch, tmp_path, attribute
+    reload_loader, tmp_path, name
 ) -> None:
-    # PROBE_SET_VERSION and CHAIN_SET_VERSION are hand-maintained strings in
-    # the yaml. Fingerprinting by the declared version alone means editing a
-    # probe's command -- changing exactly what the run can find -- leaves the
-    # fingerprint identical, and the compare endpoint calls the two runs
-    # comparable. The real yaml is never mutated here.
-    stand_in = tmp_path / "config.yaml"
-    stand_in.write_text('version: "1"\nprobes: []\nchains: []\nrules: []\n', encoding="utf-8")
-    monkeypatch.setattr(fingerprints, attribute, stand_in)
+    # The declared `version` in each yaml is a hand-maintained string.
+    # Fingerprinting by it alone means editing a probe's command -- changing
+    # exactly what the run can find -- leaves the fingerprint identical, and
+    # the compare endpoint calls the two runs comparable. The real yaml is
+    # never mutated here; a copy of it is, and the loader is pointed at the
+    # copy and made to re-read, which is what a restarted process does.
+    stand_in = tmp_path / f"{name}.yaml"
+    stand_in.write_text(_real_source(name), encoding="utf-8")
+    reload_loader(name, stand_in)
     before = fingerprints.evaluation_config_fingerprint(BUDGET)
 
     # Same declared version, different content.
-    stand_in.write_text(
-        'version: "1"\nprobes: [{id: x}]\nchains: [{id: x}]\nrules: [{id: x}]\n',
-        encoding="utf-8",
-    )
+    stand_in.write_text(_real_source(name) + _LOADERS[name][3], encoding="utf-8")
+    reload_loader(name, stand_in)
     after = fingerprints.evaluation_config_fingerprint(BUDGET)
 
     assert before != after, (
-        f"{attribute} content changed but the fingerprint did not; two runs "
+        f"{name} content changed but the fingerprint did not; two runs "
         f"under materially different configurations would claim to be comparable"
     )
 
 
 def test_a_missing_config_file_raises_rather_than_fingerprinting_nothing(
-    monkeypatch, tmp_path
+    reload_loader, tmp_path
 ) -> None:
-    monkeypatch.setattr(fingerprints, "_PROBES_PATH", tmp_path / "absent.yaml")
+    reload_loader("probes", tmp_path / "absent.yaml")
     with pytest.raises(fingerprints.FingerprintError):
         fingerprints.evaluation_config_fingerprint(BUDGET)
+
+
+def test_malformed_config_raises_rather_than_fingerprinting_a_default(
+    reload_loader, tmp_path
+) -> None:
+    # A probe that will not validate is not "no probes", and must never
+    # reach the fingerprint as one.
+    stand_in = tmp_path / "probes.yaml"
+    stand_in.write_text('version: "1"\nprobes:\n  - id: broken\n', encoding="utf-8")
+    reload_loader("probes", stand_in)
+    with pytest.raises(fingerprints.FingerprintError):
+        fingerprints.evaluation_config_fingerprint(BUDGET)
+
+
+# --- Finding 1: the fingerprint describes the config the RUN executes ------
+
+
+def test_the_fingerprint_describes_the_loaded_config_not_a_later_disk_edit(
+    reload_loader, tmp_path
+) -> None:
+    # The loaders are @lru_cache'd, so a long-lived API process executes the
+    # yaml as it was when first read. A fingerprint that re-read the file
+    # would record a configuration the run never used: edit probes.yaml under
+    # a running process and run A executes v1 while recording sha256(v2);
+    # restart, and run B executes v2 and records sha256(v2) too. Identical
+    # fingerprints, different probe sets, one trend line drawn through both.
+    stand_in = tmp_path / "probes.yaml"
+    stand_in.write_text(_real_source("probes"), encoding="utf-8")
+    reload_loader("probes", stand_in)
+
+    executing = probes.load_probes()
+    before = fingerprints.evaluation_config_fingerprint(BUDGET)
+
+    # Someone edits the file. The running process is unaffected...
+    stand_in.write_text(_real_source("probes") + _LOADERS["probes"][3], encoding="utf-8")
+    assert probes.load_probes() == executing, "the loader is supposed to be cached"
+
+    # ...and so is the fingerprint, because it describes the same run.
+    assert fingerprints.evaluation_config_fingerprint(BUDGET) == before
+
+    # The recorded digest is the digest of what the run would execute.
+    parts = fingerprints._config_parts(BUDGET)
+    expected = fingerprints._content_digest(
+        {
+            "version": str(probes._raw()["version"]),
+            "probes": [probe.model_dump(mode="json") for probe in probes.load_probes()],
+        }
+    )
+    assert parts["probe_set_sha256"] == expected
+
+    # Only a restart -- the loader actually re-reading -- moves it.
+    reload_loader("probes", stand_in)
+    assert fingerprints.evaluation_config_fingerprint(BUDGET) != before
+
+
+@pytest.mark.parametrize(
+    ("name", "version_key", "digest_key"),
+    [("probes", "probe_set", "probe_set_sha256"), ("chains", "chain_set", "chain_set_sha256")],
+)
+def test_the_declared_version_and_its_hash_describe_the_same_file(
+    reload_loader, tmp_path, name, version_key, digest_key
+) -> None:
+    # The original defect in miniature: `probe_set` came from a module
+    # constant fixed at import while `probe_set_sha256` was read fresh from
+    # disk, so one stored fingerprint could name version 1 and hash version
+    # 2. Both must come from the loader's single cached read.
+    source = _real_source(name)
+    stand_in = tmp_path / f"{name}.yaml"
+    stand_in.write_text(source.replace('version: "1"', 'version: "97"', 1), encoding="utf-8")
+    reload_loader(name, stand_in)
+    first = fingerprints._config_parts(BUDGET)
+    assert first[version_key] == "97"
+
+    stand_in.write_text(source.replace('version: "1"', 'version: "98"', 1), encoding="utf-8")
+    reload_loader(name, stand_in)
+    second = fingerprints._config_parts(BUDGET)
+
+    # Same content, different declared version: both halves moved together.
+    assert second[version_key] == "98"
+    assert second[digest_key] != first[digest_key], (
+        f"{version_key} changed but {digest_key} did not -- the two halves of "
+        f"one stored fingerprint would describe different file versions"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +388,31 @@ async def test_a_missing_container_utility_raises_instead_of_digesting_nothing(
 
 
 @pytest.mark.asyncio
+async def test_a_127_reported_only_on_stdout_still_reaches_the_caller(monkeypatch) -> None:
+    # The shape docker actually produces, verified against the live
+    # container: `docker exec hivemind-cowrie-1 /no/such/bin` exits 127 with
+    # the OCI message on STDOUT and stderr EMPTY. A stderr-only reader
+    # reports "exit code 127: " and the operator loses the only diagnostic
+    # there is -- the image is distroless, so there is no shell to look with.
+    async def _spawn(argv):
+        if "inspect" in argv:
+            return _FakeProc(0, stdout=b"sha256:aaaa\n")
+        return _FakeProc(
+            127,
+            stdout=b"OCI runtime exec failed: exec failed: unable to start container "
+            b'process: exec: "/cowrie/cowrie-env/bin/python3": stat '
+            b"/cowrie/cowrie-env/bin/python3: no such file or directory\n",
+            stderr=b"",
+        )
+
+    monkeypatch.setattr(container, "_spawn", _spawn)
+
+    with pytest.raises(fingerprints.FingerprintError) as exc:
+        await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    assert "OCI runtime exec failed" in str(exc.value)
+
+
+@pytest.mark.asyncio
 async def test_a_failing_docker_inspect_raises(monkeypatch) -> None:
     async def _spawn(argv):
         return _FakeProc(1, stderr=b"Error: No such object: nope\n")
@@ -245,6 +422,25 @@ async def test_a_failing_docker_inspect_raises(monkeypatch) -> None:
     with pytest.raises(fingerprints.FingerprintError) as exc:
         await fingerprints.honeypot_fingerprint("nope")
     assert "No such object" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_container_is_a_fingerprint_error_not_a_docker_error(
+    monkeypatch,
+) -> None:
+    # `_container_config_digest` is called directly by the live tests, which
+    # guard on FingerprintError. A bare ContainerExecError escaping it turns
+    # an intended skip into a hard failure on any machine that has docker
+    # but has not run `docker compose up` -- CI, a fresh clone.
+    async def _spawn(argv):
+        return _FakeProc(1, stderr=b"Error response from daemon: No such container: nope\n")
+
+    monkeypatch.setattr(container, "_spawn", _spawn)
+
+    with pytest.raises(fingerprints.FingerprintError) as exc:
+        await fingerprints._container_config_digest("nope", 5.0)
+    assert not isinstance(exc.value, container.ContainerExecError)
+    assert "No such container" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -308,7 +504,7 @@ async def test_a_hanging_docker_call_is_bounded_and_raises(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_two_fingerprints_are_independent(monkeypatch, tmp_path) -> None:
+async def test_the_two_fingerprints_are_independent(monkeypatch, reload_loader, tmp_path) -> None:
     # This separation is the whole point: if they were merged, editing one
     # of OUR probe definitions between two runs would read as a honeypot
     # improvement.
@@ -319,7 +515,7 @@ async def test_the_two_fingerprints_are_independent(monkeypatch, tmp_path) -> No
     # Change only OUR side.
     stand_in = tmp_path / "probes.yaml"
     stand_in.write_text('version: "1"\nprobes: []\n', encoding="utf-8")
-    monkeypatch.setattr(fingerprints, "_PROBES_PATH", stand_in)
+    reload_loader("probes", stand_in)
     honeypot_after = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
     config_after = fingerprints.evaluation_config_fingerprint(BUDGET)
 
@@ -349,49 +545,92 @@ def test_the_evaluator_model_is_not_part_of_the_config_fingerprint() -> None:
 # Live: the real container. Skips when docker or the honeypot is absent, so
 # the default suite stays hermetic. Read-only -- nothing is written into the
 # honeypot.
+#
+# Every call that touches docker sits inside the guarded block. A container
+# that goes away between two calls must skip, not fail, and the guard has to
+# name every exception those calls can raise -- `_container_config_digest`
+# used to leak `container.ContainerExecError`, which is not a
+# `FingerprintError`, so this file hard-failed on any machine with docker
+# installed but the stack not up.
 # ---------------------------------------------------------------------------
 
 LIVE_CONTAINER = "hivemind-cowrie-1"
+LIVE_UNREACHABLE = (fingerprints.FingerprintError, container.ContainerExecError, OSError)
+
+# cowrie.cfg is bind-mounted read-only from the host into the container
+# (`./infra/cowrie/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro`), so the
+# bytes Cowrie reads are byte-for-byte this file. That makes the host copy an
+# INDEPENDENT expected value for the config component -- the only way to
+# check that component is real rather than a constant.
+HOST_COWRIE_CFG = Path(__file__).resolve().parents[2] / "infra" / "cowrie" / "cowrie.cfg"
+
+
+def _host_config_sha256() -> str:
+    return hashlib.sha256(HOST_COWRIE_CFG.read_bytes()).hexdigest()
 
 
 @pytest.mark.asyncio
 async def test_live_honeypot_fingerprint_is_real_and_stable() -> None:
     if shutil.which("docker") is None:
         pytest.skip("docker not available")
+    if not HOST_COWRIE_CFG.is_file():
+        pytest.skip(f"{HOST_COWRIE_CFG} not present")
 
     try:
         first = await fingerprints.honeypot_fingerprint(LIVE_CONTAINER)
-    except fingerprints.FingerprintError as exc:
+        second = await fingerprints.honeypot_fingerprint(LIVE_CONTAINER)
+        image = (
+            await container.run(
+                ["docker", "inspect", "--format", "{{.Image}}", LIVE_CONTAINER],
+                timeout_seconds=30.0,
+            )
+        ).decode("utf-8", "replace").strip()
+    except LIVE_UNREACHABLE as exc:
         pytest.skip(f"cowrie container not reachable: {exc}")
 
-    second = await fingerprints.honeypot_fingerprint(LIVE_CONTAINER)
     assert first == second
     assert first.startswith("sha256:")
 
-    # The defect the draft shipped: an empty config component. Prove the
-    # config actually read back by digesting a known-different input the
-    # same way and confirming the real one is not the empty-string digest.
-    empty = fingerprints._digest(
-        {
-            "image": "",
-            "config": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        }
-    )
-    assert first != empty
+    # Both components are checked against independently-known values, so
+    # this cannot pass on a fingerprint that has gone constant. Asserting
+    # only `first != _digest({"image": "", "config": sha256("")})` does not:
+    # the image halves already differ, so it holds no matter what the config
+    # component is -- including the empty-string digest the draft produced.
+    assert image and image != ""
+    assert first == fingerprints._digest({"image": image, "config": _host_config_sha256()})
 
 
 @pytest.mark.asyncio
 async def test_live_config_digest_matches_the_bytes_cowrie_actually_reads() -> None:
     if shutil.which("docker") is None:
         pytest.skip("docker not available")
+    if not HOST_COWRIE_CFG.is_file():
+        pytest.skip(f"{HOST_COWRIE_CFG} not present")
 
     try:
         digest = await fingerprints._container_config_digest(LIVE_CONTAINER, 30.0)
-    except fingerprints.FingerprintError as exc:
+    except LIVE_UNREACHABLE as exc:
         pytest.skip(f"cowrie container not reachable: {exc}")
 
     assert len(digest) == 64
     int(digest, 16)
-    # sha256 of the empty string -- what the plan's draft produced on every
-    # single call because `cat` does not exist in the distroless image.
-    assert digest != "e3b0c44298fc1c14" "9afbf4c8996fb924" "27ae41e4649b934c" "a495991b7852b855"
+    # The real check, not "is not the empty digest": the file is bind-mounted
+    # read-only, so the in-container digest must equal the host file's.
+    assert digest == _host_config_sha256(), (
+        f"the honeypot is reading a different cowrie.cfg than {HOST_COWRIE_CFG}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_live_an_absent_container_skips_rather_than_erroring() -> None:
+    # Docker present, container absent -- CI and a fresh clone. Every guarded
+    # live call above must raise something `LIVE_UNREACHABLE` catches, or the
+    # skip is not a skip.
+    if shutil.which("docker") is None:
+        pytest.skip("docker not available")
+
+    absent = "hivemind-cowrie-absent-for-tests"
+    with pytest.raises(LIVE_UNREACHABLE):
+        await fingerprints.honeypot_fingerprint(absent)
+    with pytest.raises(LIVE_UNREACHABLE):
+        await fingerprints._container_config_digest(absent, 30.0)

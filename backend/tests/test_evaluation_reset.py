@@ -230,13 +230,14 @@ def test_no_reset_path_carries_a_glob() -> None:
 
 
 class _FakeProc:
-    def __init__(self, returncode: int, stderr: bytes = b"") -> None:
+    def __init__(self, returncode: int, stderr: bytes = b"", *, stdout: bytes = b"") -> None:
         self.returncode = returncode
         self._stderr = stderr
+        self._stdout = stdout
         self.killed = False
 
     async def communicate(self):
-        return (b"", self._stderr)
+        return (self._stdout, self._stderr)
 
     def kill(self) -> None:
         self.killed = True
@@ -280,6 +281,53 @@ async def test_missing_rm_regression_is_reported_with_code_and_stderr(monkeypatc
     assert "executable file not found" in message
     assert "hivemind-cowrie-1" in message
     assert reset.RESET_PATHS[0] in message
+
+
+@pytest.mark.asyncio
+async def test_an_exec_failure_reported_only_on_stdout_is_not_lost(monkeypatch) -> None:
+    # The shape docker ACTUALLY produces for this container, verified live:
+    # `docker exec hivemind-cowrie-1 /no/such/bin` exits 127 with the OCI
+    # message on STDOUT and stderr EMPTY. Reading stderr alone yields
+    # "exit code 127: " with nothing after it -- and the image is distroless,
+    # so there is no shell to go and find out what happened afterwards. The
+    # test above models the failure on stderr, which is why it never caught
+    # this.
+    observed_stdout = (
+        b"OCI runtime exec failed: exec failed: unable to start container process: "
+        b'exec: "/cowrie/cowrie-env/bin/python3": stat '
+        b"/cowrie/cowrie-env/bin/python3: no such file or directory\n"
+    )
+
+    async def _fake_spawn(argv):
+        return _FakeProc(127, b"", stdout=observed_stdout)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError) as exc:
+        await reset.reset_target("hivemind-cowrie-1")
+
+    message = str(exc.value)
+    assert "127" in message
+    assert "OCI runtime exec failed" in message
+    assert not message.rstrip().endswith("127:"), "the only diagnostic was dropped"
+
+
+@pytest.mark.asyncio
+async def test_a_huge_failure_stream_is_truncated_but_keeps_the_cause(monkeypatch) -> None:
+    # A failing reset is persisted and logged by the run orchestrator. An
+    # unbounded detail turns one broken `docker exec` into a multi-megabyte
+    # row; the head is kept because that is where the cause is printed.
+    async def _fake_spawn(argv):
+        return _FakeProc(1, b"SystemExit: reset target is not a directory\n" + b"x" * 5_000_000)
+
+    monkeypatch.setattr(reset, "_spawn", _fake_spawn)
+
+    with pytest.raises(reset.ResetError) as exc:
+        await reset.reset_target("hivemind-cowrie-1")
+
+    message = str(exc.value)
+    assert "reset target is not a directory" in message
+    assert len(message) < 1000
 
 
 @pytest.mark.asyncio
