@@ -23,15 +23,15 @@ proceed as though the state were clean.
 
 import asyncio
 import contextlib
-import re
 from pathlib import PurePosixPath
 
-# The Cowrie image is distroless. There is no `rm`, `sh`, `bash`, `ls` or
-# `find` -- all four were probed and all four return exit 127 with
-# `executable file not found in $PATH`. The interpreter Cowrie itself runs
-# on is the only executable in the image, and `docker exec` does not apply
-# the image entrypoint, so it must be named by absolute path.
-CONTAINER_PYTHON = "/cowrie/cowrie-env/bin/python3"
+from app.services.evaluation.container import CONTAINER_NAME as _CONTAINER_NAME
+from app.services.evaluation.container import CONTAINER_PYTHON
+
+# The Cowrie image is distroless -- `container.py` owns that fact, the
+# interpreter path it forces, and the container-name grammar. Both are
+# imported rather than restated so this module and `fingerprints.py` cannot
+# drift apart on what is actually runnable inside the honeypot.
 
 # Directories whose *contents* an evaluation creates. These name directories,
 # not globs: `asyncio.create_subprocess_exec` runs no shell, so a `*` would
@@ -110,10 +110,6 @@ PRESERVED_PATHS: tuple[str, ...] = (
     # it if the backend were ever switched. Preserved, not reset.
     "/cowrie/cowrie-git/var/lib/cowrie/snapshots",
 )
-
-# Docker's own container-name grammar. An invalid name would otherwise turn
-# into a `docker exec` failure at a point where it is harder to read.
-_CONTAINER_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 _DEFAULT_TIMEOUT_SECONDS = 30.0
 
