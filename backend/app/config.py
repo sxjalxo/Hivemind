@@ -41,6 +41,22 @@ class Settings(BaseSettings):
     evaluation_capture_interface: str = "eth0"
     evaluation_agent_max_commands: int = 40
     evaluation_agent_max_seconds: int = 120
+    # Cowrie's shipped userdb accepts `root` with any password except a
+    # handful of blacklisted ones. These are credentials FOR a honeypot, not
+    # a secret: the whole point of the target is that anyone can log into it.
+    evaluation_ssh_username: str = "root"
+    evaluation_ssh_password: str = "hivemind-evaluation"
+    # The container `reset` clears and `honeypot_fingerprint` inspects. A
+    # compose-derived name, never caller-supplied.
+    evaluation_container_name: str = "hivemind-cowrie-1"
+    evaluation_nmap_timeout_seconds: int = 120
+    evaluation_capture_timeout_seconds: int = 30
+    # NOTE: none of the evaluation_* settings above are covered by
+    # `evaluation_config_fingerprint`, which describes the probe set, chain
+    # set, rulebook and agent budget only. Two runs against different targets,
+    # interfaces or timeouts fingerprint identically. See
+    # app.services.evaluation.fingerprints for why that boundary is drawn
+    # there and what else it leaves uncovered.
 
 
 @lru_cache
