@@ -1145,6 +1145,20 @@ export const reports: ThreatReport[] = [
  *    characteristic and a null one are different things.
  *
  * deterministicScore and evaluatorRating are never combined anywhere here.
+ *
+ * Three values are copied from what the backend actually writes, because a
+ * fixture that disagrees with the wire teaches the UI the wrong shape:
+ *
+ *  * `agentModel` is "deterministic-probes@<probe set version>", NOT a model
+ *    name. `agent.run_probes` is paramiko plus a fixed probe list, so no model
+ *    drives it; naming one would make a reader attribute a run-to-run
+ *    difference to a model change that never happened.
+ *  * `evaluatorModel` is a cloud BYOK model. The evaluator NEVER falls back to
+ *    the local 8b model — the paper measured sub-70b models as returning only
+ *    superficial critique in this role, so no key means evaluatorStatus
+ *    "unavailable" (see `evaluationRunB`), never a local substitute.
+ *  * Both fingerprints are "sha256:" + 64 hex characters. They are opaque and
+ *    long; truncate them for display, never assume a readable tag.
  */
 const evaluationRunA: EvaluationRun = {
   id: "8f3c1d20-4a55-4f18-9b2e-6c1a77d90a11",
@@ -1152,11 +1166,12 @@ const evaluationRunA: EvaluationRun = {
   status: "completed",
   startedAt: at("09:12:04"),
   finishedAt: at("09:18:41"),
-  agentModel: "llama3.1:8b",
-  evaluatorModel: "llama3.1:8b",
+  agentModel: "deterministic-probes@1",
+  evaluatorModel: "claude-sonnet-4-5",
   evaluatorStatus: "completed",
-  honeypotFingerprint: "cowrie@2.5.0+cfg:4f19a3c8",
-  evaluationConfigFingerprint: "probes@3+chains@2+rules@7",
+  honeypotFingerprint: "sha256:58d862545e83275f6f0341e2b7c94a0d1f6e8b3947ac0d5e21bb7f4c9a63d810",
+  evaluationConfigFingerprint:
+    "sha256:9de2ea3012e212895723505d80abf17ee1b4e8847ae41230c2d4f7ca1628c0c0",
   // `attack_possibilities` is absent, not null: this run replayed no chains.
   categoryScores: [
     { characteristic: "basic_commands", deterministicScore: 0.86, evaluatorRating: 0.72 },
@@ -1255,11 +1270,12 @@ const evaluationRunB: EvaluationRun = {
   status: "completed",
   startedAt: at("11:44:19"),
   finishedAt: at("11:49:02"),
-  agentModel: "llama3.1:8b",
+  agentModel: "deterministic-probes@1",
   evaluatorModel: null,
   evaluatorStatus: "unavailable",
-  honeypotFingerprint: "cowrie@2.5.0+cfg:9a72e5b1",
-  evaluationConfigFingerprint: "probes@3+chains@2+rules@7",
+  honeypotFingerprint: "sha256:7f1c93aa20e6b845d3097fe1c4b28d6a5e0f83719cd2a6b40e8f57193ac4b2de",
+  evaluationConfigFingerprint:
+    "sha256:9de2ea3012e212895723505d80abf17ee1b4e8847ae41230c2d4f7ca1628c0c0",
   categoryScores: [
     { characteristic: "basic_commands", deterministicScore: 0.91, evaluatorRating: null },
     { characteristic: "file_system", deterministicScore: 0.7, evaluatorRating: null },
@@ -1338,11 +1354,12 @@ const evaluationRunC: EvaluationRun = {
   status: "failed",
   startedAt: at("13:02:55"),
   finishedAt: at("13:07:12"),
-  agentModel: "llama3.1:8b",
-  evaluatorModel: "llama3.1:8b",
+  agentModel: "deterministic-probes@1",
+  evaluatorModel: "claude-sonnet-4-5",
   evaluatorStatus: "evaluator_failed",
-  honeypotFingerprint: "cowrie@2.5.0+cfg:9a72e5b1",
-  evaluationConfigFingerprint: "probes@3+chains@2+rules@7",
+  honeypotFingerprint: "sha256:7f1c93aa20e6b845d3097fe1c4b28d6a5e0f83719cd2a6b40e8f57193ac4b2de",
+  evaluationConfigFingerprint:
+    "sha256:9de2ea3012e212895723505d80abf17ee1b4e8847ae41230c2d4f7ca1628c0c0",
   categoryScores: [
     { characteristic: "basic_commands", deterministicScore: 0.88, evaluatorRating: null },
     { characteristic: "services", deterministicScore: 0.49, evaluatorRating: null },
