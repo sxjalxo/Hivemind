@@ -243,6 +243,12 @@ export interface EvaluationFinding {
  * been resolved.
  */
 export interface EvaluationChainStep {
+  /**
+   * Resolves an `EvaluationEvidence.chainStepId` citation. Without it a
+   * chain-step-backed finding would carry a pointer to nothing, which is the
+   * one thing the evidence model exists to prevent.
+   */
+  id: string;
   chainId: string;
   stepIndex: number;
   command: string;

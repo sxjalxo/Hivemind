@@ -112,6 +112,10 @@ class FindingOut(CamelModel):
 
 
 class ChainStepOut(CamelModel):
+    # `EvaluationEvidence.chain_step_id` points at this row, so a finding that
+    # cites a chain step is only groundable if the id crosses the API too.
+    # Without it the UI receives a citation it cannot resolve to anything.
+    id: str
     chain_id: str
     step_index: int
     command: str

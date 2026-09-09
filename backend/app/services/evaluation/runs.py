@@ -1524,6 +1524,7 @@ def _to_out(
         ],
         chain_steps=[
             ChainStepOut(
+                id=str(step.id),
                 chain_id=step.chain_id,
                 step_index=step.step_index,
                 command=step.command,
