@@ -2,6 +2,7 @@ import {
   Activity,
   Bot,
   FileText,
+  FlaskConical,
   Grid3x3,
   LayoutDashboard,
   Radar,
@@ -29,6 +30,12 @@ export const NAV_ITEMS: NavItem[] = [
   },
   { to: "/logs", label: "Log Explorer", icon: ScrollText, hint: "Raw honeypot event search" },
   { to: "/analysis", label: "AI Analysis", icon: Bot, hint: "LLM analysis runs and history" },
+  {
+    to: "/evaluation",
+    label: "Realism Evaluation",
+    icon: FlaskConical,
+    hint: "How convincing the honeypot looks",
+  },
   { to: "/mitre", label: "MITRE ATT&CK", icon: Grid3x3, hint: "Technique coverage matrix" },
   {
     to: "/threat-intel",

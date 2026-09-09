@@ -18,6 +18,9 @@ import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ThreatIntelRouteImport } from './routes/threat-intel'
 import { Route as AttackersIpRouteImport } from './routes/attackers/$ip'
+import { Route as EvaluationIndexRouteImport } from './routes/evaluation/index'
+import { Route as EvaluationRunIdRouteImport } from './routes/evaluation/$runId'
+import { Route as EvaluationCompareRouteImport } from './routes/evaluation/compare'
 import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 
@@ -66,6 +69,21 @@ const AttackersIpRoute = AttackersIpRouteImport.update({
   path: '/attackers/$ip',
   getParentRoute: () => rootRouteImport,
 } as any)
+const EvaluationIndexRoute = EvaluationIndexRouteImport.update({
+  id: '/evaluation/',
+  path: '/evaluation/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EvaluationRunIdRoute = EvaluationRunIdRouteImport.update({
+  id: '/evaluation/$runId',
+  path: '/evaluation/$runId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EvaluationCompareRoute = EvaluationCompareRouteImport.update({
+  id: '/evaluation/compare',
+  path: '/evaluation/compare',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SessionsIndexRoute = SessionsIndexRouteImport.update({
   id: '/sessions/',
   path: '/sessions/',
@@ -87,7 +105,10 @@ export interface FileRoutesByFullPath {
   '/settings': typeof SettingsRoute
   '/threat-intel': typeof ThreatIntelRoute
   '/attackers/$ip': typeof AttackersIpRoute
+  '/evaluation/$runId': typeof EvaluationRunIdRoute
+  '/evaluation/compare': typeof EvaluationCompareRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/evaluation/': typeof EvaluationIndexRoute
   '/sessions/': typeof SessionsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -100,7 +121,10 @@ export interface FileRoutesByTo {
   '/settings': typeof SettingsRoute
   '/threat-intel': typeof ThreatIntelRoute
   '/attackers/$ip': typeof AttackersIpRoute
+  '/evaluation/$runId': typeof EvaluationRunIdRoute
+  '/evaluation/compare': typeof EvaluationCompareRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/evaluation': typeof EvaluationIndexRoute
   '/sessions': typeof SessionsIndexRoute
 }
 export interface FileRoutesById {
@@ -114,7 +138,10 @@ export interface FileRoutesById {
   '/settings': typeof SettingsRoute
   '/threat-intel': typeof ThreatIntelRoute
   '/attackers/$ip': typeof AttackersIpRoute
+  '/evaluation/$runId': typeof EvaluationRunIdRoute
+  '/evaluation/compare': typeof EvaluationCompareRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/evaluation/': typeof EvaluationIndexRoute
   '/sessions/': typeof SessionsIndexRoute
 }
 export interface FileRouteTypes {
@@ -129,7 +156,10 @@ export interface FileRouteTypes {
     | '/settings'
     | '/threat-intel'
     | '/attackers/$ip'
+    | '/evaluation/$runId'
+    | '/evaluation/compare'
     | '/sessions/$sessionId'
+    | '/evaluation/'
     | '/sessions/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -142,7 +172,10 @@ export interface FileRouteTypes {
     | '/settings'
     | '/threat-intel'
     | '/attackers/$ip'
+    | '/evaluation/$runId'
+    | '/evaluation/compare'
     | '/sessions/$sessionId'
+    | '/evaluation'
     | '/sessions'
   id:
     | '__root__'
@@ -155,7 +188,10 @@ export interface FileRouteTypes {
     | '/settings'
     | '/threat-intel'
     | '/attackers/$ip'
+    | '/evaluation/$runId'
+    | '/evaluation/compare'
     | '/sessions/$sessionId'
+    | '/evaluation/'
     | '/sessions/'
   fileRoutesById: FileRoutesById
 }
@@ -169,7 +205,10 @@ export interface RootRouteChildren {
   SettingsRoute: typeof SettingsRoute
   ThreatIntelRoute: typeof ThreatIntelRoute
   AttackersIpRoute: typeof AttackersIpRoute
+  EvaluationRunIdRoute: typeof EvaluationRunIdRoute
+  EvaluationCompareRoute: typeof EvaluationCompareRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRoute
+  EvaluationIndexRoute: typeof EvaluationIndexRoute
   SessionsIndexRoute: typeof SessionsIndexRoute
 }
 
@@ -238,6 +277,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AttackersIpRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/evaluation/': {
+      id: '/evaluation/'
+      path: '/evaluation'
+      fullPath: '/evaluation/'
+      preLoaderRoute: typeof EvaluationIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/evaluation/$runId': {
+      id: '/evaluation/$runId'
+      path: '/evaluation/$runId'
+      fullPath: '/evaluation/$runId'
+      preLoaderRoute: typeof EvaluationRunIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/evaluation/compare': {
+      id: '/evaluation/compare'
+      path: '/evaluation/compare'
+      fullPath: '/evaluation/compare'
+      preLoaderRoute: typeof EvaluationCompareRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sessions/': {
       id: '/sessions/'
       path: '/sessions'
@@ -265,7 +325,10 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsRoute: SettingsRoute,
   ThreatIntelRoute: ThreatIntelRoute,
   AttackersIpRoute: AttackersIpRoute,
+  EvaluationRunIdRoute: EvaluationRunIdRoute,
+  EvaluationCompareRoute: EvaluationCompareRoute,
   SessionsSessionIdRoute: SessionsSessionIdRoute,
+  EvaluationIndexRoute: EvaluationIndexRoute,
   SessionsIndexRoute: SessionsIndexRoute,
 }
 export const routeTree = rootRouteImport
