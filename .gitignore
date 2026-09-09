@@ -1,3 +1,8 @@
+# ---------------------------------------------------------------------------
+# Root ignore rules. `backend/.gitignore` and `frontend/.gitignore` add the
+# rules specific to each workspace; anything listed here applies repo-wide.
+# ---------------------------------------------------------------------------
+
 # Logs
 logs
 *.log
@@ -7,6 +12,7 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Node / build output
 node_modules
 dist
 dist-ssr
@@ -16,23 +22,48 @@ dist-ssr
 .nitro
 *.local
 
+# Python bytecode and tool caches. Ruff and pytest write a self-ignoring
+# .gitignore inside their own cache directories, but that only helps once the
+# tool has run — listing them here keeps a fresh clone clean either way.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Coverage
+.coverage
+.coverage.*
+coverage/
+htmlcov/
+
+# Secrets and local environment overrides. Every workspace keeps its real
+# values out of the repo; committed .env.example files show the shape.
+.env
+.env.*
+!.env.example
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars
 
-# Editor directories and files
+# Editor and OS files
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Developer documents
+# Design specs, implementation plans and per-task engineering reports. These
+# are working documents for whoever is building the system, not part of the
+# shipped artefact — README.md and OVERVIEW.md are the tracked documentation.
 docs/
 
-# Subagent-driven-development scratch workspace
+# Subagent-driven-development scratch workspace (task briefs, reports, ledger).
 .superpowers/

@@ -12,9 +12,17 @@ Honeypot → Logs → Elasticsearch → AI/LLM Analysis → Attacker Behaviour C
         → MITRE ATT&CK Mapping → Threat Intelligence → Actionable Report
 ```
 
-This repository contains **only the frontend**. It ships with a clearly-labelled demo
-dataset so it runs standalone, and a single switch to move every request onto a
-Python/FastAPI backend.
+This directory is the **frontend workspace** of the Hivemind monorepo; the FastAPI
+service lives in `../backend` and the infrastructure in `../infra`. See the
+[root README](../README.md) for running the whole stack.
+
+The frontend still stands alone: it ships with a clearly-labelled demo dataset so it runs
+with no backend at all, and a single environment variable moves every request onto
+FastAPI.
+
+Beyond the analysis surfaces, it also renders the **realism evaluation** half of the
+system — the run history, a run's two independent assessments, and a comparison between
+two runs.
 
 ---
 
@@ -83,11 +91,13 @@ src/
     mitre/       MitreMatrix, TechniqueDrawer
     attacker/    AttackPatternGraph, SimilarityList
     report/      ReportView
+    evaluation/  AssessmentPair, EvaluationProgress, EvaluationFindings,
+                 EvaluationTables, EventDisclosure, RunEvaluationPanel
     ui/          shadcn/ui primitives
   routes/        file-based routes (TanStack Start)
   services/      api, provider contract, demo + FastAPI implementations
   types/         API response types
-  hooks/         useTimeRange, useAnalysisRun
+  hooks/         useTimeRange, useAnalysisRun, useEvaluationRun
   utils/         formatting, report export
 ```
 
@@ -113,19 +123,41 @@ GET    /api/attackers/{ip}
 GET    /api/reports   ·  POST /api/reports
 GET    /api/status
 GET    /api/dashboard
+
+POST   /api/evaluations             → 202 { runId }, the run is dispatched
+GET    /api/evaluations             → bounded summary list (limit ≤ 100)
+GET    /api/evaluations/{run_id}    → the full run, authoritative
+GET    /api/evaluations/compare?base=&head=
+
+WS     /api/analyze/{session_id}/progress
+WS     /api/evaluations/{run_id}/progress
 ```
 
 Log Explorer filters map onto ECS field names (`source.ip`, `event.action`,
 `process.command_line`, `session.id`, `risk.score`, `mitre.technique`, …) so they
 translate directly into Elasticsearch queries on the backend.
 
-### Live analysis progress
+### Live progress channels
 
-`DataProvider.subscribeAnalysisProgress` is **optional**. `FastAPIProvider` deliberately
-does not implement it yet — until the backend exposes a progress channel (e.g.
-`WS /api/analyze/{session_id}/progress` emitting `AnalysisProgressEvent` frames), the UI
-shows an indeterminate running state and says so, rather than animating invented
-progress. Implementing that method lights up the stepper with no UI changes.
+`subscribeAnalysisProgress` and `subscribeEvaluationProgress` are both **optional** on
+`DataProvider`. `FastAPIProvider` implements both over WebSockets; the demo provider
+implements the analysis one with a scripted sequence and omits the evaluation one
+entirely, because there is no real run behind it. When a channel is absent the UI shows an
+indeterminate running state **and says so**, rather than animating invented progress.
+
+Two properties of the evaluation channel that the UI is built around, because getting
+either wrong produces a permanent spinner:
+
+- **No replay, and no completion frame.** Frames published before the client subscribes
+  are gone, and a client connecting after a run finished receives nothing at all.
+  `GET /api/evaluations/{runId}` is the authoritative record; the socket is decoration
+  over it, and nothing is ever gated on a frame arriving.
+- **A run can fail before its record exists.** If the reset or a fingerprint aborts, the
+  only trace is one terminal frame carrying `stage: "failed"`, `stageIndex: -1`,
+  `metrics: null` and an `error` string — and `GET /api/evaluations/{runId}` then 404s
+  *permanently*. `EvaluationProgressEvent` is a discriminated union with an
+  `isEvaluationFailure` type guard so that frame cannot be mistaken for a stage, and the
+  UI pairs it with a bounded wait that turns a persistent 404 into "failed to start".
 
 ### Security boundaries
 

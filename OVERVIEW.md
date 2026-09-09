@@ -44,12 +44,18 @@ language model on security telemetry without laundering its guesses into facts**
 
 ## 2. Our solution
 
-Hivemind is an analysis platform built around a single organising rule:
+Hivemind is built around a single organising rule:
 
 > **Nothing is presented as fact unless telemetry supports it, and every conclusion can
 > be expanded into the exact log line that produced it.**
 
 Everything else follows from that.
+
+The system has two halves, and they share that rule, one rulebook, one evidence model
+and one job queue. The first analyses attacks the honeypot captured. The second turns
+the same machinery around and attacks the honeypot itself, to measure how convincing it
+would look to an intruder — because a decoy an attacker sees through yields nothing, and
+credibility feedback is otherwise the slowest, most expensive step in building one.
 
 ### Deterministic first, model second
 
@@ -92,6 +98,21 @@ would. That is the intent. An uncited claim is not a finding.
 the dashboard can aggregate them. ATT&CK identifiers are written back **only** for
 rule-backed mappings. Projecting an inference would make it indistinguishable from
 observed telemetry in every subsequent query.
+
+### Two assessments, never one number
+
+The evaluation half produces two quantities per characteristic and refuses to merge them:
+a **deterministic assessment** ("did the honeypot do the checkable things?") computed from
+facts alone, and an **evaluator assessment** ("would an attacker believe it?") from a cloud
+model. There is deliberately no composite. Averaging a measurement with an opinion produces
+a number that means neither.
+
+Facts are tri-state — `observed`, `not_observed`, `unknown` — and the third value is
+load-bearing. A probe that timed out yields `unknown`, which is excluded from *both* the
+numerator and the denominator, so **our own failure is never counted as evidence against
+the honeypot**. The same instinct runs through the layer above: a failed reset aborts the
+run rather than degrading it, because a reset that did not happen means run B may still
+hold run A's residue and any comparison drawn from it is unsound.
 
 ### Honest about what it does not know
 
@@ -163,38 +184,53 @@ called similar.
 **Threat reports** stored as immutable JSONB snapshots. Re-analysing a session later
 does not rewrite a report already issued.
 
-**A provenance-tagged dashboard** — sixteen endpoints, ten routes, every AI conclusion
-expandable into its source event.
+**An automated realism evaluation.** A Paramiko SSH agent under hard command and
+wall-clock budgets, an nmap service scan, a tcpdump traffic-presence check and three
+scripted attack chains, run against the honeypot and scored across six characteristics.
+Chain verification reuses the same ATT&CK rulebook the analysis half uses, and reads the
+result back out of Cowrie's own log — scoped to the SSH session the harness itself opened,
+so a concurrent real attacker's commands can never be attributed to a run.
+
+**Run-to-run comparison** with separate honeypot and evaluation-configuration
+fingerprints, so a developer can tell whether a delta is the honeypot improving or merely
+the test harness moving. The two are surfaced asymmetrically, because a changed honeypot
+is the point of the exercise and a changed configuration is what invalidates the
+comparison.
+
+**A provenance-tagged dashboard** — nineteen HTTP endpoints, two WebSocket progress
+channels, fourteen routes, every AI conclusion expandable into its source event.
 
 ---
 
 ## 5. Worth knowing
 
-### Scope: two problem statements, one implemented
+### Scope: two problem statements, both implemented
 
 This project sits on two candidate problem statements sharing the same research papers.
-The implemented one is honeypot log analysis and threat intelligence. The other —
-Beekeeper's original contribution, where an LLM agent attacks your own honeypot and
-*judges its realism* to give the developer feedback — is documented as future work,
-deliberately and for a measured reason.
+The first is honeypot log analysis and threat intelligence. The second — Beekeeper's own
+contribution, where an agent attacks your honeypot and *judges its realism* to give the
+developer feedback — was originally deferred on a measured hardware constraint, and has
+since been built as Phase 2.
 
-The Beekeeper paper evaluated Llama3:70b, Mistral Large 2 (123b), Gemini 1.5 Pro and
-GPT-4o for the evaluator role and found models under 70b return "only superficial
-results". Measured on this hardware, an 8 GB card holds an 8b model at 8192 context;
-32768 spills to a 34%/66% CPU/GPU split. A shallow-but-plausible realism verdict is
-precisely the failure mode this system is built to prevent, so shipping one would
-contradict the project's own premise.
+The constraint was real and shaped the design rather than being worked around. The
+Beekeeper paper evaluated Llama3:70b, Mistral Large 2 (123b), Gemini 1.5 Pro and GPT-4o
+for the evaluator role and found models under 70b return "only superficial results".
+Measured on this hardware, an 8 GB card holds an 8b model at 8192 context; 32768 spills
+to a 34%/66% CPU/GPU split.
 
-The *other* half of Beekeeper remains feasible and is not blocked: the paper used
-`llama3.1:8b` for its querying agent, and the static modules (nmap, tcpdump, the three
-known attack chains) need no model at all. Only the evaluator needs a large model, which
-a BYOK key would supply. The rulebook built here is directly reusable for verifying that
-a honeypot emulates known attack chains correctly.
+So the roles are **tiered rather than compromised**. The querying agent needs no model at
+all — it is Paramiko plus a fixed probe list — and neither do the static modules or the
+attack chains, which reuse the rulebook the analysis half already built. Only the realism
+evaluator needs scale, and it is bring-your-own-key. When no key is configured the run
+completes and reports the evaluator as *unavailable*; it never substitutes the local
+model. Shipping a shallow-but-plausible realism verdict would contradict the project's
+own premise, so the system reports the gap instead of filling it.
 
 ### What the failures looked like
 
-Seventeen build stages produced a consistent and slightly uncomfortable pattern: **almost
-every substantive defect was silent.** Not one crashed. All passed their tests.
+Thirty-four build stages across the two phases produced a consistent and slightly
+uncomfortable pattern: **almost every substantive defect was silent.** Not one crashed.
+All passed their tests.
 
 A health probe reported "disconnected" regardless of cluster state, because a dependency
 was missing an async extra. Filebeat's own metadata destroyed the attacker's command text
@@ -210,6 +246,30 @@ That last one is the sharpest lesson in the project: **a test named for a behavi
 not assert is worse than no test**, because it manufactures confidence. Several of these
 were found only by adversarial probing — feeding inputs the original author had not
 imagined — rather than by the test suite.
+
+Phase 2 repeated the pattern with a twist: the silent defects were increasingly *in the
+plan*, not in its execution. The Cowrie container is distroless, so a step that shelled out
+to `rm` — and, in a later task, to `cat` — failed with exit 127. Because both call sites
+discarded the return code, the reset became a permanent no-op and the honeypot fingerprint
+collapsed to a constant, meaning two entirely different honeypots would have fingerprinted
+identically and been declared comparable. Neither failed a test; both were caught by running
+the command against the real container before writing any code.
+
+Three more worth recording, because each inverted a rule the system exists to enforce:
+
+- A path-traversal `..` passed the reset boundary guard, because `PurePosixPath` normalises
+  `.`, trailing slashes and interior `//` but **not** `..` — so the guard looked complete
+  while permitting a value that deletes the honeypot's SSH host keys.
+- An orchestration-frame exception discarded a run's scores and reported the run `failed`
+  while persisting, in the same transaction, probe rows containing `observed` facts. Our
+  failure, relabelled as the honeypot's.
+- A progress WebSocket never noticed a client disconnect, leaking a subscriber per viewed
+  run and — because the handler task never completed — making the backend impossible to shut
+  down gracefully once anyone had opened one.
+
+The recurring shape: **a failure that reports success is worse than a crash.** Every one of
+these was found by adversarial probing or by running the thing against reality, not by the
+suite, and each fix is now pinned by a test that fails on the old behaviour.
 
 ### Known limitations
 
@@ -229,6 +289,33 @@ imagined — rather than by the test suite.
   command line. Attacker text is fenced and labelled as data, but the schema gates and the
   evidence barrier are what actually make that survivable — they are load-bearing, not
   decorative.
-- **The full live loop is unverified end to end.** Ingest was proven working, and the
-  interface is confirmed wired to real data, but "SSH in, watch a new session appear in the
-  UI" was never completed in one continuous pass.
+**Analysis half — resolved since the previous revision.** The full live loop *is* now
+verified end to end in one continuous pass: a real SSH session against the honeypot
+produced sixteen events reaching Elasticsearch in under three seconds, and the resulting
+analysis completed in forty-one seconds with all seven stages streaming to the interface
+over a WebSocket. That pass also exposed two live-only defects invisible to the seeded
+corpus — unknown Cowrie event types rendering as attacker commands, and a fabricated
+port `0` where the honeypot had recorded none — both since fixed.
+
+**Evaluation half.**
+
+- **Cowrie refuses `exec` channel requests** in this configuration. It grants an
+  interactive shell, but the probe agent and the chain replayer both use `exec_command`,
+  so a live run currently returns `agent: error` / `chains: error` and produces no chain
+  steps. The evaluation loop is therefore proven end to end only against stubbed module
+  boundaries; the fix is to drive `invoke_shell`, or enable exec in `cowrie.cfg`.
+- **The deterministic scoring *code* is not fingerprinted** — only its data files are.
+  Two runs spanning a change to the rule engine, the compaction step or the probe timeout
+  fingerprint identically, so git revision is the extra key when reading a trend.
+- **`EvaluationRun` has no `detail` column**, so a null `evaluator_rating` cannot say
+  *why*: no key configured, no evidence gathered, a provider error and a rejected verdict
+  all collapse to one blank. The reason is logged but not queryable.
+- **Neither the evaluation target nor the module timeouts are fingerprinted.** Two runs
+  against different hosts, or under different nmap timeouts, compare as though they were
+  measured identically.
+- **One paid API call per characteristic**, by design — the paper found merged prompts
+  markedly shallower — with no retry or backoff, so a rate limit ends that characteristic's
+  evaluation permanently rather than deferring it.
+- **A stale `RUNNING` row is cleared at startup, not while a process is live.** Within a
+  single process the reconciliation is age-based (45 minutes) precisely so it can never
+  terminate a genuinely running evaluation in another worker.
