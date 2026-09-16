@@ -53,6 +53,19 @@ class Settings(BaseSettings):
     evaluation_target_host: str = "cowrie"
     evaluation_ssh_port: int = 2222
     evaluation_capture_interface: str = "eth0"
+    # Where the packet capture runs.
+    #
+    # Empty: run `tcpdump` directly on this host. That only observes the
+    # honeypot if the host shares its network -- it does NOT when the honeypot
+    # is a container reached through a published port, and a capture that sees
+    # nothing reports "no traffic", which is a false claim rather than an
+    # absent one.
+    #
+    # Set: run tcpdump from this image inside the honeypot container's own
+    # network namespace, so `evaluation_capture_interface` is the honeypot's
+    # interface and the packets counted are genuinely its own. Required on
+    # Windows and macOS, where Docker's network is not on the host.
+    evaluation_capture_image: str = "nicolaka/netshoot"
     evaluation_agent_max_commands: int = 40
     evaluation_agent_max_seconds: int = 120
     # Cowrie's shipped userdb accepts `root` with any password except a

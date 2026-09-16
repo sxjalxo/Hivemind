@@ -1,18 +1,58 @@
 import asyncio
 import contextlib
 import re
+import uuid
 from contextlib import asynccontextmanager
 
+from app.config import get_settings
 from app.db.models import FactStatus, ModuleStatus
 from app.services.evaluation.outcomes import ModuleOutcome
 from app.services.evaluation.sanity import Observation
 
 _PACKETS = re.compile(r"(\d+) packets captured")
 
+# Set by `_spawn` when the capture runs as a container, read by `_request_stop`.
+# A capture is never concurrent with another within a run, and a stale name is
+# harmless: `docker kill` on a container that is already gone just fails.
+_container_name: str | None = None
+
 
 async def _spawn(interface: str):
-    """Start tcpdump on the evaluation interface only. Replaced in tests."""
+    """Start tcpdump on the evaluation interface only. Replaced in tests.
+
+    With `evaluation_capture_image` set, tcpdump runs inside the honeypot
+    container's OWN network namespace, so `interface` is the honeypot's
+    interface. This is not a convenience: where the honeypot is reached through
+    a published container port, a capture on the host (or in a WSL distro) sees
+    zero packets and the module would report `not_observed` -- a confident
+    claim that no traffic occurred, which is worse than reporting that we could
+    not look. Measured on this machine: 0 packets in a WSL distro against 30 in
+    the container's namespace, for the same SSH session.
+    """
+    global _container_name
+    settings = get_settings()
+    image = settings.evaluation_capture_image.strip()
+    if not image:
+        _container_name = None
+        return await asyncio.create_subprocess_exec(
+            "tcpdump",
+            "-i",
+            interface,
+            "-n",
+            "-q",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+    _container_name = f"hivemind-capture-{uuid.uuid4().hex[:12]}"
     return await asyncio.create_subprocess_exec(
+        "docker",
+        "run",
+        "--rm",
+        "--name",
+        _container_name,
+        f"--net=container:{settings.evaluation_container_name}",
+        image,
         "tcpdump",
         "-i",
         interface,
@@ -21,6 +61,30 @@ async def _spawn(interface: str):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
+
+
+async def _request_stop(process) -> None:
+    """Ask the capture to finish so tcpdump flushes its summary line.
+
+    `process.terminate()` is the right thing for a local tcpdump on POSIX, but
+    it is NOT enough for a containerised one on Windows: there `terminate()` is
+    TerminateProcess, a hard kill of the local docker CLI, which never reaches
+    tcpdump. It then exits without printing "N packets captured" and the module
+    reports `unknown` for a capture that actually worked. Signalling the
+    container itself gives tcpdump the interrupt it needs.
+    """
+    if _container_name:
+        with contextlib.suppress(OSError):
+            killer = await asyncio.create_subprocess_exec(
+                "docker",
+                "kill",
+                "--signal=INT",
+                _container_name,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+    process.terminate()
 
 
 def _unknown_outcome(detail: str) -> ModuleOutcome:
@@ -78,7 +142,7 @@ class Capture:
         # captured into the outcome instead.
         try:
             try:
-                self._process.terminate()
+                await _request_stop(self._process)
             except ProcessLookupError:
                 # tcpdump already exited on its own (interface disappeared,
                 # permission revoked mid-run) -- a normal way for a capture

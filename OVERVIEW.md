@@ -299,9 +299,12 @@ port `0` where the honeypot had recorded none — both since fixed.
 
 **Evaluation half.**
 
-- **`tcpdump` is absent on Windows**, so the traffic-presence module reports `unknown`
-  and `context` has no deterministic score on that platform. The module is correct; the
-  host simply lacks the tool.
+- **The packet capture runs as a Docker sidecar** in the honeypot's own network
+  namespace, because a capture anywhere else does not see a containerised honeypot's
+  traffic. Measured on this machine: a WSL distro saw 0 packets for the same SSH session
+  the container's namespace counted 30. A capture that cannot see the traffic would
+  report `not_observed` -- a confident "no traffic occurred" -- so where it cannot run,
+  reporting `unknown` is the only honest answer.
 - **The deterministic scoring *code* is not fingerprinted** — only its data files are.
   Two runs spanning a change to the rule engine, the compaction step or the probe timeout
   fingerprint identically, so git revision is the extra key when reading a trend.

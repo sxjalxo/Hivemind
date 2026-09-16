@@ -52,7 +52,7 @@ captures better attacks.
 | [Ollama](https://ollama.com) | on the host, for GPU access |
 | GPU | 8 GB VRAM is sufficient (see *Model sizing*) |
 | `nmap` | optional — the service-scan probe reports `unknown` without it |
-| `tcpdump` | optional — the traffic-presence module reports `unknown` without it |
+| packet capture | runs in the honeypot container's own network namespace, from `nicolaka/netshoot`; `docker pull nicolaka/netshoot` once |
 
 ---
 
@@ -182,9 +182,10 @@ verdict is the exact failure this system exists to prevent.
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-455 tests. They run against the live Docker stack and the real local model, so bring the
+459 tests. They run against the live Docker stack and the real local model, so bring the
 infrastructure up first. One test in `test_intel.py` is known-nondeterministic: it depends
-on whether `llama3.1:8b` happens to infer a technique on that pass.
+on whether `llama3.1:8b` happens to infer a technique on that pass, so a run showing that
+single failure is a clean run.
 
 ```bash
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
@@ -292,9 +293,10 @@ rejects path traversal outright — rather than documented in a comment.
 - **`evaluation_target_host` defaults to the compose service name** `cowrie`, which does
   not resolve from a backend running on the host. Set `EVALUATION_TARGET_HOST=127.0.0.1`
   for a host-run backend.
-- **`tcpdump` is absent on Windows**, so the traffic-presence module reports its facts
-  as `unknown` rather than claiming no traffic — correct, but it means `context` has no
-  deterministic score on that platform.
+- **The packet capture needs Docker**, because it runs inside the honeypot container's
+  network namespace. Clearing `EVALUATION_CAPTURE_IMAGE` falls back to a host `tcpdump`,
+  which is only correct where the host shares the honeypot's network — not when the
+  honeypot is a container reached through a published port.
 - **Single-worker deployment.** The job queue and WebSocket fan-out are in-process;
   multiple uvicorn workers would need Redis pub/sub.
 - **The deterministic scoring code is not fingerprinted** — only its data files are. Two

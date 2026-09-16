@@ -225,11 +225,11 @@ modules:
    nmap       completed
    agent      completed
    chains     completed
-   tcpdump    error      [WinError 2] The system cannot find the file specified
+   tcpdump    completed
 category scores:
    attack_possibilities   det=1.0     eval=None
    basic_commands         det=1.0     eval=None
-   context                det=None    eval=None
+   context                det=1.0     eval=None
    file_system            det=1.0     eval=None
    sanity                 det=0.667   eval=None
    services               det=0.667   eval=None
@@ -274,19 +274,16 @@ rulebook that classifies real intrusions, and the claim points at the log line p
 
 **Four things to demonstrate here, and they are the whole point of the half:**
 
-1. **`context` is `None`, rendered as "not established", never as `0`.** Its module
-   (`tcpdump`) is not installed on this host, so the facts are `unknown`. It shows words,
-   not a zero. A rendered `0.0` would look like a verdict against the honeypot; a null is
-   a gap in what *we* could measure.
-2. **`sanity` and `services` show real fractions** — `0.667` each, two of three. Those
-   *are* verdicts, and they render as numbers. Put them beside the null: the UI
-   distinguishes "we measured, and it scored 0.667" from "we could not measure".
-3. **Our own failure is never counted against the honeypot.** `tcpdump` errored, and the
-   facts it would have established are `unknown` — excluded from both the numerator and
-   the denominator, not scored as zero.
-4. **`sanity` scoring 0.667 is the honeypot's own defect**, not ours: two of three sanity
-   probes agreed, one pair contradicted. That is the difference between a measurement and
-   an absence, visible in the same table.
+1. **`sanity` and `services` show real fractions** — `0.667` each, two of three. Those
+   *are* verdicts. `sanity` scoring 0.667 is the honeypot's own defect, not ours: two of
+   three sanity probes agreed, one pair contradicted (see the finding below).
+2. **Every characteristic scores here, but a null is still a different thing.** If a
+   module cannot run, its facts are `unknown` and excluded from *both* the numerator and
+   the denominator — never scored as zero. To show that live, clear
+   `EVALUATION_CAPTURE_IMAGE` and re-run: `context` returns to "not established", in
+   words, because the capture could not look.
+3. **Our own failure is never counted against the honeypot.** That rule is why
+   `not_observed` and `unknown` are different values rather than both being "no".
 
 Also worth naming: **`agentModel` is `deterministic-probes@1`, not a model name.** The
 probe agent is Paramiko plus a fixed probe list — no model drives it — so naming one
@@ -365,10 +362,20 @@ verification therefore scopes its read-back on Cowrie's own `session.id`, discov
 per-session nonce the agent writes, rather than on the port. If you see chains time out
 with "commands were not indexed", that correlation is where to look.
 
-### `tcpdump` is absent on Windows
+### The packet capture needs its image pulled
 
-`tcpdump: error [WinError 2]`. The module reports its facts as `unknown` rather than
-claiming no traffic — which is the correct behaviour, and worth pointing at.
+The capture runs inside the honeypot container's network namespace, from
+`nicolaka/netshoot`. Pull it once before the demo or the first run spends a minute
+fetching it:
+
+```bash
+docker pull nicolaka/netshoot
+```
+
+Capturing anywhere else does not work for a containerised honeypot, and the failure is
+silent rather than loud: measured here, a WSL distro counted **0 packets** for the same
+SSH session the container's own namespace counted **30**. Zero would be reported as
+`not_observed` — "no traffic occurred" — which is a false claim rather than an absent one.
 
 ### `nmap` is optional too
 
