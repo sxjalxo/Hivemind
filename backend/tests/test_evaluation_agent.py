@@ -167,36 +167,44 @@ async def test_a_zero_exit_with_empty_output_is_not_observed(monkeypatch) -> Non
 
 
 class _HangingChannel:
-    """Simulates a paramiko Channel whose exit-status exchange never
-    completes -- e.g. Cowrie closing the session without ever reporting an
-    exit status. exit_status_ready() always says no. recv_exit_status()
-    really blocks (a bounded 5s stand-in for paramiko's genuinely unbounded
-    wait), so pre-fix code -- which called it unconditionally -- actually
-    stalls instead of merely raising, and the test's outer timeout below
-    catches that as a real failure rather than a silent pass."""
+    """Simulates a shell channel that accepts input and then goes silent.
 
-    def exit_status_ready(self) -> bool:
-        return False
+    The command's completion marker never arrives, which is what happens when
+    the target stops responding mid-command. `recv` blocks for a bounded 5s
+    stand-in for an indefinite wait, so code that reads without a deadline
+    genuinely stalls and the test's outer timeout catches it as a real failure
+    rather than letting it pass silently.
+    """
 
-    def recv_exit_status(self) -> int:
-        time.sleep(5)
-        return 0
+    def __init__(self) -> None:
+        self.sent: list[str] = []
 
+    def send(self, data: str) -> int:
+        self.sent.append(data)
+        return len(data)
 
-class _HangingStdout:
-    channel = _HangingChannel()
+    def recv(self, size: int) -> bytes:
+        # Chatters forever without ever emitting the completion marker. This
+        # is the realistic shape of the failure -- the channel is alive, the
+        # command simply never signals that it finished -- and it can only be
+        # escaped by enforcing the deadline, not by noticing a closed socket.
+        time.sleep(0.01)
+        return b"partial output before the hang\r\n"
 
-    def read(self) -> bytes:
-        return b"partial output before the hang"
+    def settimeout(self, value) -> None:
+        return None
 
-
-class _HangingClient:
-    def exec_command(self, command: str, timeout: int):
-        return None, _HangingStdout(), None
+    def close(self) -> None:
+        return None
 
 
 class _HangingSession:
-    client = _HangingClient()
+    """Shaped like the real `_Session`: a marker and a channel."""
+
+    marker = "__hm_test__"
+
+    def __init__(self) -> None:
+        self.channel = _HangingChannel()
 
     async def __aenter__(self):
         return self
@@ -229,7 +237,7 @@ async def test_a_probe_whose_exit_status_never_arrives_is_unknown_not_a_hang(mon
     # mode against unfixed code is the actual hang it's meant to catch, not
     # an unrelated AttributeError from monkeypatch itself.
     monkeypatch.setattr(agent, "PER_COMMAND_TIMEOUT_SECONDS", 0.05, raising=False)
-    monkeypatch.setattr(agent, "_EXIT_STATUS_POLL_INTERVAL_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(agent, "_READ_POLL_INTERVAL_SECONDS", 0.01, raising=False)
 
     outcome = await asyncio.wait_for(
         agent.run_probes(
@@ -243,3 +251,68 @@ async def test_a_probe_whose_exit_status_never_arrives_is_unknown_not_a_hang(mon
     assert outcome.module_status == "completed"
     assert by_id["p1"].fact_status == "unknown"
     assert by_id["p2"].fact_status == "unknown"
+
+
+# --- shell output parsing -------------------------------------------------
+#
+# Cowrie is a terminal, not an exec channel: it echoes what we type, glues the
+# prompt to the front of that echo (a prompt has no trailing newline), and
+# wraps output in ANSI insert-mode toggles. These tests use raw strings
+# captured from the real honeypot.
+
+
+def _raw(marker: str, command: str, body: str, code: int) -> str:
+    """Reproduce Cowrie's wire format for one command."""
+    esc = chr(27)
+    prompt = "root@med-ws-04:~# "
+    out = f"{prompt}echo {marker}open{marker}\r\n{esc}[4l{marker}open{marker}\r\n{esc}[4h"
+    out += f"{prompt}{command}\r\n"
+    if body:
+        out += f"{esc}[4l{body}\r\n{esc}[4h"
+    out += f"{prompt}echo {marker}$?{marker}\r\n{esc}[4l{marker}{code}{marker}\r\n{esc}[4h"
+    out += prompt
+    return out
+
+
+def test_shell_output_excludes_the_prompt_and_the_commands_own_echo() -> None:
+    """The prompt arrives on the SAME line as the echo, so a naive line-equality
+    check against the command never matches it and the echo leaks into the
+    output."""
+    raw = _raw("__hm_t__", "uname -a", "Linux med-ws-04 6.1.0-21-amd64", 0)
+
+    assert agent._clean(raw, "uname -a", "__hm_t__") == "Linux med-ws-04 6.1.0-21-amd64"
+
+
+def test_a_command_that_printed_nothing_cleans_to_nothing() -> None:
+    """This is the one that matters for provenance.
+
+    `cat /etc/os-release` genuinely prints nothing on this honeypot -- a real
+    absence, and a real realism finding. If the prompt or the echo survives
+    cleaning, the empty result becomes a non-empty string and run_probes reads
+    it as OBSERVED: a gap in the honeypot silently reported as a fact about it.
+    """
+    raw = _raw("__hm_t__", "cat /etc/os-release", "", 0)
+
+    assert agent._clean(raw, "cat /etc/os-release", "__hm_t__") == ""
+
+
+def test_output_is_framed_by_markers_not_by_the_prompt() -> None:
+    """A honeypot's prompt is one of the things an evaluation may find wrong,
+    so it must never be what decides where output starts and stops. Anything
+    before the opening marker belongs to the banner or a previous command."""
+    esc = chr(27)
+    raw = (
+        "Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY.\r\n"
+        "leftover output from something earlier\r\n"
+        + _raw("__hm_t__", "whoami", "root", 0)
+    )
+
+    assert agent._clean(raw, "whoami", "__hm_t__") == "root"
+
+
+def test_a_nonzero_exit_with_output_is_still_parsed() -> None:
+    raw = _raw("__hm_t__", "nosuchcommand", "-bash: nosuchcommand: command not found", 127)
+
+    assert agent._clean(raw, "nosuchcommand", "__hm_t__") == (
+        "-bash: nosuchcommand: command not found"
+    )

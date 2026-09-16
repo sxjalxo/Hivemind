@@ -289,15 +289,12 @@ rejects path traversal outright — rather than documented in a comment.
 
 ## Current limitations
 
-- **Cowrie refuses `exec` channel requests** in this configuration. It grants an
-  interactive shell, but both the probe agent and the chain replayer use
-  `exec_command`, so a live evaluation currently returns `agent: error` and
-  `chains: error`. The fix is to drive `invoke_shell` instead, or enable exec in
-  `cowrie.cfg`; until then the evaluation loop is proven end to end only against
-  stubbed module boundaries.
 - **`evaluation_target_host` defaults to the compose service name** `cowrie`, which does
   not resolve from a backend running on the host. Set `EVALUATION_TARGET_HOST=127.0.0.1`
   for a host-run backend.
+- **`tcpdump` is absent on Windows**, so the traffic-presence module reports its facts
+  as `unknown` rather than claiming no traffic — correct, but it means `context` has no
+  deterministic score on that platform.
 - **Single-worker deployment.** The job queue and WebSocket fan-out are in-process;
   multiple uvicorn workers would need Redis pub/sub.
 - **The deterministic scoring code is not fingerprinted** — only its data files are. Two

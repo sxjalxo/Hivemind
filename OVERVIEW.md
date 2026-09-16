@@ -299,11 +299,9 @@ port `0` where the honeypot had recorded none — both since fixed.
 
 **Evaluation half.**
 
-- **Cowrie refuses `exec` channel requests** in this configuration. It grants an
-  interactive shell, but the probe agent and the chain replayer both use `exec_command`,
-  so a live run currently returns `agent: error` / `chains: error` and produces no chain
-  steps. The evaluation loop is therefore proven end to end only against stubbed module
-  boundaries; the fix is to drive `invoke_shell`, or enable exec in `cowrie.cfg`.
+- **`tcpdump` is absent on Windows**, so the traffic-presence module reports `unknown`
+  and `context` has no deterministic score on that platform. The module is correct; the
+  host simply lacks the tool.
 - **The deterministic scoring *code* is not fingerprinted** — only its data files are.
   Two runs spanning a change to the rule engine, the compaction step or the probe timeout
   fingerprint identically, so git revision is the extra key when reading a trend.

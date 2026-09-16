@@ -691,8 +691,9 @@ async def test_the_chain_read_back_query_is_scoped_to_our_own_ssh_session(
 ) -> None:
     """`honeypot.id` + time is not enough on a LIVE sensor.
 
-    A concurrent attacker session shares both. `source.port` is the only
-    filter that separates their `cd /tmp` from ours.
+    A concurrent attacker session shares both. Cowrie's `session.id` for the
+    shell we opened is the only filter that separates their `cd /tmp` from
+    ours.
     """
     captured: dict = {}
 
@@ -704,14 +705,14 @@ async def test_the_chain_read_back_query_is_scoped_to_our_own_ssh_session(
     monkeypatch.setattr(runs, "get_es", lambda: _FakeEs())
 
     now = datetime.now(timezone.utc)
-    await runs._search_commands("cowrie-01", now, now, 51234)
+    await runs._search_commands("cowrie-01", now, now, "sess-ours")
 
     filters = captured["query"]["bool"]["filter"]
-    assert {"term": {"source.port": 51234}} in filters
+    assert {"term": {"session.id": "sess-ours"}} in filters
     assert {"term": {"honeypot.id": "cowrie-01"}} in filters
     assert {"term": {"labels.seeded": False}} in filters
-    # Kept as defence in depth: source ports are reused, so time is still what
-    # separates two of our OWN runs.
+    # Kept as defence in depth: a session id identifies one shell, not one
+    # run, so time is still what separates two of our OWN runs.
     assert any("range" in clause for clause in filters)
 
 
@@ -726,8 +727,8 @@ async def test_the_chain_read_back_ignores_a_command_from_another_session(
     unscoped read-back would complete our chain and store somebody else's
     `cowrie_event_id` as our evidence.
     """
-    ours = _command_hit("ours", "cd /tmp", port=51234)
-    theirs = _command_hit("theirs", "cd /tmp", port=44444)
+    ours = _command_hit("ours", "cd /tmp", session_id="sess-ours")
+    theirs = _command_hit("theirs", "cd /tmp", session_id="sess-theirs")
 
     async def _both(*args, **kwargs):
         return [theirs, ours]
@@ -735,7 +736,7 @@ async def test_the_chain_read_back_ignores_a_command_from_another_session(
     monkeypatch.setattr(runs, "_search_commands", _both)
 
     now = datetime.now(timezone.utc)
-    found = await runs._read_back_commands("cowrie-01", now, now, {"cd /tmp"}, 51234)
+    found = await runs._read_back_commands("cowrie-01", now, now, {"cd /tmp"}, "sess-ours")
     assert found["cd /tmp"].event_id == "ours"
 
     # And with only the foreign event present, the step is simply not found:
@@ -745,15 +746,19 @@ async def test_the_chain_read_back_ignores_a_command_from_another_session(
 
     monkeypatch.setattr(runs, "_search_commands", _only_theirs)
     monkeypatch.setattr(runs, "CHAIN_INGEST_TIMEOUT_SECONDS", 0.0)
-    assert await runs._read_back_commands("cowrie-01", now, now, {"cd /tmp"}, 51234) == {}
+    assert await runs._read_back_commands("cowrie-01", now, now, {"cd /tmp"}, "sess-ours") == {}
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_source_port_leaves_the_chains_unverified(monkeypatch) -> None:
+async def test_an_undiscoverable_session_leaves_the_chains_unverified(monkeypatch) -> None:
     """If we cannot prove which events are ours, we claim none of them."""
     monkeypatch.setattr(runs.agent_module, "_open_session", _stub_session)
     monkeypatch.setattr(runs.agent_module, "_execute", _stub_execute)
-    monkeypatch.setattr(runs, "_session_source_port", lambda session: None)
+
+    async def _not_found(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(runs, "_discover_cowrie_session_id", _not_found)
 
     async def _must_not_run(*args, **kwargs):  # pragma: no cover - asserts absence
         raise AssertionError("the read-back must not run unscoped")
@@ -765,7 +770,7 @@ async def test_an_unknown_source_port_leaves_the_chains_unverified(monkeypatch) 
     )
     assert chain_run.results == []
     assert chain_run.module_status == "error"
-    assert "source port" in chain_run.detail
+    assert "session id" in chain_run.detail
 
 
 # --- run lifecycle ------------------------------------------------------
@@ -1043,22 +1048,27 @@ def _emit_failing_at(stage_index: int):
     return _emit
 
 
-def _command_hit(event_id: str, command: str, port: int) -> dict:
+def _command_hit(event_id: str, command: str, session_id: str) -> dict:
     return {
         "_id": event_id,
         "_source": {
             "@timestamp": "2026-09-08T10:00:00.000Z",
             "process": {"command_line": command},
-            "source": {"ip": "172.19.0.1", "port": port},
-            "session": {"id": f"session-{event_id}"},
+            "source": {"ip": "172.19.0.1", "port": 51234},
+            "session": {"id": session_id},
         },
     }
 
 
 def _stub_session(target):
+    class _Session:
+        # Shaped like the real agent session: the chain runner reads the nonce
+        # off it to find the honeypot-side session id.
+        marker = "__hm_stub__"
+
     @asynccontextmanager
     async def _open():
-        yield object()
+        yield _Session()
 
     return _open()
 

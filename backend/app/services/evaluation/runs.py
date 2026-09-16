@@ -347,13 +347,14 @@ async def _run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
 
     started = datetime.now(timezone.utc)
     async with agent_module._open_session(target) as session:
-        source_port = _session_source_port(session)
+        marker = session.marker
         for chain in loaded:
             for step in chain.steps:
                 await agent_module._execute(session, step)
     finished = datetime.now(timezone.utc)
 
-    if source_port is None:
+    session_id = await _discover_cowrie_session_id(honeypot_id, marker, started, finished)
+    if session_id is None:
         # The commands WERE executed; we simply cannot prove which log entries
         # are ours. Every chain is left unverified -- `unknown` by absence,
         # excluded from numerator and denominator alike -- rather than
@@ -362,14 +363,14 @@ async def _run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
             results=[],
             module_status=ModuleStatus.ERROR,
             detail=(
-                "could not determine the SSH source port of the chain session, so the "
-                "read-back could not be scoped to it; chains were left unverified rather "
-                "than verified from events that may belong to another session"
+                "could not determine the honeypot-side session id for the chain session, "
+                "so the read-back could not be scoped to it; chains were left unverified "
+                "rather than verified from events that may belong to another session"
             ),
         )
 
     wanted = {step for chain in loaded for step in chain.steps}
-    found = await _read_back_commands(honeypot_id, started, finished, wanted, source_port)
+    found = await _read_back_commands(honeypot_id, started, finished, wanted, session_id)
 
     results: list[ChainStepResult] = []
     incomplete: list[str] = []
@@ -392,34 +393,73 @@ async def _run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
     return ChainRun(results=results, module_status=ModuleStatus.COMPLETED)
 
 
-def _session_source_port(session) -> int | None:
-    """The local TCP port our SSH connection was opened from, or None.
+async def _discover_cowrie_session_id(
+    honeypot_id: str, marker: str, start: datetime, end: datetime
+) -> str | None:
+    """Cowrie's own session id for the shell WE opened, or None.
 
-    This is what scopes the chain read-back to OUR session. Cowrie stamps the
-    client port on every event it writes (`src_port`, renamed to
-    `source.port` by the `cowrie-ecs` ingest pipeline), so it is the one
-    identifier that is BOTH knowable here -- before any of our commands has
-    been indexed, so there is nothing to look up -- and present on the
-    command documents we are about to read back. Cowrie's own `session.id`
-    would be the more natural key, but it only exists once Cowrie has written
-    an event, which is exactly what we are still waiting for.
+    This is what scopes the chain read-back to our session. Without it, a real
+    attacker running `cd /tmp` or `chmod 777 xmrig` inside our window would
+    complete a chain's `found` set and put a FOREIGN `cowrie_event_id` into
+    `evaluation_chain_steps`, where it is then cited as this run's evidence.
 
-    None is a real outcome (a stubbed session, a transport already torn
-    down), and the caller must NOT fall back to an unscoped read-back. Without
-    this filter, a real attacker session running `cd /tmp` or `chmod 777
-    xmrig` inside our window would complete a chain's `found` set and put a
-    FOREIGN `cowrie_event_id` into `evaluation_chain_steps`, where it is then
-    cited as this run's evidence.
+    We find it by looking up the per-session nonce the agent already writes
+    after every command (see `agent._execute`). That nonce is generated here
+    and appears in no other session, so the document carrying it is ours by
+    construction -- it cannot be guessed, reused, or coincidentally matched.
+
+    The local TCP port would be knowable without any lookup, and was used
+    first, but it is simply not the port Cowrie records: the honeypot is
+    reached through a published container port, so Docker re-originates the
+    connection and Cowrie sees the proxy's port, not ours. Measured on this
+    deployment -- we opened from 11024, Cowrie logged 39108 -- which silently
+    matched nothing and left every chain unverified. Cowrie's session id has
+    no such gap between what we can observe and what it records.
+
+    Returns None if the nonce never arrives within the ingest deadline. The
+    caller must NOT fall back to an unscoped read-back.
     """
-    try:
-        return int(session.client.get_transport().sock.getsockname()[1])
-    except Exception:  # noqa: BLE001 - any failure here means "not known"
-        logger.exception("could not determine the SSH source port of the chain session")
-        return None
+    settings = get_settings()
+    deadline = time.monotonic() + CHAIN_INGEST_TIMEOUT_SECONDS
+    while True:
+        result = await get_es().search(
+            index=settings.es_index,
+            query={
+                "bool": {
+                    "filter": [
+                        {"term": {"honeypot.id": honeypot_id}},
+                        {"term": {"event.action": "cowrie.command.input"}},
+                        {"term": {"labels.seeded": False}},
+                        # Exact-match subfield: the analysed `text` field would
+                        # tokenise the nonce apart.
+                        {"wildcard": {"process.command_line.keyword": f"*{marker}*"}},
+                        {
+                            "range": {
+                                "@timestamp": {
+                                    "gte": _iso(start - timedelta(seconds=CHAIN_CLOCK_SKEW_SECONDS)),
+                                    "lte": _iso(end + timedelta(seconds=CHAIN_CLOCK_SKEW_SECONDS)),
+                                }
+                            }
+                        },
+                    ]
+                }
+            },
+            size=1,
+        )
+        for hit in result["hits"]["hits"]:
+            session_id = (hit["_source"].get("session") or {}).get("id")
+            if session_id:
+                return str(session_id)
+        if time.monotonic() >= deadline:
+            logger.warning(
+                "chain session nonce never reached the index; leaving every chain unverified"
+            )
+            return None
+        await asyncio.sleep(CHAIN_INGEST_POLL_SECONDS)
 
 
 async def _search_commands(
-    honeypot_id: str, start: datetime, end: datetime, source_port: int
+    honeypot_id: str, start: datetime, end: datetime, session_id: str
 ) -> list[dict]:
     """Cowrie command events for ONE honeypot session inside ONE time window.
 
@@ -428,17 +468,18 @@ async def _search_commands(
       * `honeypot.id` -- another sensor's traffic is not this run's.
       * `labels.seeded: false` -- the demo corpus is indexed into the same
         index and its synthetic timestamps must never verify a live chain.
-      * `source.port` -- the port OUR chain session was opened from. This is
-        the only filter that separates us from a concurrent attacker: this is
-        a live sensor, and the time window and honeypot id are both things a
+      * `session.id` -- Cowrie's own id for the shell WE opened, found via
+        the per-session nonce (see `_discover_cowrie_session_id`). This is the
+        only filter that separates us from a concurrent attacker: this is a
+        live sensor, and the time window and honeypot id are both things a
         real session shares with us. Without it, a stranger's `cd /tmp` inside
         our window completes the `dropper` chain and its event id is stored
         and cited as our evidence.
       * the `@timestamp` range -- this is what stops run B reading run A's
         commands. Reset preserves cowrie.json by design, so the log is NOT
-        empty when a run starts, and source ports are reused over time, so
-        time still has to separate two of OUR OWN runs. Kept as defence in
-        depth alongside the port.
+        empty when a run starts, and a session id identifies one shell rather
+        than one run, so time still has to separate two of OUR OWN runs. Kept
+        as defence in depth alongside the session id.
     """
     settings = get_settings()
     result = await get_es().search(
@@ -449,7 +490,7 @@ async def _search_commands(
                     {"term": {"honeypot.id": honeypot_id}},
                     {"term": {"event.action": "cowrie.command.input"}},
                     {"term": {"labels.seeded": False}},
-                    {"term": {"source.port": source_port}},
+                    {"term": {"session.id": session_id}},
                     {
                         "range": {
                             "@timestamp": {
@@ -468,7 +509,7 @@ async def _search_commands(
 
 
 async def _read_back_commands(
-    honeypot_id: str, start: datetime, end: datetime, wanted: set[str], source_port: int
+    honeypot_id: str, start: datetime, end: datetime, wanted: set[str], session_id: str
 ) -> dict[str, CompactedCommand]:
     """Poll until every wanted command is indexed, or the deadline passes.
 
@@ -480,17 +521,16 @@ async def _read_back_commands(
     deadline = time.monotonic() + CHAIN_INGEST_TIMEOUT_SECONDS
     found: dict[str, CompactedCommand] = {}
     while True:
-        for hit in await _search_commands(honeypot_id, start, end, source_port):
+        for hit in await _search_commands(honeypot_id, start, end, session_id):
             source = hit["_source"]
             # The same session scoping the query already applies, re-checked
             # here on the document itself. The query filter is the efficient
             # half; this one is the half that cannot be silently lost by a
-            # mapping or pipeline change (`source.port` is renamed from
-            # Cowrie's `src_port` by `cowrie-ecs`, and an unmapped field
-            # makes a term filter match nothing -- or, on a differently
-            # shaped index, everything). An event we cannot attribute to our
-            # own session is not ours.
-            if (source.get("source") or {}).get("port") != source_port:
+            # mapping or pipeline change (an unmapped field makes a term
+            # filter match nothing -- or, on a differently shaped index,
+            # everything). An event we cannot attribute to our own session is
+            # not ours.
+            if (source.get("session") or {}).get("id") != session_id:
                 continue
             process = source.get("process") or {}
             command = process.get("command_line")
