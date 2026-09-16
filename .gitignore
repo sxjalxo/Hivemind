@@ -67,3 +67,5 @@ docs/
 
 # Subagent-driven-development scratch workspace (task briefs, reports, ledger).
 .superpowers/
+
+Demo.md
