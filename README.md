@@ -304,4 +304,6 @@ rejects path traversal outright — rather than documented in a comment.
   runs spanning a change to the rule engine or the probe timeout fingerprint identically,
   so git revision is the extra key when reading a trend.
 
-See [`OVERVIEW.md`](OVERVIEW.md) for the design rationale and the full limitation list.
+See [`OVERVIEW.md`](OVERVIEW.md) for the design rationale and the full limitation list,
+and [`DEMO.md`](DEMO.md) for a scripted walkthrough that exercises every feature once —
+including what currently fails and why.
