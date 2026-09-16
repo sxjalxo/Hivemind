@@ -63,7 +63,18 @@ export function TechniqueDrawer({
                     <h3 className="text-xs font-semibold uppercase tracking-[0.08em] text-foreground/80">
                       Mapping confidence
                     </h3>
-                    <ProvenanceBadge kind="AI INFERENCE" showIcon={false} />
+                    {/*
+                      Badge what produced THIS mapping, never a fixed label. A
+                      rule-backed mapping is deterministic and carries
+                      confidence 1.0; calling it "AI INFERENCE" is exactly the
+                      confusion between a recorded fact and a model's guess
+                      that the provenance model exists to prevent -- and it is
+                      the distinction this drawer is for.
+                    */}
+                    <ProvenanceBadge
+                      kind={technique.observed ? "OBSERVED" : "AI INFERENCE"}
+                      showIcon={false}
+                    />
                   </div>
                   <ConfidenceBar value={technique.confidence} />
                 </section>

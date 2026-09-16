@@ -68,39 +68,46 @@ function ResolvedEvent({ eventId }: { eventId: string }) {
   }
 
   return (
-    <dl className="mt-1 grid grid-cols-2 gap-x-4 gap-y-2 rounded border border-border/70 bg-background/60 px-3 py-2.5 sm:grid-cols-4">
-      <div>
-        <dt className="label-caps">Timestamp</dt>
-        <dd className="mt-0.5 font-mono text-[11px] text-foreground/90">
-          {formatDateTime(data.timestamp)}
-        </dd>
-      </div>
-      <div>
-        <dt className="label-caps">Action</dt>
-        <dd className="mt-0.5 font-mono text-[11px] text-foreground/90">{data.event.action}</dd>
-      </div>
-      <div>
-        <dt className="label-caps">Source IP</dt>
-        <dd className="mt-0.5 font-mono text-[11px] text-foreground/90">{data.source.ip}</dd>
-      </div>
-      <div>
-        <dt className="label-caps">Session</dt>
-        <dd className="mt-0.5 truncate font-mono text-[11px]">
-          <Link
-            to="/sessions/$sessionId"
-            params={{ sessionId: data.session.id }}
-            className="text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
-          >
-            {data.session.id}
-          </Link>
-        </dd>
-      </div>
-      <div className="col-span-2 sm:col-span-4">
-        <dt className="label-caps">Command line</dt>
-        <dd className="mt-0.5 whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/90">
-          {data.process?.commandLine ?? "— no process command recorded on this event —"}
-        </dd>
-      </div>
-    </dl>
+    // Container query, not a viewport one: this disclosure opens inside a
+    // narrow table cell as well as inside a full-width findings panel, so
+    // `sm:` measured the wrong box entirely and packed four columns into
+    // ~130px, collapsing the labels into each other. The variants have to
+    // sit on a CHILD of the `@container`, not on the container itself.
+    <div className="@container">
+      <dl className="mt-1 grid grid-cols-1 gap-x-4 gap-y-2 rounded border border-border/70 bg-background/60 px-3 py-2.5 @[20rem]:grid-cols-2 @[40rem]:grid-cols-4">
+        <div>
+          <dt className="label-caps">Timestamp</dt>
+          <dd className="mt-0.5 font-mono text-[11px] text-foreground/90">
+            {formatDateTime(data.timestamp)}
+          </dd>
+        </div>
+        <div>
+          <dt className="label-caps">Action</dt>
+          <dd className="mt-0.5 font-mono text-[11px] text-foreground/90">{data.event.action}</dd>
+        </div>
+        <div>
+          <dt className="label-caps">Source IP</dt>
+          <dd className="mt-0.5 font-mono text-[11px] text-foreground/90">{data.source.ip}</dd>
+        </div>
+        <div>
+          <dt className="label-caps">Session</dt>
+          <dd className="mt-0.5 truncate font-mono text-[11px]">
+            <Link
+              to="/sessions/$sessionId"
+              params={{ sessionId: data.session.id }}
+              className="text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
+            >
+              {data.session.id}
+            </Link>
+          </dd>
+        </div>
+        <div className="@[20rem]:col-span-2 @[40rem]:col-span-4">
+          <dt className="label-caps">Command line</dt>
+          <dd className="mt-0.5 whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/90">
+            {data.process?.commandLine ?? "— no process command recorded on this event —"}
+          </dd>
+        </div>
+      </dl>
+    </div>
   );
 }
