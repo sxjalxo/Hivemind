@@ -1,6 +1,10 @@
 # Hivemind — Project Overview
 
-*Companion to [`README.md`](README.md), which covers installation and running the system.*
+*Companion to [`README.md`](README.md), the technical reference, and
+[`DEMO.md`](DEMO.md), the setup and demo guide for someone new to the project.*
+
+This file explains **why** the system is built the way it is. Read one of the other two
+first if you want to run it rather than reason about it.
 
 ---
 

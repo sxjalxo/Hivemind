@@ -20,6 +20,11 @@ telemetry supports it.
 Based on *"Beekeeper: Accelerating Honeypot Analysis With LLM-Driven Feedback"*
 (Ilg, Germek, Duplys & Menth, IEEE Access vol. 13, 2025).
 
+> **New to this project?** Read **[`DEMO.md`](DEMO.md)** instead of this file. It assumes
+> no prior knowledge and covers what the project is, how to install every prerequisite,
+> how to start the three servers, and a screen-by-screen walkthrough. This README is the
+> technical reference for someone already working on the code.
+
 ---
 
 ## The loop
@@ -304,5 +309,6 @@ rejects path traversal outright — rather than documented in a comment.
   so git revision is the extra key when reading a trend.
 
 See [`OVERVIEW.md`](OVERVIEW.md) for the design rationale and the full limitation list,
-and [`DEMO.md`](DEMO.md) for a scripted walkthrough that exercises every feature once —
-including what currently fails and why.
+and [`DEMO.md`](DEMO.md) for the setup guide and a screen-by-screen walkthrough written
+for someone seeing the project for the first time — including a troubleshooting section
+for everything that commonly goes wrong.
