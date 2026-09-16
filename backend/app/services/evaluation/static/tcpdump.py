@@ -9,7 +9,20 @@ from app.db.models import FactStatus, ModuleStatus
 from app.services.evaluation.outcomes import ModuleOutcome
 from app.services.evaluation.sanity import Observation
 
-_PACKETS = re.compile(r"(\d+) packets captured")
+# Anchored to the start of a line, deliberately.
+#
+# tcpdump writes one line per packet to stdout and its summary to stderr. Merged
+# into a single pipe, the two interleave without synchronisation, so a partial
+# packet line's trailing digits can abut the summary: `...tcp 470363` followed by
+# `0 packets captured` reads as "4703630 packets captured". That was observed --
+# 4.7 million packets reported for a four-second SSH session -- and it is the
+# worst kind of wrong, because it arrives as a confident `observed` fact.
+#
+# The streams are kept apart at the source now (see `_spawn`); this anchor is the
+# second line of defence. A fragment glued to the front of the summary no longer
+# matches at all, which yields `unknown` -- we could not read the count -- rather
+# than a fabricated number.
+_PACKETS = re.compile(r"^\s*(\d+) packets captured", re.MULTILINE)
 
 # Set by `_spawn` when the capture runs as a container, read by `_request_stop`.
 # A capture is never concurrent with another within a run, and a stale name is
@@ -40,8 +53,12 @@ async def _spawn(interface: str):
             interface,
             "-n",
             "-q",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            # Packet lines go to stdout and are discarded -- only the count is
+            # wanted, and draining them would grow without bound on a busy
+            # interface. The summary goes to stderr, kept on its own pipe so
+            # nothing can interleave into it. See `_PACKETS`.
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
 
     _container_name = f"hivemind-capture-{uuid.uuid4().hex[:12]}"
@@ -58,8 +75,8 @@ async def _spawn(interface: str):
         interface,
         "-n",
         "-q",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
 
 
@@ -149,7 +166,7 @@ class Capture:
                 # to end. Still drain whatever output is available.
                 pass
 
-            stdout, _ = await asyncio.wait_for(
+            stdout, stderr = await asyncio.wait_for(
                 self._process.communicate(), timeout=self._timeout_seconds
             )
         except TimeoutError:
@@ -173,8 +190,15 @@ class Capture:
             self.outcome = _unknown_outcome(f"failed to stop tcpdump: {exc}")
             return self.outcome
 
-        text = stdout.decode("utf-8", "replace")
-        match = _PACKETS.search(text)
+        # stderr carries the summary; stdout is checked too so a caller that
+        # merges the streams (or a test that models one) still works.
+        match = None
+        for stream in (stderr, stdout):
+            if not stream:
+                continue
+            match = _PACKETS.search(stream.decode("utf-8", "replace"))
+            if match is not None:
+                break
 
         if match is None:
             self.outcome = _unknown_outcome("no packet count in tcpdump output")
