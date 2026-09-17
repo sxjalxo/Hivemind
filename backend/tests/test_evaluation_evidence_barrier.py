@@ -54,6 +54,7 @@ async def test_a_finding_with_no_evidence_is_rejected_at_commit() -> None:
                 severity="medium",
                 finding="Expected HTTP service was not exposed",
                 source="static",
+                finding_key="probe:fixture-1:fixture.fact",
             )
         )
         with pytest.raises(IntegrityError):
@@ -72,6 +73,7 @@ async def test_a_finding_with_one_probe_evidence_commits() -> None:
             severity="medium",
             finding="Expected HTTP service was not exposed",
             source="static",
+            finding_key="probe:fixture-2:fixture.fact",
         )
         db.add(finding)
         await db.flush()
@@ -115,6 +117,7 @@ async def test_evidence_kind_must_match_the_populated_reference() -> None:
             severity="low",
             finding="mismatched kind",
             source="static",
+            finding_key="probe:fixture-3:fixture.fact",
         )
         db.add(finding)
         await db.flush()

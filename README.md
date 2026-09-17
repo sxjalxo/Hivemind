@@ -187,8 +187,8 @@ verdict is the exact failure this system exists to prevent.
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-487 tests. They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `486 passed, 1 skipped` or `487 passed`** — there
+489 tests. They run against the live Docker stack and the real local model, so bring the
+infrastructure up first. **A clean run is `488 passed, 1 skipped` or `489 passed`** — there
 are no expected failures.
 
 The skip is the one end-to-end test that depends on whether `llama3.1:8b` infers a

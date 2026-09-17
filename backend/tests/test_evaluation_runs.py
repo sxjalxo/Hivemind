@@ -232,6 +232,7 @@ async def test_delete_run_removes_every_child_in_foreign_key_order(
             severity="high",
             finding="manufactured for the delete-order guard",
             source="deterministic",
+            finding_key="probe:fixture-1:fixture.fact",
         )
         runs._stage_finding(
             db,
@@ -290,6 +291,7 @@ async def test_a_finding_without_evidence_is_rejected_at_commit(monkeypatch, sta
                         severity="high",
                         finding="ungrounded",
                         source="deterministic",
+                        finding_key="probe:fixture-2:fixture.fact",
                     ),
                     evidence=[],
                 ),

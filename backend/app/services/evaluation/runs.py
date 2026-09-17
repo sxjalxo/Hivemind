@@ -109,7 +109,7 @@ from app.models.evaluation import (
 from app.services.chunking import MAX_ITEM_CHARS, truncate_text
 from app.services.compaction import CompactedCommand
 from app.services.evaluation import agent as agent_module
-from app.services.evaluation import fingerprints, probes, sanity, scoring
+from app.services.evaluation import finding_keys, fingerprints, probes, sanity, scoring
 from app.services.evaluation.agent import AgentBudget, EvaluationTarget
 from app.services.evaluation.evaluator import EvidenceItem, evaluate_characteristic
 from app.services.evaluation.outcomes import ModuleOutcome
@@ -905,6 +905,7 @@ async def _evaluate(
             finding=truncate_text(verdict.critique, MAX_ITEM_CHARS),
             recommendation=_bounded(verdict.recommendation, MAX_ITEM_CHARS),
             source="evaluator",
+            finding_key=finding_keys.evaluator_key(characteristic),
         )
         evidence = _evidence_for(finding.id, verdict.cited_evidence_ids)
         if not evidence:
@@ -966,6 +967,9 @@ def _contradiction_findings(
             ),
             recommendation=None,
             source="deterministic",
+            finding_key=finding_keys.sanity_key(
+                contradiction.fact, contradiction.probe_ids
+            ),
         )
         collected.findings.append(
             PendingFinding(

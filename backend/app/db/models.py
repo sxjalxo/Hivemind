@@ -262,7 +262,23 @@ class EvaluationCategoryScore(SQLModel, table=True):
 
 
 class EvaluationFinding(SQLModel, table=True):
+    """One reported defect in the honeypot.
+
+    `finding_key` is its identity ACROSS runs, and is what makes "is this
+    fixed?" answerable at all. It is derived from what the finding is about --
+    the probe, the chain step, the contradicting pair -- never from the
+    finding text, because the evaluator's prose varies run to run while
+    describing the same flaw.
+
+    Unique per `(run_id, finding_key)`: two findings sharing a key in one run
+    would make the lifecycle answer depend on row order.
+    """
+
     __tablename__ = "evaluation_findings"
+    __table_args__ = (
+        Index("ix_findings_run_key", "run_id", "finding_key", unique=True),
+        Index("ix_findings_key", "finding_key"),
+    )
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     run_id: uuid.UUID = Field(foreign_key="evaluation_runs.id", index=True)
@@ -271,6 +287,7 @@ class EvaluationFinding(SQLModel, table=True):
     finding: str
     recommendation: str | None = None
     source: str
+    finding_key: str
 
 
 class EvaluationEvidence(SQLModel, table=True):
