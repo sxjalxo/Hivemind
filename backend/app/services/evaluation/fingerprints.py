@@ -30,11 +30,39 @@ into a trend line. Every judgement here leans toward the first.
 
 import hashlib
 import json
+from dataclasses import asdict, dataclass
 
 from app.services.evaluation import container, probes
 from app.services.evaluation.agent import AgentBudget
 from app.services.evaluation.static import chains
 from app.services.mitre import rules
+
+
+@dataclass(frozen=True)
+class Target:
+    """What the run connected to.
+
+    Frozen because a fingerprint taken over a value that can be mutated
+    afterwards is not reproducible: the stored digest has to mean the target
+    the run actually used.
+
+    No credential. The password does not change what the honeypot IS, and
+    these values are hashed into a digest that is stored in Postgres and
+    rendered in the comparison view. Cowrie's password is barely a secret --
+    the target exists to be logged into -- but the rule that a fingerprint
+    never carries one should not acquire its first exception by accident.
+
+    A plain dataclass rather than a validated model on purpose. The
+    container-name check lives in `honeypot_fingerprint`, where the failure
+    is a `FingerprintError` and means "this run is not comparable". Raising
+    in the constructor instead would turn a misconfigured name into a crash
+    at whatever unrelated point the settings were first read.
+    """
+
+    container_name: str
+    host: str
+    ssh_port: int
+    ssh_username: str
 
 # The one file in the honeypot that is not part of its image: bind-mounted
 # read-only from ./infra/cowrie/cowrie.cfg, so it changes what the honeypot
@@ -229,15 +257,34 @@ async def _container_config_digest(name: str, timeout_seconds: float) -> str:
 
 
 async def honeypot_fingerprint(
-    name: str, timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
+    target: Target, timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
 ) -> str:
-    """Fingerprint what the honeypot IS: its image plus its running config.
+    """Fingerprint what the honeypot IS: its target, image and running config.
 
-    Two components, because either one alone is incomplete. The image id
+    Three components, because no two of them are enough. The image id
     misses `cowrie.cfg`, which is bind-mounted read-only from the host and
     so changes the honeypot without changing the image. The config alone
     misses a rebuilt or re-pulled image, which changes the fake filesystem,
-    the shipped userdb and Cowrie's own version.
+    the shipped userdb and Cowrie's own version. And image-plus-config
+    misses the target entirely: two containers from the same image with the
+    same config are byte-identical here, so runs against different hosts,
+    ports or containers fingerprinted the same and the compare endpoint drew
+    a trend line straight through them. That was harmless only while there
+    was exactly one target to point at; it stops being harmless the moment a
+    second honeypot exists to compare against.
+
+    The target belongs in THIS fingerprint and not the evaluation-config
+    one. The config fingerprint means "our probes, chains, rulebook and
+    budget" -- the question we asked. Putting the target there would make
+    pointing at a second honeypot read as "we changed the question, so the
+    delta is not attributable", which is backwards: the target names the
+    thing under test, so it belongs with the thing under test.
+
+    Note the direction of error this accepts. Moving an unchanged honeypot
+    to a different port now reads as a honeypot change and costs one lost
+    comparison. That is this module's stated preference, and the trade is
+    not symmetric: the other direction merges two different honeypots into
+    one trend line and says nothing.
 
     What the image id does NOT cover is the running container's writable
     layer: anything changed inside the container after it started -- a
@@ -256,6 +303,7 @@ async def honeypot_fingerprint(
     fingerprint identically. The config is therefore hashed by the
     container's own interpreter; see `container.CONTAINER_PYTHON`.
     """
+    name = target.container_name
     if not container.CONTAINER_NAME.fullmatch(name):
         raise FingerprintError(f"invalid container name: {name!r}")
 
@@ -281,4 +329,9 @@ async def honeypot_fingerprint(
 
     config = await _container_config_digest(name, timeout_seconds)
 
-    return _digest({"image": image, "config": config})
+    # `asdict` rather than a hand-written dict: add a field to `Target` and
+    # it enters the digest automatically. Enumerating the fields here is the
+    # same defect the budget comment describes -- two runs against
+    # materially different targets hashing identically until somebody
+    # remembers to edit this line.
+    return _digest({"image": image, "config": config, "target": asdict(target)})

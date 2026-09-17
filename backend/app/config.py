@@ -78,12 +78,25 @@ class Settings(BaseSettings):
     evaluation_container_name: str = "hivemind-cowrie-1"
     evaluation_nmap_timeout_seconds: int = 120
     evaluation_capture_timeout_seconds: int = 30
-    # NOTE: none of the evaluation_* settings above are covered by
-    # `evaluation_config_fingerprint`, which describes the probe set, chain
-    # set, rulebook and agent budget only. Two runs against different targets,
-    # interfaces or timeouts fingerprint identically. See
-    # app.services.evaluation.fingerprints for why that boundary is drawn
-    # there and what else it leaves uncovered.
+    # NOTE: `evaluation_config_fingerprint` describes the probe set, chain
+    # set, rulebook and agent budget only -- none of the evaluation_* settings
+    # above are in it.
+    #
+    # The target is the exception, and it is covered by the OTHER fingerprint:
+    # `evaluation_target_host`, `evaluation_ssh_port`, `evaluation_ssh_username`
+    # and `evaluation_container_name` are hashed into `honeypot_fingerprint`,
+    # because they name the thing under test rather than the question we asked
+    # of it. `evaluation_ssh_password` deliberately is not.
+    #
+    # Still uncovered by either: `evaluation_capture_interface`,
+    # `evaluation_capture_image` and the nmap/capture timeouts. Those are
+    # measurement apparatus -- they change what a run can FIND without
+    # changing the honeypot -- so they belong in the config fingerprint and
+    # are not there yet. Two runs under different capture interfaces or a
+    # shortened nmap timeout still fingerprint identically.
+    #
+    # See app.services.evaluation.fingerprints for why the boundary is drawn
+    # where it is.
 
 
 @lru_cache

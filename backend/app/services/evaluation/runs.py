@@ -1464,7 +1464,17 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
 
     # --- preconditions. No run row can exist before all three succeed. ---
     await _reset_target(container)
-    honeypot_fp = await _honeypot_fingerprint(container)
+    # The password is deliberately not carried across: it does not change
+    # what the honeypot is, and this value is hashed into a digest that gets
+    # stored and displayed. See `fingerprints.Target`.
+    honeypot_fp = await _honeypot_fingerprint(
+        fingerprints.Target(
+            container_name=container,
+            host=target.host,
+            ssh_port=target.port,
+            ssh_username=target.username,
+        )
+    )
     config_fp = _evaluation_config_fingerprint(budget)
 
     if run_id is None:

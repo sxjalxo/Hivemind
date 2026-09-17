@@ -187,7 +187,7 @@ verdict is the exact failure this system exists to prevent.
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-462 tests. They run against the live Docker stack and the real local model, so bring the
+470 tests. They run against the live Docker stack and the real local model, so bring the
 infrastructure up first. One test in `test_intel.py` is known-nondeterministic: it depends
 on whether `llama3.1:8b` happens to infer a technique on that pass, so a run showing that
 single failure is a clean run.

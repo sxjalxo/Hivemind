@@ -7,6 +7,7 @@ through them. Every test below is aimed at that direction of failure.
 """
 
 import asyncio
+import dataclasses
 import hashlib
 import shutil
 from pathlib import Path
@@ -19,6 +20,17 @@ from app.services.evaluation.static import chains
 from app.services.mitre import rules
 
 BUDGET = AgentBudget(max_commands=40, max_seconds=120)
+
+
+def _target(**overrides) -> "fingerprints.Target":
+    """The default target, with individual fields overridden per test."""
+    base = {
+        "container_name": "hivemind-cowrie-1",
+        "host": "cowrie",
+        "ssh_port": 2222,
+        "ssh_username": "root",
+    }
+    return fingerprints.Target(**{**base, **overrides})
 
 
 # ---------------------------------------------------------------------------
@@ -307,10 +319,10 @@ async def test_two_different_honeypot_configs_produce_different_fingerprints(
     # component was sha256("") on every call, so two honeypots with entirely
     # different cowrie.cfg files fingerprinted identically.
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
-    first = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    first = await fingerprints.honeypot_fingerprint(_target())
 
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"2222" * 16)
-    second = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    second = await fingerprints.honeypot_fingerprint(_target())
 
     assert first != second
 
@@ -318,18 +330,18 @@ async def test_two_different_honeypot_configs_produce_different_fingerprints(
 @pytest.mark.asyncio
 async def test_the_same_honeypot_reproduces_the_same_fingerprint(monkeypatch) -> None:
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
-    first = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
-    second = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    first = await fingerprints.honeypot_fingerprint(_target())
+    second = await fingerprints.honeypot_fingerprint(_target())
     assert first == second
 
 
 @pytest.mark.asyncio
 async def test_a_new_image_changes_the_honeypot_fingerprint(monkeypatch) -> None:
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
-    first = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    first = await fingerprints.honeypot_fingerprint(_target())
 
     _fake_docker(monkeypatch, image=b"sha256:bbbb\n", config_digest=b"1111" * 16)
-    second = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    second = await fingerprints.honeypot_fingerprint(_target())
 
     assert first != second
 
@@ -346,7 +358,7 @@ async def test_the_config_is_read_with_the_container_python_not_a_shell_utility(
     _fake_docker(
         monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16, spawned=spawned
     )
-    await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    await fingerprints.honeypot_fingerprint(_target())
 
     exec_argv = [argv for argv in spawned if argv[:2] == ["docker", "exec"]]
     assert exec_argv, spawned
@@ -382,7 +394,7 @@ async def test_a_missing_container_utility_raises_instead_of_digesting_nothing(
     monkeypatch.setattr(container, "_spawn", _spawn)
 
     with pytest.raises(fingerprints.FingerprintError) as exc:
-        await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+        await fingerprints.honeypot_fingerprint(_target())
     assert "127" in str(exc.value)
     assert "executable file not found" in str(exc.value)
 
@@ -408,7 +420,7 @@ async def test_a_127_reported_only_on_stdout_still_reaches_the_caller(monkeypatc
     monkeypatch.setattr(container, "_spawn", _spawn)
 
     with pytest.raises(fingerprints.FingerprintError) as exc:
-        await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+        await fingerprints.honeypot_fingerprint(_target())
     assert "OCI runtime exec failed" in str(exc.value)
 
 
@@ -420,7 +432,7 @@ async def test_a_failing_docker_inspect_raises(monkeypatch) -> None:
     monkeypatch.setattr(container, "_spawn", _spawn)
 
     with pytest.raises(fingerprints.FingerprintError) as exc:
-        await fingerprints.honeypot_fingerprint("nope")
+        await fingerprints.honeypot_fingerprint(_target(container_name="nope"))
     assert "No such object" in str(exc.value)
 
 
@@ -451,7 +463,7 @@ async def test_a_missing_docker_binary_raises(monkeypatch) -> None:
     monkeypatch.setattr(container, "_spawn", _spawn)
 
     with pytest.raises(fingerprints.FingerprintError):
-        await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+        await fingerprints.honeypot_fingerprint(_target())
 
 
 @pytest.mark.asyncio
@@ -459,21 +471,21 @@ async def test_an_empty_digest_from_the_container_raises(monkeypatch) -> None:
     # Exit 0 with no output is still not a fingerprint.
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"")
     with pytest.raises(fingerprints.FingerprintError):
-        await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+        await fingerprints.honeypot_fingerprint(_target())
 
 
 @pytest.mark.asyncio
 async def test_an_empty_image_id_raises(monkeypatch) -> None:
     _fake_docker(monkeypatch, image=b"\n", config_digest=b"1111" * 16)
     with pytest.raises(fingerprints.FingerprintError):
-        await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+        await fingerprints.honeypot_fingerprint(_target())
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["", "   ", "bad name", "-leading-dash", "a/b"])
 async def test_an_invalid_container_name_raises(name) -> None:
     with pytest.raises(fingerprints.FingerprintError):
-        await fingerprints.honeypot_fingerprint(name)
+        await fingerprints.honeypot_fingerprint(_target(container_name=name))
 
 
 # --- Finding 3: bounded -----------------------------------------------------
@@ -491,7 +503,7 @@ async def test_a_hanging_docker_call_is_bounded_and_raises(monkeypatch) -> None:
     monkeypatch.setattr(container, "_spawn", _spawn)
 
     with pytest.raises(fingerprints.FingerprintError) as exc:
-        await fingerprints.honeypot_fingerprint("hivemind-cowrie-1", timeout_seconds=0.05)
+        await fingerprints.honeypot_fingerprint(_target(), timeout_seconds=0.05)
     assert "timed out" in str(exc.value)
     # The local docker CLI is reaped; the in-container process is not
     # signalled by this, and the message must not claim otherwise.
@@ -509,14 +521,14 @@ async def test_the_two_fingerprints_are_independent(monkeypatch, reload_loader, 
     # of OUR probe definitions between two runs would read as a honeypot
     # improvement.
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
-    honeypot_before = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    honeypot_before = await fingerprints.honeypot_fingerprint(_target())
     config_before = fingerprints.evaluation_config_fingerprint(BUDGET)
 
     # Change only OUR side.
     stand_in = tmp_path / "probes.yaml"
     stand_in.write_text('version: "1"\nprobes: []\n', encoding="utf-8")
     reload_loader("probes", stand_in)
-    honeypot_after = await fingerprints.honeypot_fingerprint("hivemind-cowrie-1")
+    honeypot_after = await fingerprints.honeypot_fingerprint(_target())
     config_after = fingerprints.evaluation_config_fingerprint(BUDGET)
 
     assert honeypot_after == honeypot_before
@@ -524,7 +536,7 @@ async def test_the_two_fingerprints_are_independent(monkeypatch, reload_loader, 
 
     # Change only the honeypot's side.
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"3333" * 16)
-    assert await fingerprints.honeypot_fingerprint("hivemind-cowrie-1") != honeypot_after
+    assert await fingerprints.honeypot_fingerprint(_target()) != honeypot_after
     assert fingerprints.evaluation_config_fingerprint(BUDGET) == config_after
 
 
@@ -555,6 +567,7 @@ def test_the_evaluator_model_is_not_part_of_the_config_fingerprint() -> None:
 # ---------------------------------------------------------------------------
 
 LIVE_CONTAINER = "hivemind-cowrie-1"
+LIVE_TARGET = _target(container_name=LIVE_CONTAINER)
 LIVE_UNREACHABLE = (fingerprints.FingerprintError, container.ContainerExecError, OSError)
 
 # cowrie.cfg is bind-mounted read-only from the host into the container
@@ -577,8 +590,8 @@ async def test_live_honeypot_fingerprint_is_real_and_stable() -> None:
         pytest.skip(f"{HOST_COWRIE_CFG} not present")
 
     try:
-        first = await fingerprints.honeypot_fingerprint(LIVE_CONTAINER)
-        second = await fingerprints.honeypot_fingerprint(LIVE_CONTAINER)
+        first = await fingerprints.honeypot_fingerprint(LIVE_TARGET)
+        second = await fingerprints.honeypot_fingerprint(LIVE_TARGET)
         image = (
             await container.run(
                 ["docker", "inspect", "--format", "{{.Image}}", LIVE_CONTAINER],
@@ -597,7 +610,13 @@ async def test_live_honeypot_fingerprint_is_real_and_stable() -> None:
     # the image halves already differ, so it holds no matter what the config
     # component is -- including the empty-string digest the draft produced.
     assert image and image != ""
-    assert first == fingerprints._digest({"image": image, "config": _host_config_sha256()})
+    assert first == fingerprints._digest(
+        {
+            "image": image,
+            "config": _host_config_sha256(),
+            "target": dataclasses.asdict(LIVE_TARGET),
+        }
+    )
 
 
 @pytest.mark.asyncio
@@ -631,6 +650,96 @@ async def test_live_an_absent_container_skips_rather_than_erroring() -> None:
 
     absent = "hivemind-cowrie-absent-for-tests"
     with pytest.raises(LIVE_UNREACHABLE):
-        await fingerprints.honeypot_fingerprint(absent)
+        await fingerprints.honeypot_fingerprint(_target(container_name=absent))
     with pytest.raises(LIVE_UNREACHABLE):
         await fingerprints._container_config_digest(absent, 30.0)
+
+
+# ---------------------------------------------------------------------------
+# Target identity. Two honeypots that hash identically are still two
+# honeypots, and a comparison that cannot tell them apart asserts a
+# comparability nobody checked.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("container_name", "hivemind-cowrie-2"),
+        ("host", "127.0.0.1"),
+        ("ssh_port", 2322),
+        ("ssh_username", "admin"),
+    ],
+)
+async def test_changing_the_target_changes_the_honeypot_fingerprint(
+    monkeypatch, field, value
+) -> None:
+    """Identical image, identical cowrie.cfg, different target.
+
+    This is the case the image+config pair cannot see. The docstring on
+    `honeypot_fingerprint` already concedes that the container's writable
+    layer is uncovered -- a `docker cp`'d binary or a hand-edited fs.pickle
+    changes the honeypot with no fingerprint movement. Two such containers
+    are byte-identical to this function. Carrying the target means the
+    stored fingerprints at least disagree, so the compare endpoint reports a
+    change instead of drawing a trend line through two different hosts.
+    """
+    _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
+    first = await fingerprints.honeypot_fingerprint(_target())
+    second = await fingerprints.honeypot_fingerprint(_target(**{field: value}))
+
+    assert first != second, f"{field} moved but the fingerprint did not"
+
+
+@pytest.mark.asyncio
+async def test_the_same_target_still_reproduces_the_same_fingerprint(monkeypatch) -> None:
+    """Carrying the target must not make the fingerprint unstable."""
+    _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
+    first = await fingerprints.honeypot_fingerprint(_target())
+    second = await fingerprints.honeypot_fingerprint(_target())
+
+    assert first == second
+
+
+def test_the_target_carries_no_credential() -> None:
+    """The password is not part of what the honeypot IS.
+
+    It does not change the decoy's behaviour, and fingerprints are stored in
+    Postgres and rendered in the comparison view. A field added here would
+    put a credential in both. Cowrie's password is not much of a secret --
+    the whole point of the target is that anyone can log in -- but the rule
+    that fingerprints never carry credentials should not have its first
+    exception be an accident.
+    """
+    names = {field.name for field in dataclasses.fields(fingerprints.Target)}
+
+    assert names == {"container_name", "host", "ssh_port", "ssh_username"}
+
+
+def test_the_target_is_frozen() -> None:
+    """A fingerprint computed from a value that can be mutated afterwards is
+    not reproducible. Freezing is what makes the recorded digest mean the
+    target the run actually used."""
+    target = _target()
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        target.host = "elsewhere"  # type: ignore[misc]
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_container_name_still_raises_through_the_target(
+    monkeypatch,
+) -> None:
+    """Validation lives in the fingerprint function, not in `Target`.
+
+    `Target` is a plain frozen dataclass on purpose: it is also the value a
+    caller assembles from settings, and a constructor that raised would turn
+    a misconfigured container name into an import-time or request-time crash
+    somewhere far from the fingerprint. The check stays where the error type
+    is meaningful.
+    """
+    _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
+
+    with pytest.raises(fingerprints.FingerprintError):
+        await fingerprints.honeypot_fingerprint(_target(container_name="../etc"))
