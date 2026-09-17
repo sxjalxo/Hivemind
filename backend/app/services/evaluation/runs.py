@@ -200,6 +200,23 @@ _EVALUATOR_WORST_CASE_SECONDS = 300 * len(Characteristic)
 CHAIN_CLOCK_SKEW_SECONDS = 5
 
 
+class TargetUnreachableError(RuntimeError):
+    """Nothing accepted a connection at the configured evaluation target.
+
+    A precondition, not evidence. Every module would still *run* against an
+    unreachable target -- the agent would time out per command, nmap would
+    find nothing, the chains would execute against a closed socket -- and
+    each would correctly degrade its facts to `unknown`. The run would
+    complete, score nothing, and take the full agent budget to do it.
+
+    That is technically honest and practically useless: an all-`unknown` run
+    is indistinguishable at a glance from a honeypot that answered badly, and
+    the developer has to read module statuses to discover the target was
+    never there. Failing here instead costs one TCP connect and names the
+    setting to fix.
+    """
+
+
 class RunNotFoundError(LookupError):
     """No evaluation run with that id."""
 
@@ -1422,6 +1439,52 @@ async def _execute_run(
     await _emit(run_id, 6, characteristics_evaluated=len(collected.ratings))
 
 
+_REACHABILITY_TIMEOUT_SECONDS = 5.0
+
+
+async def _assert_target_reachable(
+    target: EvaluationTarget, timeout_seconds: float = _REACHABILITY_TIMEOUT_SECONDS
+) -> None:
+    """Confirm something is listening where the evaluation target points.
+
+    A TCP connect and nothing more. Whether what answered is really a Cowrie
+    is the agent's question and the fingerprint's; making this a protocol
+    check would duplicate both and add a second thing to keep in step with
+    the honeypot.
+
+    This exists because of one specific, extremely common misconfiguration:
+    `evaluation_target_host` defaults to the compose service name `cowrie`,
+    which resolves inside the compose network and nowhere else. A backend run
+    on the host -- which is how this project is normally developed -- gets a
+    name that does not resolve, and before this check that surfaced two
+    minutes later as a run in which every fact was `unknown`.
+    """
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(target.host, target.port),
+            timeout=timeout_seconds,
+        )
+    except (OSError, asyncio.TimeoutError) as exc:
+        raise TargetUnreachableError(
+            f"nothing accepted a connection at {target.host}:{target.port} "
+            f"within {timeout_seconds}s ({exc}). "
+            f"EVALUATION_TARGET_HOST is {target.host!r}; the compose service "
+            f"name only resolves from inside the compose network, so set "
+            f"EVALUATION_TARGET_HOST=127.0.0.1 for a backend running on the host."
+        ) from exc
+
+    # The question was answered the moment the connection was accepted;
+    # everything from here is tidying up. `wait_closed()` waits on the PEER,
+    # so a target that holds the socket open -- which a real SSH server
+    # politely does -- can block here indefinitely. Bounding it keeps a
+    # precondition from becoming the hang it exists to prevent.
+    writer.close()
+    try:
+        await asyncio.wait_for(writer.wait_closed(), timeout=timeout_seconds)
+    except (OSError, asyncio.TimeoutError):
+        pass
+
+
 async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
     """Run one evaluation end to end and return its id.
 
@@ -1462,7 +1525,14 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
     # layer. This only makes sure the flag it reads can ever be cleared.
     await reconcile_stale_runs(honeypot_id)
 
-    # --- preconditions. No run row can exist before all three succeed. ---
+    # --- preconditions. No run row can exist before all of these succeed. ---
+    #
+    # Reachability goes FIRST, ahead of the reset, and the order is load
+    # bearing: the reset clears the state a previous evaluation left behind.
+    # Running it and only then discovering the target was never reachable
+    # destroys the previous run's residue to produce nothing at all. The
+    # check that costs a TCP connect precedes the one with a side effect.
+    await _assert_target_reachable(target)
     await _reset_target(container)
     # The password is deliberately not carried across: it does not change
     # what the honeypot is, and this value is hashed into a digest that gets

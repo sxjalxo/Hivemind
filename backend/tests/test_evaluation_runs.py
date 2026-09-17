@@ -1,3 +1,4 @@
+import asyncio
 import re
 import uuid
 from contextlib import asynccontextmanager
@@ -1102,6 +1103,11 @@ def _stub_modules(monkeypatch) -> None:
     monkeypatch.setattr(runs, "_run_nmap", _nmap)
     monkeypatch.setattr(runs, "_run_chains", _chains)
     monkeypatch.setattr(runs, "_reset_target", _noop)
+    # Reachability is an SSH boundary like the rest: `evaluation_target_host`
+    # defaults to the compose service name, which does not resolve from a
+    # test process on the host, so leaving this real would make every run
+    # here wait out a connection that was never going to succeed.
+    monkeypatch.setattr(runs, "_assert_target_reachable", _noop)
     monkeypatch.setattr(runs, "_honeypot_fingerprint", _fixed("sha256:BASE"))
     monkeypatch.setattr(runs, "_capture", runs._null_capture)
     monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
@@ -1189,3 +1195,100 @@ async def test_the_startup_sweep_does_not_disturb_a_finished_run(started) -> Non
     assert run_id not in await runs.reconcile_orphaned_runs_at_startup()
     run = await runs.load_run(run_id)
     assert run.status == "completed"
+
+
+async def _accept_and_hold(reader, writer) -> None:
+    """Accept the connection and hold it, the way a real SSH server does.
+
+    A handler that closed immediately would hide the bug this pair of tests
+    found: the reachability check awaited `wait_closed()`, which waits on the
+    PEER, so a target that politely keeps the socket open hung the check
+    forever.
+    """
+    try:
+        await reader.read(1)
+    finally:
+        writer.close()
+
+
+# ---------------------------------------------------------------------------
+# Target reachability. `evaluation_target_host` defaults to the compose
+# service name `cowrie`, which does not resolve from a backend running on the
+# host -- the single most common misconfiguration in this project.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_target_aborts_before_the_honeypot_is_reset(
+    monkeypatch,
+) -> None:
+    """Reachability is checked FIRST, ahead of the reset.
+
+    Order matters here, and not only for the error message. The reset clears
+    the state a previous evaluation left behind. Running it and then
+    discovering the target was never reachable destroys the previous run's
+    residue to produce nothing -- so the cheap check that costs a TCP connect
+    goes before the one with a side effect.
+    """
+    _stub_modules(monkeypatch)
+    reset_calls: list = []
+
+    async def _spy_reset(*args, **kwargs):
+        reset_calls.append(args)
+
+    async def _unreachable(*args, **kwargs):
+        raise runs.TargetUnreachableError("cowrie:2222 refused the connection")
+
+    monkeypatch.setattr(runs, "_reset_target", _spy_reset)
+    monkeypatch.setattr(runs, "_assert_target_reachable", _unreachable)
+
+    before = await _run_count()
+    with pytest.raises(runs.TargetUnreachableError):
+        await runs.start_run("cowrie-01")
+
+    assert await _run_count() == before, "a run row survived an unreachable target"
+    assert reset_calls == [], "the honeypot was reset for a run that could never start"
+
+
+@pytest.mark.asyncio
+async def test_reachability_accepts_a_listening_port() -> None:
+    """The check is a TCP connect, not an SSH handshake.
+
+    Anything that accepts the connection passes. Deciding whether what
+    answered is really a honeypot is the agent's job, and the fingerprint's;
+    making this a protocol check would duplicate both and add a second thing
+    to keep in step with Cowrie.
+    """
+    server = await asyncio.start_server(_accept_and_hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        await runs._assert_target_reachable(
+            runs.EvaluationTarget(host="127.0.0.1", port=port, username="root", password="x")
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reachability_names_the_setting_that_is_wrong() -> None:
+    """The message has to be actionable without reading the source.
+
+    A bare ConnectionRefusedError two minutes into a run, after every probe
+    has timed out and every fact has degraded to unknown, is technically
+    accurate and practically useless.
+    """
+    server = await asyncio.start_server(_accept_and_hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    server.close()
+    await server.wait_closed()  # the port is now certainly closed
+
+    with pytest.raises(runs.TargetUnreachableError) as caught:
+        await runs._assert_target_reachable(
+            runs.EvaluationTarget(host="127.0.0.1", port=port, username="root", password="x"),
+            timeout_seconds=1.0,
+        )
+
+    message = str(caught.value)
+    assert "EVALUATION_TARGET_HOST" in message
+    assert str(port) in message

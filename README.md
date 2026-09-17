@@ -187,8 +187,8 @@ verdict is the exact failure this system exists to prevent.
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-484 tests. They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `483 passed, 1 skipped` or `484 passed`** — there
+487 tests. They run against the live Docker stack and the real local model, so bring the
+infrastructure up first. **A clean run is `486 passed, 1 skipped` or `487 passed`** — there
 are no expected failures.
 
 The skip is the one end-to-end test that depends on whether `llama3.1:8b` infers a
@@ -302,7 +302,9 @@ rejects path traversal outright — rather than documented in a comment.
 
 - **`evaluation_target_host` defaults to the compose service name** `cowrie`, which does
   not resolve from a backend running on the host. Set `EVALUATION_TARGET_HOST=127.0.0.1`
-  for a host-run backend.
+  for a host-run backend. A run now refuses to start when nothing accepts a connection
+  there, naming the setting — rather than spending the full agent budget producing a run
+  in which every fact is `unknown`.
 - **The packet capture needs Docker**, because it runs inside the honeypot container's
   network namespace. Clearing `EVALUATION_CAPTURE_IMAGE` falls back to a host `tcpdump`,
   which is only correct where the host shares the honeypot's network — not when the
