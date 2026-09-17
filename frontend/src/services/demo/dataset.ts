@@ -10,6 +10,8 @@ import type {
   AttackerProfile,
   EvaluationRun,
   EvaluationRunSummary,
+  FindingLifecycle,
+  FindingLifecycleStatus,
   Honeypot,
   HoneypotEvent,
   Indicator,
@@ -1193,6 +1195,7 @@ const evaluationRunA: EvaluationRun = {
   findings: [
     {
       id: "9d2f6b41-77aa-4c19-8f30-2b5e91d0c344",
+      findingKey: "sanity:service.banner:ssh_banner+uname",
       characteristic: "services",
       severity: "high",
       finding:
@@ -1210,6 +1213,7 @@ const evaluationRunA: EvaluationRun = {
     },
     {
       id: "3c8e0a17-19bd-4f52-b6c7-84a2d5e61b9f",
+      findingKey: "evaluator:file_system",
       characteristic: "file_system",
       severity: "medium",
       finding:
@@ -1293,6 +1297,7 @@ const evaluationRunB: EvaluationRun = {
   findings: [
     {
       id: "6f1a83c5-40de-4b27-9c88-7e05a3b19d62",
+      findingKey: "chain:download-and-execute:T1105",
       characteristic: "attack_possibilities",
       severity: "high",
       finding:
@@ -1439,5 +1444,72 @@ export function compareEvaluationRuns(base: EvaluationRun, head: EvaluationRun):
     classification: differences.length === 0 ? "same_configuration" : "configuration_changed",
     differences,
     deltas,
+    findings: compareFindings(base, head, differences),
   };
+}
+
+/**
+ * The demo's lifecycle, resolved the same way the backend resolves it.
+ *
+ * Deliberately NOT a set difference over finding keys. A key missing from a
+ * run means either the fact came back `observed` (genuinely gone) or the fact
+ * was never established (we could not look), and showing the second as
+ * `fixed` would put fabricated good news on screen -- exactly what the demo
+ * must not teach anyone to expect.
+ *
+ * `regressed` is absent here because it needs a third run, and the demo has
+ * two. Backend comparisons still report it.
+ */
+function compareFindings(
+  base: EvaluationRun,
+  head: EvaluationRun,
+  differences: string[],
+): FindingLifecycle[] {
+  const attributable = !differences.includes("evaluation_config_fingerprint");
+  const rowsOf = (run: EvaluationRun) =>
+    new Map(run.findings.map((finding) => [finding.findingKey, finding]));
+  const baseRows = rowsOf(base);
+  const headRows = rowsOf(head);
+
+  const entries: FindingLifecycle[] = [];
+  for (const key of new Set([...baseRows.keys(), ...headRows.keys()])) {
+    const headRow = headRows.get(key);
+    const baseRow = baseRows.get(key);
+    const isSlot = key.startsWith("evaluator:");
+
+    let status: FindingLifecycleStatus;
+    if (headRow) {
+      status = baseRow ? "persisting" : "new";
+    } else if (baseRow) {
+      // Nothing in the demo dataset establishes that the fact was re-checked,
+      // so the honest answer is that we do not know it was fixed.
+      status = "undetermined";
+    } else {
+      continue;
+    }
+
+    const row = headRow ?? baseRow!;
+    entries.push({
+      key,
+      status,
+      attributable,
+      isSlot,
+      fromRunId: headRow ? head.id : base.id,
+      characteristic: row.characteristic,
+      severity: row.severity,
+      source: row.source,
+      finding: row.finding,
+      recommendation: row.recommendation,
+      evidence: row.evidence,
+    });
+  }
+
+  const order: Record<FindingLifecycleStatus, number> = {
+    regressed: 0,
+    new: 1,
+    persisting: 2,
+    undetermined: 3,
+    fixed: 4,
+  };
+  return entries.sort((a, b) => order[a.status] - order[b.status] || a.key.localeCompare(b.key));
 }

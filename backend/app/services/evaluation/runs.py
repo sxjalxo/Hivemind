@@ -104,12 +104,20 @@ from app.models.evaluation import (
     LiveEvaluationMetrics,
     ModuleResultOut,
     ProbeResultOut,
+    FindingLifecycleOut,
     RunComparison,
 )
 from app.services.chunking import MAX_ITEM_CHARS, truncate_text
 from app.services.compaction import CompactedCommand
 from app.services.evaluation import agent as agent_module
-from app.services.evaluation import finding_keys, fingerprints, probes, sanity, scoring
+from app.services.evaluation import (
+    finding_keys,
+    fingerprints,
+    lifecycle,
+    probes,
+    sanity,
+    scoring,
+)
 from app.services.evaluation.agent import AgentBudget, EvaluationTarget
 from app.services.evaluation.evaluator import EvidenceItem, evaluate_characteristic
 from app.services.evaluation.outcomes import ModuleOutcome
@@ -1739,6 +1747,7 @@ def _to_out(
                 finding=finding.finding,
                 recommendation=finding.recommendation,
                 source=finding.source,
+                finding_key=finding.finding_key,
                 evidence=[
                     EvidenceOut(
                         kind=item.kind,
@@ -1952,6 +1961,134 @@ async def is_running(honeypot_id: str) -> bool:
         return found is not None
 
 
+_LIFECYCLE_HISTORY_LIMIT = 20
+
+
+def _run_facts(run: EvaluationRunOut) -> lifecycle.RunFacts:
+    """Reduce a loaded run to what lifecycle resolution needs.
+
+    `fact_status_by_key` is rebuilt with the SAME key functions `_fact_findings`
+    used to write the findings. Deriving it a second way here would let the two
+    drift, and a key that does not match its own finding reads as a defect that
+    is simultaneously present and never checked.
+
+    It is built for every probe and chain row regardless of fact status --
+    that is the point. A key with an `observed` fact is what proves the defect
+    is genuinely gone rather than merely unexamined.
+    """
+    by_key: dict[str, str] = {}
+    for probe in run.probe_results:
+        if probe.establishes is None:
+            continue
+        key = (
+            finding_keys.service_key(probe.establishes)
+            if probe.module == "nmap"
+            else finding_keys.probe_key(probe.probe_id, probe.establishes)
+        )
+        by_key[key] = probe.fact_status
+    for step in run.chain_steps:
+        by_key[finding_keys.chain_key(step.chain_id, step.expected_technique_id)] = (
+            step.fact_status
+        )
+
+    return lifecycle.RunFacts(
+        run_id=run.id,
+        status=run.status,
+        evaluator_status=run.evaluator_status,
+        finding_keys=frozenset(f.finding_key for f in run.findings),
+        fact_status_by_key=by_key,
+    )
+
+
+def _parsed_timestamp(value: str) -> datetime:
+    """`EvaluationRunOut.started_at` is ISO text with a `Z`, not a datetime.
+
+    Passing it straight into a query compares `timestamp with time zone` to
+    `character varying`, which Postgres refuses outright rather than coercing
+    -- the failure is loud, which is the only good thing about it.
+    """
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+async def _lifecycle_history(
+    honeypot_id: str, before: str, exclude: set[str]
+) -> list[lifecycle.RunFacts]:
+    """Earlier runs of the same honeypot, for the `regressed` test only.
+
+    Bounded: a defect that returns after twenty runs is indistinguishable from
+    a new one for any practical purpose, and an unbounded scan would grow with
+    the honeypot's whole history on every comparison.
+
+    `resolve` filters these to completed runs that actually established the
+    fact, so nothing here needs to pre-judge usability -- but the ordering
+    does matter: newest first, so the limit keeps the RECENT past rather than
+    an arbitrary slice of the distant one.
+    """
+    async with get_session_factory()() as db:
+        rows = (
+            (
+                await db.execute(
+                    select(EvaluationRun.id)
+                    .where(
+                        EvaluationRun.honeypot_id == honeypot_id,
+                        EvaluationRun.started_at < _parsed_timestamp(before),
+                    )
+                    .order_by(EvaluationRun.started_at.desc())
+                    .limit(_LIFECYCLE_HISTORY_LIMIT)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    history: list[lifecycle.RunFacts] = []
+    for row_id in rows:
+        if str(row_id) in exclude:
+            continue
+        run = await load_run(row_id)
+        if run is not None:
+            history.append(_run_facts(run))
+    return history
+
+
+def _lifecycle_entries(
+    base: EvaluationRunOut,
+    head: EvaluationRunOut,
+    history: list[lifecycle.RunFacts],
+    attributable: bool,
+) -> list[FindingLifecycleOut]:
+    """Join resolution back onto the rows a client can actually render.
+
+    A `fixed` entry has no row in head by definition, so its text and evidence
+    are read from base. Without that it would be a bare key -- the caller
+    would be told something was repaired and have no way to see what.
+    """
+    rows = {
+        base.id: {f.finding_key: f for f in base.findings},
+        head.id: {f.finding_key: f for f in head.findings},
+    }
+
+    entries: list[FindingLifecycleOut] = []
+    for entry in lifecycle.resolve(_run_facts(base), _run_facts(head), history):
+        source_row = rows.get(entry.from_run, {}).get(entry.key)
+        entries.append(
+            FindingLifecycleOut(
+                key=entry.key,
+                status=entry.status,
+                attributable=attributable,
+                is_slot=entry.is_slot,
+                from_run_id=entry.from_run,
+                characteristic=source_row.characteristic if source_row else None,
+                severity=source_row.severity if source_row else None,
+                source=source_row.source if source_row else None,
+                finding=source_row.finding if source_row else None,
+                recommendation=source_row.recommendation if source_row else None,
+                evidence=source_row.evidence if source_row else [],
+            )
+        )
+    return entries
+
+
 async def compare_runs(base_id: uuid.UUID, head_id: uuid.UUID) -> RunComparison:
     """Delta between two runs, with its attribution stated plainly.
 
@@ -1996,12 +2133,22 @@ async def compare_runs(base_id: uuid.UUID, head_id: uuid.UUID) -> RunComparison:
             round(after - before, 3) if before is not None and after is not None else None
         )
 
+    # A defect that vanished across a changed evaluation config may mean we
+    # stopped asking rather than that anyone fixed it -- a probe deleted from
+    # probes.yaml makes its finding disappear and look repaired. The honeypot
+    # fingerprint moving is the opposite: that is the change being measured.
+    attributable = "evaluation_config_fingerprint" not in differences
+    history = await _lifecycle_history(
+        head.honeypot_id, before=base.started_at, exclude={base.id, head.id}
+    )
+
     return RunComparison(
         base=base,
         head=head,
         classification="same_configuration" if not differences else "configuration_changed",
         differences=differences,
         deltas=deltas,
+        findings=_lifecycle_entries(base, head, history, attributable),
     )
 
 

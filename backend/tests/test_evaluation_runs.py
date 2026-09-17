@@ -1431,3 +1431,98 @@ def test_one_key_yields_one_finding_even_if_the_fact_repeats() -> None:
     runs._fact_findings(run_id, collected)
 
     assert len(collected.findings) == 1
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle on the comparison. Resolution itself is unit-tested in
+# test_evaluation_lifecycle.py; these check the wiring end to end, against
+# real runs and the real database.
+# ---------------------------------------------------------------------------
+
+_UNAME_KEY = "probe:uname:os.identity"
+
+
+def _entry(comparison, key):
+    return next((f for f in comparison.findings if f.key == key), None)
+
+
+@pytest.mark.asyncio
+async def test_a_defect_present_then_gone_compares_as_fixed(monkeypatch, started) -> None:
+    _stub_modules(monkeypatch)
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
+
+    monkeypatch.setattr(runs, "_run_agent", _agent_returning("not_observed", value=None))
+    base = await started()
+    monkeypatch.setattr(runs, "_run_agent", _agent_returning("observed"))
+    head = await started()
+
+    comparison = await runs.compare_runs(base, head)
+    entry = _entry(comparison, _UNAME_KEY)
+
+    assert entry is not None and entry.status == "fixed"
+    # There is no row for it in head, so the renderable text and evidence have
+    # to come from base or the entry is a bare key nobody can audit.
+    assert entry.finding
+    assert entry.evidence
+
+
+@pytest.mark.asyncio
+async def test_a_defect_the_next_run_could_not_check_is_not_reported_fixed(
+    monkeypatch, started
+) -> None:
+    """The failure this whole feature was built to avoid."""
+    _stub_modules(monkeypatch)
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
+
+    monkeypatch.setattr(runs, "_run_agent", _agent_returning("not_observed", value=None))
+    base = await started()
+    monkeypatch.setattr(runs, "_run_agent", _agent_returning("unknown", value=None))
+    head = await started()
+
+    entry = _entry(await runs.compare_runs(base, head), _UNAME_KEY)
+
+    assert entry is not None and entry.status == "undetermined"
+
+
+@pytest.mark.asyncio
+async def test_a_persisting_defect_is_reported_from_the_head_run(
+    monkeypatch, started
+) -> None:
+    _stub_modules(monkeypatch)
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
+    monkeypatch.setattr(runs, "_run_agent", _agent_returning("not_observed", value=None))
+
+    base = await started()
+    head = await started()
+
+    entry = _entry(await runs.compare_runs(base, head), _UNAME_KEY)
+
+    assert entry is not None and entry.status == "persisting"
+    assert entry.attributable is True
+
+
+@pytest.mark.asyncio
+async def test_a_changed_evaluation_config_makes_every_status_unattributable(
+    monkeypatch, started
+) -> None:
+    """Same honesty the score delta already carries.
+
+    A probe removed from probes.yaml makes its finding vanish and look
+    repaired. The status is still reported -- refusing hides it -- but it is
+    marked as not attributable to the honeypot.
+    """
+    _stub_modules(monkeypatch)
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
+    monkeypatch.setattr(runs, "_run_agent", _agent_returning("not_observed", value=None))
+
+    base = await started()
+    monkeypatch.setattr(
+        runs, "_evaluation_config_fingerprint", lambda budget, apparatus: "sha256:CFG2"
+    )
+    head = await started()
+
+    comparison = await runs.compare_runs(base, head)
+
+    assert "evaluation_config_fingerprint" in comparison.differences
+    assert comparison.findings
+    assert all(entry.attributable is False for entry in comparison.findings)

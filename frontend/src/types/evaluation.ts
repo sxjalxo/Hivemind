@@ -229,6 +229,54 @@ export interface EvaluationFinding {
   finding: string;
   recommendation: string | null;
   source: EvaluationFindingSource;
+  /**
+   * Identity ACROSS runs. `id` is new every run; this is not, and it is what
+   * lets two runs' findings be lined up against each other.
+   */
+  findingKey: string;
+  evidence: EvaluationEvidence[];
+}
+
+/**
+ * What happened to one defect between two runs.
+ *
+ * Five statuses, not four. `undetermined` exists because a finding is absent
+ * from a run for two unrelated reasons -- the fact came back `observed`, or
+ * the fact was never established -- and rendering the second as `fixed` would
+ * show the user good news produced by an infrastructure failure. Never
+ * collapse `undetermined` into `fixed`.
+ */
+export type FindingLifecycleStatus = "new" | "persisting" | "fixed" | "regressed" | "undetermined";
+
+/** One defect's lifecycle entry on `GET /api/evaluations/compare`. */
+export interface FindingLifecycle {
+  key: string;
+  status: FindingLifecycleStatus;
+  /**
+   * False when the evaluation configuration moved between the two runs. A
+   * defect that vanished may then mean WE STOPPED ASKING -- a probe deleted
+   * from the probe set makes its finding disappear and look repaired. Render
+   * the status, but never as a bare claim about the honeypot.
+   */
+  attributable: boolean;
+  /**
+   * An evaluator entry is a SLOT, not a flaw. There is one evaluator verdict
+   * per characteristic per run, so its key always matches itself: `persisting`
+   * means the evaluator still had something to say about that characteristic,
+   * NOT that the same flaw is still there -- the critique may describe an
+   * entirely different problem. Label it; do not claim the flaw persists.
+   */
+  isSlot: boolean;
+  /**
+   * Which run the text and evidence below were read from. A `fixed` entry has
+   * no row in the head run at all, so they come from the base run.
+   */
+  fromRunId: string;
+  characteristic: EvaluationCharacteristic | null;
+  severity: EvaluationFindingSeverity | null;
+  source: EvaluationFindingSource | null;
+  finding: string | null;
+  recommendation: string | null;
   evidence: EvaluationEvidence[];
 }
 
@@ -393,6 +441,12 @@ export interface RunComparison {
    * as 0 -- a delta against "not established" is not a delta.
    */
   deltas: Record<string, number | null>;
+  /**
+   * Per-defect lifecycle across the same pair, ordered worst news first:
+   * regressed, new, persisting, undetermined, fixed. Empty when neither run
+   * carries a finding either side can identify.
+   */
+  findings: FindingLifecycle[];
 }
 
 /** Default `limit` for `GET /api/evaluations` when the client sends none. */

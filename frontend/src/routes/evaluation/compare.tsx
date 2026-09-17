@@ -32,6 +32,7 @@ import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import type {
   EvaluationCategoryScore,
+  FindingLifecycleStatus,
   EvaluationRun,
   EvaluationRunSummary,
   RunComparison,
@@ -267,7 +268,103 @@ function ComparisonView({ comparison }: { comparison: RunComparison }) {
       >
         <DeltaTable comparison={comparison} />
       </Panel>
+
+      <Panel
+        title="Findings"
+        description="What happened to each defect between the two runs, worst news first."
+        bodyClassName="p-0"
+      >
+        <FindingLifecycleList comparison={comparison} />
+      </Panel>
     </div>
+  );
+}
+
+const LIFECYCLE_TONE: Record<FindingLifecycleStatus, string> = {
+  regressed: "border-critical/40 bg-critical/10 text-critical",
+  new: "border-high/40 bg-high/10 text-high",
+  persisting: "border-medium/40 bg-medium/10 text-medium",
+  undetermined: "border-border bg-muted/40 text-muted-foreground",
+  fixed: "border-success/40 bg-success/10 text-success",
+};
+
+const LIFECYCLE_TITLE: Record<FindingLifecycleStatus, string> = {
+  regressed: "Reported before, absent in the base run, back in the head run.",
+  new: "Not reported in the base run or any earlier one.",
+  persisting: "Reported in both runs.",
+  undetermined:
+    "Reported in the base run, and the head run could not establish the fact — so this is NOT a fix. The defect may well still be there; this run simply could not look.",
+  fixed: "Reported in the base run, and the head run established the fact as observed.",
+};
+
+/**
+ * `undetermined` is a first-class row here, never folded into `fixed`.
+ *
+ * A finding is absent from a run for two unrelated reasons — the fact came
+ * back `observed`, or the fact was never established — and showing the second
+ * as a fix would put good news on screen that nothing produced. The status
+ * chip and its tooltip both say which happened.
+ */
+function FindingLifecycleList({ comparison }: { comparison: RunComparison }) {
+  if (comparison.findings.length === 0) {
+    return (
+      <p className="px-4 py-6 text-[13px] text-muted-foreground">
+        Neither run reported a finding that can be identified across runs. A run produces findings
+        when a probe, a service or an attack chain comes back not observed — or when the evaluator
+        had something to say.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="divide-y divide-border">
+      {comparison.findings.map((entry) => (
+        <li key={entry.key} className="px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              title={LIFECYCLE_TITLE[entry.status]}
+              className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${LIFECYCLE_TONE[entry.status]}`}
+            >
+              {entry.status}
+            </span>
+            {entry.isSlot ? (
+              <span
+                title="The evaluator writes one verdict per characteristic per run, so this key always matches itself. 'Persisting' means the evaluator still had something to say about this characteristic — its critique may describe an entirely different problem."
+                className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+              >
+                evaluator slot
+              </span>
+            ) : null}
+            {!entry.attributable ? (
+              <span
+                title="The evaluation configuration changed between these two runs, so this status is not attributable to the honeypot. A probe removed from the probe set makes its finding vanish and look repaired."
+                className="rounded border border-medium/40 bg-medium/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-medium"
+              >
+                not attributable
+              </span>
+            ) : null}
+            <Mono tone="muted" className="text-[11px]">
+              {entry.key}
+            </Mono>
+          </div>
+
+          {entry.finding ? (
+            <p className="mt-1.5 text-[13px] leading-snug">{entry.finding}</p>
+          ) : null}
+
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+            {entry.characteristic ? <span>{characteristicLabel(entry.characteristic)}</span> : null}
+            {entry.severity ? <span>severity {entry.severity}</span> : null}
+            <span>{entry.evidence.length} evidence</span>
+            {entry.status === "fixed" || entry.status === "undetermined" ? (
+              <span title="A finding with no row in the head run is read from the base run, so there is something to audit rather than a bare key.">
+                shown from the base run
+              </span>
+            ) : null}
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 

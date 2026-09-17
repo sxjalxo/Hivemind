@@ -165,6 +165,18 @@ opposite things:
 
 The comparison is never refused; it says plainly whether a delta is attributable.
 
+It also reports **what happened to each individual defect** — `new`, `persisting`,
+`fixed`, `regressed`, or `undetermined` — so the question "is the flaw you reported last
+week actually fixed?" has an answer, not just "the score moved".
+
+`undetermined` is the one that earns the other four their credibility. A finding is
+absent from a run for two unrelated reasons: the fact came back `observed`, or the fact
+was never established. Reporting the second as `fixed` would manufacture good news out
+of an infrastructure failure, so resolution joins the underlying fact status rather than
+differencing finding keys. The same rule covers the evaluator: run one evaluation with a
+BYOK key and the next without, and every evaluator finding is `undetermined`, never
+`fixed`.
+
 ### The cloud evaluator (optional)
 
 ```bash
@@ -187,8 +199,8 @@ verdict is the exact failure this system exists to prevent.
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-524 tests. They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `523 passed, 1 skipped` or `524 passed`** — there
+528 tests. They run against the live Docker stack and the real local model, so bring the
+infrastructure up first. **A clean run is `527 passed, 1 skipped` or `528 passed`** — there
 are no expected failures.
 
 The skip is the one end-to-end test that depends on whether `llama3.1:8b` infers a

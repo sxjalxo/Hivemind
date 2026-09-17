@@ -108,7 +108,45 @@ class FindingOut(CamelModel):
     finding: str
     recommendation: str | None = None
     source: str
+    # Identity across runs. The id changes every run; this does not, and it is
+    # what lets a client line one run's findings up against another's.
+    finding_key: str
     evidence: list[EvidenceOut]
+
+
+class FindingLifecycleOut(CamelModel):
+    """One defect, and what happened to it between two runs.
+
+    `status` is five-valued, not four. `undetermined` exists because absence
+    of a finding has two causes -- the fact came back `observed`, or the fact
+    was never established -- and reporting the second as `fixed` would
+    manufacture good news out of an infrastructure failure.
+
+    `attributable` carries the same honesty the score delta already does: when
+    the evaluation configuration moved between the two runs, a defect that
+    vanished may mean WE STOPPED ASKING rather than that it was repaired. The
+    entry is still reported; it is simply marked.
+
+    `is_slot` marks an evaluator entry. There is one evaluator verdict per
+    characteristic per run, so its key always matches itself: `persisting`
+    means the evaluator still had something to say about that characteristic,
+    NOT that the same flaw is still there. Clients must render it as a slot.
+
+    `from_run_id` says which run the text and evidence were read from. For
+    `fixed` there is no row in head at all, so they come from base.
+    """
+
+    key: str
+    status: str
+    attributable: bool
+    is_slot: bool
+    from_run_id: str
+    characteristic: str | None = None
+    severity: str | None = None
+    source: str | None = None
+    finding: str | None = None
+    recommendation: str | None = None
+    evidence: list[EvidenceOut] = []
 
 
 class ChainStepOut(CamelModel):
@@ -229,12 +267,12 @@ class RunComparison(CamelModel):
         different questions, so the delta is NOT attributable to the
         honeypot at all.
 
-    Known residual gap (documented in `evaluation.fingerprints`): only the
-    scoring DATA files are fingerprinted, not the scoring CODE. Two runs
-    across an edit to `rules.py`, `compaction.py`, `static/nmap.py` or
-    `agent.PER_COMMAND_TIMEOUT_SECONDS` fingerprint identically. So does a
-    change of target host/port, the nmap timeout or the tcpdump interface.
-    Compare those by git revision, not by this field.
+    Known residual gap (documented in `evaluation.fingerprints`): the scoring
+    and compaction ALGORITHMS are not fingerprinted. `scoring.py` holds no
+    constants to hash, so two runs across an edit to how a fraction is
+    computed fingerprint identically -- compare those by git revision. The
+    target, the nmap timeout, the capture interface and the result-deciding
+    constants in `rules.py`, `static/nmap.py` and `agent.py` ARE covered.
     """
 
     base: EvaluationRunOut
@@ -249,3 +287,7 @@ class RunComparison(CamelModel):
     # exists to prevent. `evaluator_rating` is deliberately not deltaed here
     # and never merged with these values.
     deltas: dict[str, float | None]
+    # Per-defect lifecycle across the same pair, ordered worst news first:
+    # regressed, new, persisting, undetermined, fixed. Empty when neither run
+    # has a finding either side can identify.
+    findings: list[FindingLifecycleOut] = []
