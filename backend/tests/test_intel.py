@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
@@ -364,7 +365,26 @@ async def test_coverage_marks_llm_inferred_technique_as_not_observed() -> None:
                 .scalars()
                 .all()
             )
-        assert mappings, "no rule in the pinned catalog matches seed-unmapped-01's commands"
+        if not mappings:
+            # Not a failure. seed-unmapped-01 matches no rule by design, so
+            # every mapping here has to come from the LLM gap-fill -- and the
+            # gap-fill legitimately produces nothing on some passes, or
+            # produces a claim citing an event id that does not resolve, which
+            # the evidence write barrier then rejects (look for
+            # "rejected claim: ... resolved=0" in the captured log). Both are
+            # the system behaving correctly.
+            #
+            # This used to be a hard assert, and it is why the suite shipped
+            # with a documented "one failure is a clean run" caveat. A test
+            # that cries wolf on a green build trains people to skim red, so
+            # the end-to-end case skips loudly and the BOUNDARY it exists to
+            # protect -- llm-sourced means observed is False -- is pinned
+            # deterministically by
+            # test_an_llm_sourced_mapping_is_never_marked_observed below.
+            pytest.skip(
+                "llama3.1:8b inferred no technique for seed-unmapped-01 that "
+                "survived the evidence barrier on this pass"
+            )
         assert all(m.source == "llm" for m in mappings)
 
         coverage = await build_coverage(session_id="seed-unmapped-01")
@@ -497,3 +517,75 @@ async def test_a_generous_cap_leaves_the_seed_corpus_complete(
     assert profile is not None
     assert profile.similarity_complete is True
     assert profile.similarity_incomplete_reason is None
+
+
+@pytest.mark.asyncio
+async def test_an_llm_sourced_mapping_is_never_marked_observed() -> None:
+    """The observed boundary, pinned without involving the model.
+
+    `test_coverage_marks_only_rule_backed_techniques_observed` covers the
+    positive half (a rule produced it, so observed is True) and is
+    deterministic because the rulebook is. The negative half -- the half that
+    actually protects the project's central claim, that an LLM guess is never
+    presented as telemetry -- rested entirely on a live analysis run whose
+    output the model decides.
+
+    So the row is written directly here. T1016 is in the pinned catalog and
+    in no rule in the rulebook, so nothing else can mark it observed and the
+    assertion cannot pass by accident.
+    """
+    factory = get_session_factory()
+    analysis_id = uuid.uuid4()
+    session_id = f"test-llm-boundary-{analysis_id.hex[:8]}"
+
+    async with factory() as db:
+        db.add(
+            Analysis(
+                id=analysis_id,
+                session_id=session_id,
+                model="test-fixture",
+                analysis_type="behavioral",
+                status="completed",
+                created_at=datetime.now(timezone.utc),
+                duration_seconds=0,
+                classification="reconnaissance",
+                confidence=0.5,
+                risk_score=10,
+                risk="low",
+                behavior_summary="fixture row for the observed boundary",
+                model_tier="local",
+                prompt_version="test",
+            )
+        )
+        db.add(
+            TechniqueMapping(
+                analysis_id=analysis_id,
+                technique_id="T1016",
+                technique_name="System Network Configuration Discovery",
+                tactic="Discovery",
+                confidence=0.91,
+                ai_explanation="inferred by the model, not matched by a rule",
+                source="llm",
+                rule_id=None,
+                timestamp=datetime.now(timezone.utc),
+            )
+        )
+        await db.commit()
+
+    try:
+        coverage = await build_coverage(session_id=session_id)
+
+        technique = next(t for t in coverage.techniques if t.id == "T1016")
+        assert technique.session_count == 1, "the fixture mapping was not picked up"
+        assert technique.observed is False
+        assert technique.confidence == 0.91, (
+            "a high model confidence must not promote a claim to observed"
+        )
+        assert coverage.observed_count == 0
+    finally:
+        await _delete_analysis_and_children(analysis_id)
+        async with factory() as db:
+            row = await db.get(Analysis, analysis_id)
+            if row is not None:
+                await db.delete(row)
+                await db.commit()

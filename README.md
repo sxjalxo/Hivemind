@@ -187,10 +187,15 @@ verdict is the exact failure this system exists to prevent.
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-483 tests. They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. One test in `test_intel.py` is known-nondeterministic: it depends
-on whether `llama3.1:8b` happens to infer a technique on that pass, so a run showing that
-single failure is a clean run.
+484 tests. They run against the live Docker stack and the real local model, so bring the
+infrastructure up first. **A clean run is `483 passed, 1 skipped` or `484 passed`** — there
+are no expected failures.
+
+The skip is the one end-to-end test that depends on whether `llama3.1:8b` infers a
+technique on that pass, and on whether its citation survives the evidence barrier. Neither
+is a defect in the code, so it skips with a reason rather than failing. The boundary it
+protects — an LLM-sourced mapping is never marked `observed` — is pinned separately by a
+deterministic test that needs no model at all.
 
 ```bash
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
