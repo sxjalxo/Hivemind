@@ -32,9 +32,9 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 
-from app.services.evaluation import container, probes
+from app.services.evaluation import agent, container, probes
 from app.services.evaluation.agent import AgentBudget
-from app.services.evaluation.static import chains
+from app.services.evaluation.static import chains, nmap
 from app.services.mitre import rules
 
 
@@ -63,6 +63,28 @@ class Target:
     host: str
     ssh_port: int
     ssh_username: str
+
+
+@dataclass(frozen=True)
+class Apparatus:
+    """How the run measured, as opposed to what it asked or what it tested.
+
+    A third category, and the reason it needed naming: these settings change
+    what a run can FIND without changing either the honeypot or the probe
+    set. Halve `nmap_timeout_seconds` and every service comes back `unknown`;
+    point `capture_interface` at the wrong device and the packet count is
+    `unknown` too. Before this they were in neither fingerprint, so two runs
+    measured through different apparatus compared as though they had asked
+    the same question of the same honeypot.
+
+    They belong in the evaluation-config fingerprint rather than the honeypot
+    one: they are our instrument, not the thing under test.
+    """
+
+    capture_interface: str
+    capture_image: str
+    nmap_timeout_seconds: int
+    capture_timeout_seconds: int
 
 # The one file in the honeypot that is not part of its image: bind-mounted
 # read-only from ./infra/cowrie/cowrie.cfg, so it changes what the honeypot
@@ -104,7 +126,51 @@ def _content_digest(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _config_parts(budget: AgentBudget) -> dict:
+def _code_constants() -> dict:
+    """Result-deciding values that live in .py files rather than in yaml.
+
+    Hashing the VALUES, not the files. The module docstring's rejection of
+    file hashing stands -- a comment or a refactor would invalidate every
+    stored fingerprint and train people to ignore it -- but that argument was
+    doing double duty as an excuse to cover none of this. A constant's value
+    moves only when the behaviour moves, which is exactly the property a
+    fingerprint wants.
+
+    Each of these decides what a run can find:
+
+      * `PER_COMMAND_TIMEOUT_SECONDS` -- when a probe counts as failed.
+      * `_PROMPT_PREFIX`, `_ANSI_SEQUENCE` -- what the agent's raw output is
+        cleaned down to before anything reads it. A cleaning bug here is what
+        once let a prompt echo turn a genuine absence into a false `observed`.
+      * `_EXPECTED_SERVICES`, `_OPEN_LINE` -- which ports a scan asks about
+        and what counts as an answer.
+      * `_DATA_PRODUCING_HEAD`, `_RAW_TEXT_RULE_IDS` -- which command text the
+        rulebook is allowed to see at all.
+
+    Regexes are hashed by `.pattern`: the compiled object is not
+    serialisable, and the pattern is what carries the meaning. Note that
+    compile-time flags are NOT covered, so swapping `re.IGNORECASE` on or off
+    without touching the pattern text moves no fingerprint.
+
+    Still uncovered, and honestly: the scoring and compaction ALGORITHMS.
+    `scoring.py` holds no constants to hash -- it is pure functions -- so a
+    change to how a fraction is computed moves nothing here. Two runs across
+    that kind of edit are still compared by git revision.
+    """
+    return {
+        "agent_per_command_timeout_seconds": agent.PER_COMMAND_TIMEOUT_SECONDS,
+        "agent_prompt_prefix": agent._PROMPT_PREFIX.pattern,
+        "agent_ansi_sequence": agent._ANSI_SEQUENCE.pattern,
+        "nmap_expected_services": nmap._EXPECTED_SERVICES,
+        "nmap_open_line": nmap._OPEN_LINE.pattern,
+        "rules_data_producing_head": rules._DATA_PRODUCING_HEAD.pattern,
+        # A frozenset has no stable serialisation order; sort it so the digest
+        # is reproducible across processes.
+        "rules_raw_text_rule_ids": sorted(rules._RAW_TEXT_RULE_IDS),
+    }
+
+
+def _config_parts(budget: AgentBudget, apparatus: Apparatus) -> dict:
     """Everything on OUR side that changes what a run can find.
 
     Fingerprints the configuration the run ACTUALLY EXECUTES, not the
@@ -206,12 +272,16 @@ def _config_parts(budget: AgentBudget) -> dict:
         "chain_set_sha256": _content_digest(chain_payload),
         "rulebook": _content_digest(rule_payload),
         "budget": budget.model_dump(mode="json"),
+        # `asdict` for the same reason the budget is dumped whole: add a
+        # field and it enters the digest without anyone remembering to.
+        "apparatus": asdict(apparatus),
+        "code_constants": _code_constants(),
     }
 
 
-def evaluation_config_fingerprint(budget: AgentBudget) -> str:
+def evaluation_config_fingerprint(budget: AgentBudget, apparatus: Apparatus) -> str:
     """Fingerprint OUR side of the run. Raises if any input is unloadable."""
-    return _digest(_config_parts(budget))
+    return _digest(_config_parts(budget, apparatus))
 
 
 async def _container_config_digest(name: str, timeout_seconds: float) -> str:

@@ -88,12 +88,19 @@ class Settings(BaseSettings):
     # because they name the thing under test rather than the question we asked
     # of it. `evaluation_ssh_password` deliberately is not.
     #
-    # Still uncovered by either: `evaluation_capture_interface`,
-    # `evaluation_capture_image` and the nmap/capture timeouts. Those are
-    # measurement apparatus -- they change what a run can FIND without
-    # changing the honeypot -- so they belong in the config fingerprint and
-    # are not there yet. Two runs under different capture interfaces or a
-    # shortened nmap timeout still fingerprint identically.
+    # `evaluation_capture_interface`, `evaluation_capture_image` and the
+    # nmap/capture timeouts ARE covered, via `fingerprints.Apparatus`. They
+    # are measurement apparatus -- they change what a run can FIND without
+    # changing the honeypot -- so they sit in the config fingerprint, with the
+    # probe set and the budget.
+    #
+    # What remains uncovered is the scoring and compaction ALGORITHMS.
+    # `scoring.py` is pure functions with no constants to hash, so a change to
+    # how a fraction is computed moves no fingerprint at all. Result-deciding
+    # constants elsewhere (`agent.PER_COMMAND_TIMEOUT_SECONDS`, nmap's
+    # `_EXPECTED_SERVICES`, the rulebook's text filters) are hashed by value;
+    # regex compile flags are not. Git revision is still the extra key when
+    # reading a trend across a code change.
     #
     # See app.services.evaluation.fingerprints for why the boundary is drawn
     # where it is.

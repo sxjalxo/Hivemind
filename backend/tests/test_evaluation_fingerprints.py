@@ -9,14 +9,15 @@ through them. Every test below is aimed at that direction of failure.
 import asyncio
 import dataclasses
 import hashlib
+import re
 import shutil
 from pathlib import Path
 
 import pytest
 
-from app.services.evaluation import container, fingerprints, probes
+from app.services.evaluation import agent, container, fingerprints, probes
 from app.services.evaluation.agent import AgentBudget
-from app.services.evaluation.static import chains
+from app.services.evaluation.static import chains, nmap
 from app.services.mitre import rules
 
 BUDGET = AgentBudget(max_commands=40, max_seconds=120)
@@ -31,6 +32,18 @@ def _target(**overrides) -> "fingerprints.Target":
         "ssh_username": "root",
     }
     return fingerprints.Target(**{**base, **overrides})
+
+
+def _apparatus(**overrides) -> "fingerprints.Apparatus":
+    """The default measurement apparatus, overridden field by field."""
+    base = {
+        "capture_interface": "eth0",
+        "capture_image": "nicolaka/netshoot",
+        "nmap_timeout_seconds": 120,
+        "capture_timeout_seconds": 30,
+    }
+    return fingerprints.Apparatus(**{**base, **overrides})
+
 
 
 # ---------------------------------------------------------------------------
@@ -144,32 +157,40 @@ def _real_source(name: str) -> str:
 def test_changing_the_budget_changes_the_config_fingerprint() -> None:
     # A budget change alters what a run can find, so two runs under
     # different budgets are not comparable and must not look comparable.
-    a = fingerprints.evaluation_config_fingerprint(AgentBudget(max_commands=40, max_seconds=120))
-    b = fingerprints.evaluation_config_fingerprint(AgentBudget(max_commands=10, max_seconds=120))
+    a = fingerprints.evaluation_config_fingerprint(
+        AgentBudget(max_commands=40, max_seconds=120), _apparatus()
+    )
+    b = fingerprints.evaluation_config_fingerprint(
+        AgentBudget(max_commands=10, max_seconds=120), _apparatus()
+    )
     assert a != b
 
 
 def test_changing_the_time_budget_changes_the_config_fingerprint() -> None:
-    a = fingerprints.evaluation_config_fingerprint(AgentBudget(max_commands=40, max_seconds=120))
-    b = fingerprints.evaluation_config_fingerprint(AgentBudget(max_commands=40, max_seconds=30))
+    a = fingerprints.evaluation_config_fingerprint(
+        AgentBudget(max_commands=40, max_seconds=120), _apparatus()
+    )
+    b = fingerprints.evaluation_config_fingerprint(
+        AgentBudget(max_commands=40, max_seconds=30), _apparatus()
+    )
     assert a != b
 
 
 def test_the_same_configuration_produces_the_same_fingerprint() -> None:
     budget = AgentBudget(max_commands=40, max_seconds=120)
     assert fingerprints.evaluation_config_fingerprint(
-        budget
-    ) == fingerprints.evaluation_config_fingerprint(budget)
+        budget, _apparatus()
+    ) == fingerprints.evaluation_config_fingerprint(budget, _apparatus())
 
 
 def test_the_config_fingerprint_covers_probe_and_chain_and_rulebook_versions() -> None:
-    parts = fingerprints._config_parts(BUDGET)
+    parts = fingerprints._config_parts(BUDGET, _apparatus())
     keys = set(parts)
     assert {"probe_set", "chain_set", "rulebook", "budget"} <= keys
 
 
 def test_the_config_fingerprint_is_prefixed_and_hex() -> None:
-    value = fingerprints.evaluation_config_fingerprint(BUDGET)
+    value = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
     algorithm, _, hexdigest = value.partition(":")
     assert algorithm == "sha256"
     assert len(hexdigest) == 64
@@ -181,7 +202,7 @@ def test_the_budget_is_dumped_whole_rather_than_field_by_field() -> None:
     # third field to AgentBudget leaves two runs under materially different
     # budgets fingerprinting byte-identically until somebody remembers to
     # edit _config_parts. The fingerprint must not depend on that memory.
-    parts = fingerprints._config_parts(BUDGET)
+    parts = fingerprints._config_parts(BUDGET, _apparatus())
     assert parts["budget"] == BUDGET.model_dump(mode="json")
     assert set(parts["budget"]) == set(AgentBudget.model_fields)
 
@@ -202,12 +223,12 @@ def test_editing_a_config_file_changes_the_fingerprint_without_a_version_bump(
     stand_in = tmp_path / f"{name}.yaml"
     stand_in.write_text(_real_source(name), encoding="utf-8")
     reload_loader(name, stand_in)
-    before = fingerprints.evaluation_config_fingerprint(BUDGET)
+    before = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
 
     # Same declared version, different content.
     stand_in.write_text(_real_source(name) + _LOADERS[name][3], encoding="utf-8")
     reload_loader(name, stand_in)
-    after = fingerprints.evaluation_config_fingerprint(BUDGET)
+    after = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
 
     assert before != after, (
         f"{name} content changed but the fingerprint did not; two runs "
@@ -220,7 +241,7 @@ def test_a_missing_config_file_raises_rather_than_fingerprinting_nothing(
 ) -> None:
     reload_loader("probes", tmp_path / "absent.yaml")
     with pytest.raises(fingerprints.FingerprintError):
-        fingerprints.evaluation_config_fingerprint(BUDGET)
+        fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
 
 
 def test_malformed_config_raises_rather_than_fingerprinting_a_default(
@@ -232,7 +253,7 @@ def test_malformed_config_raises_rather_than_fingerprinting_a_default(
     stand_in.write_text('version: "1"\nprobes:\n  - id: broken\n', encoding="utf-8")
     reload_loader("probes", stand_in)
     with pytest.raises(fingerprints.FingerprintError):
-        fingerprints.evaluation_config_fingerprint(BUDGET)
+        fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
 
 
 # --- Finding 1: the fingerprint describes the config the RUN executes ------
@@ -252,17 +273,17 @@ def test_the_fingerprint_describes_the_loaded_config_not_a_later_disk_edit(
     reload_loader("probes", stand_in)
 
     executing = probes.load_probes()
-    before = fingerprints.evaluation_config_fingerprint(BUDGET)
+    before = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
 
     # Someone edits the file. The running process is unaffected...
     stand_in.write_text(_real_source("probes") + _LOADERS["probes"][3], encoding="utf-8")
     assert probes.load_probes() == executing, "the loader is supposed to be cached"
 
     # ...and so is the fingerprint, because it describes the same run.
-    assert fingerprints.evaluation_config_fingerprint(BUDGET) == before
+    assert fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus()) == before
 
     # The recorded digest is the digest of what the run would execute.
-    parts = fingerprints._config_parts(BUDGET)
+    parts = fingerprints._config_parts(BUDGET, _apparatus())
     expected = fingerprints._content_digest(
         {
             "version": str(probes._raw()["version"]),
@@ -273,7 +294,7 @@ def test_the_fingerprint_describes_the_loaded_config_not_a_later_disk_edit(
 
     # Only a restart -- the loader actually re-reading -- moves it.
     reload_loader("probes", stand_in)
-    assert fingerprints.evaluation_config_fingerprint(BUDGET) != before
+    assert fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus()) != before
 
 
 @pytest.mark.parametrize(
@@ -291,12 +312,12 @@ def test_the_declared_version_and_its_hash_describe_the_same_file(
     stand_in = tmp_path / f"{name}.yaml"
     stand_in.write_text(source.replace('version: "1"', 'version: "97"', 1), encoding="utf-8")
     reload_loader(name, stand_in)
-    first = fingerprints._config_parts(BUDGET)
+    first = fingerprints._config_parts(BUDGET, _apparatus())
     assert first[version_key] == "97"
 
     stand_in.write_text(source.replace('version: "1"', 'version: "98"', 1), encoding="utf-8")
     reload_loader(name, stand_in)
-    second = fingerprints._config_parts(BUDGET)
+    second = fingerprints._config_parts(BUDGET, _apparatus())
 
     # Same content, different declared version: both halves moved together.
     assert second[version_key] == "98"
@@ -522,14 +543,14 @@ async def test_the_two_fingerprints_are_independent(monkeypatch, reload_loader, 
     # improvement.
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
     honeypot_before = await fingerprints.honeypot_fingerprint(_target())
-    config_before = fingerprints.evaluation_config_fingerprint(BUDGET)
+    config_before = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
 
     # Change only OUR side.
     stand_in = tmp_path / "probes.yaml"
     stand_in.write_text('version: "1"\nprobes: []\n', encoding="utf-8")
     reload_loader("probes", stand_in)
     honeypot_after = await fingerprints.honeypot_fingerprint(_target())
-    config_after = fingerprints.evaluation_config_fingerprint(BUDGET)
+    config_after = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
 
     assert honeypot_after == honeypot_before
     assert config_after != config_before
@@ -537,7 +558,7 @@ async def test_the_two_fingerprints_are_independent(monkeypatch, reload_loader, 
     # Change only the honeypot's side.
     _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"3333" * 16)
     assert await fingerprints.honeypot_fingerprint(_target()) != honeypot_after
-    assert fingerprints.evaluation_config_fingerprint(BUDGET) == config_after
+    assert fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus()) == config_after
 
 
 def test_the_evaluator_model_is_not_part_of_the_config_fingerprint() -> None:
@@ -547,7 +568,7 @@ def test_the_evaluator_model_is_not_part_of_the_config_fingerprint() -> None:
     # their deterministic scores are perfectly comparable. The config
     # fingerprint governs the deterministic score, which the evaluator
     # cannot influence.
-    parts = fingerprints._config_parts(BUDGET)
+    parts = fingerprints._config_parts(BUDGET, _apparatus())
     flattened = repr(parts).lower()
     for token in ("evaluator", "model", "anthropic", "openai", "claude"):
         assert token not in flattened
@@ -743,3 +764,98 @@ async def test_an_invalid_container_name_still_raises_through_the_target(
 
     with pytest.raises(fingerprints.FingerprintError):
         await fingerprints.honeypot_fingerprint(_target(container_name="../etc"))
+
+
+# ---------------------------------------------------------------------------
+# Measurement apparatus and the constants that live in code rather than yaml.
+#
+# These change what a run can FIND without changing the honeypot, so they
+# belong on our side of the comparison. Before this they were in neither
+# fingerprint: halve the nmap timeout and every service reads `unknown`, with
+# both runs still claiming to be comparable.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("capture_interface", "eth1"),
+        ("capture_image", ""),
+        ("nmap_timeout_seconds", 5),
+        ("capture_timeout_seconds", 1),
+    ],
+)
+def test_changing_the_apparatus_changes_the_config_fingerprint(field, value) -> None:
+    first = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
+    second = fingerprints.evaluation_config_fingerprint(
+        BUDGET, _apparatus(**{field: value})
+    )
+
+    assert first != second, f"{field} moved but the fingerprint did not"
+
+
+def test_the_apparatus_is_frozen_and_whole() -> None:
+    """Frozen for reproducibility; `asdict` so a new field cannot be forgotten."""
+    apparatus = _apparatus()
+
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        apparatus.capture_interface = "eth9"  # type: ignore[misc]
+
+    assert dataclasses.asdict(apparatus) == fingerprints._config_parts(
+        BUDGET, apparatus
+    )["apparatus"]
+
+
+@pytest.mark.parametrize(
+    "module_name,attr,value",
+    [
+        ("agent", "PER_COMMAND_TIMEOUT_SECONDS", 21),
+        ("agent", "_PROMPT_PREFIX", re.compile(r"^zzz")),
+        ("agent", "_ANSI_SEQUENCE", re.compile(r"^zzz")),
+        ("nmap", "_EXPECTED_SERVICES", {"service.ssh": 2222}),
+        ("nmap", "_OPEN_LINE", re.compile(r"^zzz")),
+        ("rules", "_DATA_PRODUCING_HEAD", re.compile(r"^zzz")),
+        ("rules", "_RAW_TEXT_RULE_IDS", frozenset({"T1105"})),
+    ],
+)
+def test_a_result_deciding_constant_moves_the_config_fingerprint(
+    monkeypatch, module_name, attr, value
+) -> None:
+    """Every one of these decides what a run can find.
+
+    `PER_COMMAND_TIMEOUT_SECONDS` decides when a probe counts as failed.
+    `_PROMPT_PREFIX` and `_ANSI_SEQUENCE` decide what the agent's output is
+    cleaned down to, and a cleaning bug is what once turned a genuine absence
+    into a false `observed`. `_EXPECTED_SERVICES` decides which ports a scan
+    even asks about. `_DATA_PRODUCING_HEAD` and `_RAW_TEXT_RULE_IDS` decide
+    which command text the rulebook is allowed to see.
+
+    Hashing their VALUES rather than the .py files is deliberate: the module
+    docstring rejects file hashing because a comment or a refactor would
+    invalidate every stored fingerprint and train people to ignore it. A
+    constant's value moves only when the behaviour does.
+    """
+    module = {"agent": agent, "nmap": nmap, "rules": rules}[module_name]
+
+    first = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
+    monkeypatch.setattr(module, attr, value)
+    second = fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus())
+
+    assert first != second, f"{module_name}.{attr} moved but the fingerprint did not"
+
+
+@pytest.mark.asyncio
+async def test_the_apparatus_does_not_touch_the_honeypot_fingerprint(monkeypatch) -> None:
+    """The two fingerprints stay independent.
+
+    Apparatus is our side. If it leaked into the honeypot fingerprint,
+    shortening a timeout would read as the honeypot having changed -- the
+    exact confusion the two-fingerprint split exists to prevent.
+    """
+    _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
+
+    first = await fingerprints.honeypot_fingerprint(_target())
+    monkeypatch.setattr(agent, "PER_COMMAND_TIMEOUT_SECONDS", 99)
+    second = await fingerprints.honeypot_fingerprint(_target())
+
+    assert first == second

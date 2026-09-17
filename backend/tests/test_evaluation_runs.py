@@ -500,7 +500,7 @@ async def test_compare_names_each_differing_fingerprint_independently(
 
     monkeypatch.setattr(runs, "_honeypot_fingerprint", _fixed("sha256:BASE"))
     monkeypatch.setattr(
-        runs, "_evaluation_config_fingerprint", lambda budget: "sha256:CFG-CHANGED"
+        runs, "_evaluation_config_fingerprint", lambda budget, apparatus: "sha256:CFG-CHANGED"
     )
     config_changed = await started()
 

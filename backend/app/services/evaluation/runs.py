@@ -1475,7 +1475,15 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
             ssh_username=target.username,
         )
     )
-    config_fp = _evaluation_config_fingerprint(budget)
+    config_fp = _evaluation_config_fingerprint(
+        budget,
+        fingerprints.Apparatus(
+            capture_interface=settings.evaluation_capture_interface,
+            capture_image=settings.evaluation_capture_image,
+            nmap_timeout_seconds=settings.evaluation_nmap_timeout_seconds,
+            capture_timeout_seconds=settings.evaluation_capture_timeout_seconds,
+        ),
+    )
 
     if run_id is None:
         run_id = uuid.uuid4()
