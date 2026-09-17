@@ -32,6 +32,34 @@ that way; see the lifecycle design note.
 """
 
 
+def probe_key(probe_id: str, establishes: str) -> str:
+    """Identity of one probe failing to establish one fact.
+
+    BOTH halves are in the key, and neither is redundant. `uname` and
+    `os_release` both establish `os.identity`, so keying on the fact alone
+    would merge two different defects and fixing one would report the other
+    fixed. Keying on the probe alone would merge a probe that establishes two
+    facts.
+    """
+    return f"probe:{probe_id}:{establishes}"
+
+
+def chain_key(chain_id: str, technique_id: str) -> str:
+    """Identity of one expected technique missing from one chain.
+
+    Scoped to the chain, not global to the technique: `dropper` and `miner`
+    both expect T1105, and the downloader failing inside one is not the same
+    fact as it failing inside the other. A shared key would let a fix in one
+    chain mask a live defect in the other.
+    """
+    return f"chain:{chain_id}:{technique_id}"
+
+
+def service_key(fact: str) -> str:
+    """Identity of an expected service the scan did not find."""
+    return f"service:{fact}"
+
+
 def sanity_key(fact: str, probe_ids: tuple[str, ...] | list[str]) -> str:
     """Identity of a contradiction between two probes about one fact.
 

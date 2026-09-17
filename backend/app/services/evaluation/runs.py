@@ -936,6 +936,104 @@ async def _evaluate(
     collected.evaluator_status = _aggregate_evaluator_status(statuses)
 
 
+_PROBE_SEVERITY = "medium"
+_CHAIN_SEVERITY = "high"
+
+
+def _fact_findings(run_id: uuid.UUID, collected: _Collected) -> None:
+    """Promote `not_observed` facts into findings.
+
+    No new analysis happens here. These facts were already collected, already
+    scored and already carry a row that grounds them -- they were simply never
+    expressed as findings, so a run on the normal no-BYOK configuration
+    produced nothing a lifecycle could track. The only judgement added is a
+    severity per source.
+
+    `observed` produces nothing: there is no defect. `unknown` produces
+    nothing either, and that is the rule the whole lifecycle rests on --
+    `unknown` means OUR probe failed, not that the honeypot lacks the thing.
+    A finding built from it would enter defect history as a regression on the
+    run it happened and as a fix on the next one, manufacturing both out of an
+    infrastructure failure. Same reason `unknown` is excluded from both sides
+    of the scoring fraction.
+
+    One finding per key. Two rows for one probe -- a retry, a duplicated
+    observation -- would violate the unique index on
+    `(run_id, finding_key)` at FLUSH, taking the whole run's persistence down
+    rather than merely duplicating a row.
+    """
+    seen: set[str] = set()
+
+    def _add(key: str, characteristic: str, severity: str, text: str, evidence) -> None:
+        if key in seen:
+            return
+        seen.add(key)
+        finding = EvaluationFinding(
+            run_id=run_id,
+            characteristic=characteristic,
+            severity=severity,
+            finding=truncate_text(text, MAX_ITEM_CHARS),
+            recommendation=None,
+            source="deterministic",
+            finding_key=key,
+        )
+        collected.findings.append(
+            PendingFinding(finding=finding, evidence=evidence(finding.id))
+        )
+
+    for row in collected.probe_rows:
+        if row.fact_status != FactStatus.NOT_OBSERVED:
+            continue
+        # nmap observations land in `probe_rows` alongside the agent's, so the
+        # module is what separates a missing service from a missing file.
+        is_service = row.module == "nmap"
+        key = (
+            finding_keys.service_key(row.establishes)
+            if is_service
+            else finding_keys.probe_key(row.probe_id, row.establishes)
+        )
+        text = (
+            f"expected service {row.establishes} was not found"
+            if is_service
+            else f"{row.probe_id} did not establish {row.establishes}"
+        )
+        _add(
+            key,
+            collected.characteristic_by_probe_row.get(row.id, Characteristic.CONTEXT.value),
+            _PROBE_SEVERITY,
+            text,
+            lambda finding_id, row=row: [
+                EvaluationEvidence(
+                    finding_id=finding_id,
+                    kind=EvidenceKind.PROBE,
+                    probe_result_id=row.id,
+                )
+            ],
+        )
+
+    for step in collected.chain_rows:
+        if step.fact_status != FactStatus.NOT_OBSERVED:
+            continue
+        _add(
+            finding_keys.chain_key(step.chain_id, step.expected_technique_id),
+            Characteristic.ATTACK_POSSIBILITIES.value,
+            # An attack that cannot be carried out is a larger tell than one
+            # absent file: it is the difference between a honeypot that looks
+            # slightly wrong and one that cannot be used for what an intruder
+            # came to do.
+            _CHAIN_SEVERITY,
+            f"chain {step.chain_id}: expected technique "
+            f"{step.expected_technique_id} was not observed",
+            lambda finding_id, step=step: [
+                EvaluationEvidence(
+                    finding_id=finding_id,
+                    kind=EvidenceKind.CHAIN_STEP,
+                    chain_step_id=step.id,
+                )
+            ],
+        )
+
+
 def _contradiction_findings(
     run_id: uuid.UUID, collected: _Collected, observations: list[sanity.Observation]
 ) -> None:
@@ -1436,6 +1534,7 @@ async def _execute_run(
     finally:
         _finalize()
 
+    _fact_findings(run_id, collected)
     _contradiction_findings(run_id, collected, all_observations)
 
     await _emit(run_id, 5, characteristics_scored=len(collected.scores))

