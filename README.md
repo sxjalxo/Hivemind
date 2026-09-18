@@ -330,9 +330,12 @@ rejects path traversal outright — rather than documented in a comment.
   the wrong decoy.
 - **Single-worker deployment.** The job queue and WebSocket fan-out are in-process;
   multiple uvicorn workers would need Redis pub/sub.
-- **The deterministic scoring code is not fingerprinted** — only its data files are. Two
-  runs spanning a change to the rule engine or the probe timeout fingerprint identically,
-  so git revision is the extra key when reading a trend.
+- **The scoring and compaction algorithms are not fingerprinted.** `scoring.py` is pure
+  functions with no constants to hash, so two runs spanning a change to how a fraction is
+  computed fingerprint identically — git revision is the extra key when reading a trend.
+  The result-deciding *constants* elsewhere (the agent's per-command timeout and output
+  cleaning patterns, nmap's expected services, the rulebook's text filters) are hashed by
+  value; regex compile flags are not.
 
 See [`OVERVIEW.md`](OVERVIEW.md) for the design rationale and the full limitation list,
 and [`DEMO.md`](DEMO.md) for the setup guide and a screen-by-screen walkthrough written

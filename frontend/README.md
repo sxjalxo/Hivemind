@@ -128,7 +128,7 @@ GET    /api/dashboard
 POST   /api/evaluations             → 202 { runId }, the run is dispatched
 GET    /api/evaluations             → bounded summary list (limit ≤ 100)
 GET    /api/evaluations/{run_id}    → the full run, authoritative
-GET    /api/evaluations/compare?base=&head=
+GET    /api/evaluations/compare?base=&head=   → deltas + per-finding lifecycle
 
 WS     /api/analyze/{session_id}/progress
 WS     /api/evaluations/{run_id}/progress
@@ -145,6 +145,27 @@ translate directly into Elasticsearch queries on the backend.
 implements the analysis one with a scripted sequence and omits the evaluation one
 entirely, because there is no real run behind it. When a channel is absent the UI shows an
 indeterminate running state **and says so**, rather than animating invented progress.
+
+### Finding lifecycle on the comparison
+
+`RunComparison.findings` reports what happened to each defect between the two runs:
+`new`, `persisting`, `fixed`, `regressed` or `undetermined`. Three rules the UI must not
+soften:
+
+- **`undetermined` is never rendered as `fixed`.** A finding is absent from a run either
+  because the fact came back `observed` or because it was never established, and the
+  second is not good news. It is its own row, with a tooltip saying which happened.
+- **`isSlot` marks an evaluator entry.** There is one evaluator verdict per characteristic
+  per run, so its key always matches itself — `persisting` means the evaluator still had
+  something to say about that characteristic, not that the same flaw is still there.
+- **`attributable: false` means the evaluation configuration moved**, so a defect that
+  vanished may mean we stopped asking. Render the status, never as a bare claim about the
+  honeypot.
+
+A `fixed` entry has no row in the head run, so its text and evidence arrive from base —
+`fromRunId` says which. The demo provider resolves the same way rather than
+set-differencing keys, so offline mode never shows a fix the real system would refuse to
+claim.
 
 Two properties of the evaluation channel that the UI is built around, because getting
 either wrong produces a permanent spinner:

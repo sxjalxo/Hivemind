@@ -201,6 +201,38 @@ the test harness moving. The two are surfaced asymmetrically, because a changed 
 is the point of the exercise and a changed configuration is what invalidates the
 comparison.
 
+**Finding lifecycle across runs**, which answers the question a score delta cannot: *the
+missing `/etc/os-release` you reported last week — is it fixed?* Every finding carries a
+structured key derived from what it is about (`probe:os_release:os.identity`,
+`chain:dropper:T1105`, `sanity:host.name:hostname_cmd+hostname_file`) rather than a hash
+of its text, because the evaluator's prose varies run to run while describing an unchanged
+flaw. A comparison then reports each defect as `new`, `persisting`, `fixed`, `regressed`
+or `undetermined`.
+
+That fifth status is what makes the other four trustworthy. A finding is absent from a run
+for two unrelated reasons — the fact came back `observed`, or the fact was never
+established — and reporting the second as `fixed` would manufacture good news out of an
+infrastructure failure. So resolution joins the underlying fact status rather than
+differencing finding keys, and `regressed` reads history only from runs that both
+completed and actually established the fact. The evaluator has the same hazard by a
+different route: run one evaluation with a BYOK key and the next without, and without the
+rule every evaluator finding would report `fixed` — six characteristics of fabricated
+progress produced by an absent API key.
+
+A negative fact is a finding now, which is what gives the lifecycle anything to track. A
+probe that came back `not_observed`, an expected service the scan did not find, a chain
+step whose technique never appeared: each was already collected, scored and
+evidence-backed, and was simply never expressed as a finding. On the normal no-BYOK
+configuration a run against a self-consistent honeypot used to produce zero.
+
+**Per-honeypot evaluation targets.** `EVALUATION_TARGETS` maps honeypot ids to addresses,
+so more than one decoy can be evaluated from one backend — the prerequisite for comparing
+a degraded honeypot against a stock one. Empty by default, and while empty the single
+target serves every id. Once it holds anything an unmapped id is refused rather than
+defaulted: evaluating one honeypot under another's label would file every score, finding
+and fingerprint against the wrong decoy. Containment is unchanged — the map is
+server-side settings, and a caller still names an id, never an address.
+
 **A provenance-tagged dashboard** — nineteen HTTP endpoints, two WebSocket progress
 channels, fourteen routes, every AI conclusion expandable into its source event.
 
@@ -309,15 +341,23 @@ port `0` where the honeypot had recorded none — both since fixed.
   the container's namespace counted 30. A capture that cannot see the traffic would
   report `not_observed` -- a confident "no traffic occurred" -- so where it cannot run,
   reporting `unknown` is the only honest answer.
-- **The deterministic scoring *code* is not fingerprinted** — only its data files are.
-  Two runs spanning a change to the rule engine, the compaction step or the probe timeout
-  fingerprint identically, so git revision is the extra key when reading a trend.
+- **The scoring and compaction *algorithms* are not fingerprinted.** `scoring.py` holds
+  no constants to hash — it is pure functions — so two runs spanning a change to how a
+  fraction is computed fingerprint identically, and git revision is the extra key when
+  reading a trend. Narrower than it used to be: the result-deciding constants in
+  `rules.py`, `static/nmap.py` and `agent.py` are now hashed by value, so editing the
+  per-command timeout or the expected service list does move the fingerprint. Regex
+  compile flags still do not.
 - **`EvaluationRun` has no `detail` column**, so a null `evaluator_rating` cannot say
   *why*: no key configured, no evidence gathered, a provider error and a rejected verdict
   all collapse to one blank. The reason is logged but not queryable.
-- **Neither the evaluation target nor the module timeouts are fingerprinted.** Two runs
-  against different hosts, or under different nmap timeouts, compare as though they were
-  measured identically.
+- **The target and the measurement apparatus ARE fingerprinted now**, and each sits in
+  the fingerprint that means it. The target — host, port, SSH user, container — is part of
+  `honeypot_fingerprint`, because it names the thing under test. The capture interface,
+  capture image and module timeouts are part of `evaluation_config_fingerprint`, because
+  they change what a run can *find* without changing the honeypot. The SSH password is in
+  neither: it does not change what the honeypot is, and fingerprints are stored and
+  displayed.
 - **One paid API call per characteristic**, by design — the paper found merged prompts
   markedly shallower — with no retry or backoff, so a rate limit ends that characteristic's
   evaluation permanently rather than deferring it.
