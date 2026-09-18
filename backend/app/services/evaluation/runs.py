@@ -117,6 +117,7 @@ from app.services.evaluation import (
     probes,
     sanity,
     scoring,
+    targets,
 )
 from app.services.evaluation.agent import AgentBudget, EvaluationTarget
 from app.services.evaluation.evaluator import EvidenceItem, evaluate_characteristic
@@ -1401,6 +1402,7 @@ async def _execute_run(
     target: EvaluationTarget,
     budget: AgentBudget,
     collected: _Collected,
+    capture_interface: str | None = None,
 ) -> None:
     """Run every module, then score and evaluate what they established.
 
@@ -1424,6 +1426,10 @@ async def _execute_run(
     actually propagating and misreport the cause of the run's failure.
     """
     settings = get_settings()
+    # Falls back only for callers that predate per-honeypot targets; start_run
+    # always passes the interface the fingerprint recorded, so the capture
+    # cannot listen on a different one than the run claims.
+    interface = capture_interface or settings.evaluation_capture_interface
     by_probe_id = {probe.id: probe.characteristic for probe in probes.load_probes()}
     observations_by_characteristic: dict[str, list[sanity.Observation]] = {}
     all_observations: list[sanity.Observation] = []
@@ -1458,7 +1464,7 @@ async def _execute_run(
             if cap.outcome is not None:
                 record(
                     cap.outcome,
-                    settings.evaluation_capture_interface,
+                    interface,
                     datetime.now(timezone.utc),
                 )
         except Exception:  # noqa: BLE001 - see this function's contract
@@ -1480,7 +1486,7 @@ async def _execute_run(
     await _emit(run_id, 0)
     try:
         async with _capture(
-            settings.evaluation_capture_interface, settings.evaluation_capture_timeout_seconds
+            interface, settings.evaluation_capture_timeout_seconds
         ) as started_capture:
             cap = started_capture
             # nmap
@@ -1613,18 +1619,21 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
     """
     settings = get_settings()
     # Built from settings ONLY. There must be no code path from an HTTP
-    # request to an arbitrary host, or the agent becomes an attack tool.
+    # request to an arbitrary host, or the agent becomes an attack tool. The
+    # honeypot id selects among targets an operator configured; it never
+    # supplies one.
+    configured = targets.resolve(honeypot_id, settings)
     target = EvaluationTarget(
-        host=settings.evaluation_target_host,
-        port=settings.evaluation_ssh_port,
-        username=settings.evaluation_ssh_username,
-        password=settings.evaluation_ssh_password,
+        host=configured.host,
+        port=configured.ssh_port,
+        username=configured.ssh_username,
+        password=configured.ssh_password,
     )
     budget = AgentBudget(
         max_commands=settings.evaluation_agent_max_commands,
         max_seconds=settings.evaluation_agent_max_seconds,
     )
-    container = settings.evaluation_container_name
+    container = configured.container_name
 
     # A crashed run leaves `status=running` with nothing left in the system to
     # clear it, and `is_running` would then answer True for this honeypot
@@ -1659,7 +1668,7 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
     config_fp = _evaluation_config_fingerprint(
         budget,
         fingerprints.Apparatus(
-            capture_interface=settings.evaluation_capture_interface,
+            capture_interface=configured.capture_interface,
             capture_image=settings.evaluation_capture_image,
             nmap_timeout_seconds=settings.evaluation_nmap_timeout_seconds,
             capture_timeout_seconds=settings.evaluation_capture_timeout_seconds,
@@ -1686,7 +1695,14 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
 
     collected = _Collected()
     try:
-        await _execute_run(run_id, honeypot_id, target, budget, collected)
+        await _execute_run(
+            run_id,
+            honeypot_id,
+            target,
+            budget,
+            collected,
+            capture_interface=configured.capture_interface,
+        )
     except Exception:  # noqa: BLE001
         # Everything already collected is still persisted below. A stage
         # exploding is our failure, not the honeypot's, so it never becomes a

@@ -53,8 +53,9 @@ from app.models.evaluation import (
     StartEvaluationRequest,
     StartEvaluationResponse,
 )
+from app.config import get_settings
 from app.services.dashboard import list_honeypots
-from app.services.evaluation import runs
+from app.services.evaluation import runs, targets
 from app.workers.queue import evaluation_job_key, get_queue, stream_progress
 
 logger = logging.getLogger(__name__)
@@ -198,9 +199,25 @@ async def start_evaluation(request: StartEvaluationRequest) -> StartEvaluationRe
     is a live view, and `GET /api/evaluations/{run_id}` is the authoritative
     record of what the run established.
     """
+    # The registry is derived from indexed events -- a honeypot exists because
+    # its events do -- so a freshly built comparison target has captured
+    # nothing yet and would be refused here. A configured evaluation target is
+    # equally good proof that the honeypot exists, and is just as server-side,
+    # so either admits the id. Containment is unchanged: both sets are
+    # operator-controlled, and neither comes from the request.
     known = {honeypot.id for honeypot in await list_honeypots()}
+    known |= set(get_settings().evaluation_targets)
     if request.honeypot_id not in known:
         raise HTTPException(status_code=404, detail=f"unknown honeypot {request.honeypot_id}")
+
+    # An id can be in the event-derived registry and still have no configured
+    # target once a map exists. Resolving here turns that into a 404 the
+    # caller can read, instead of a run that is accepted, dispatched, and then
+    # dies in the background with nothing but a terminal socket frame.
+    try:
+        targets.resolve(request.honeypot_id, get_settings())
+    except targets.UnknownTargetError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     # Clear anything a killed process orphaned before reading the flag, so a
     # crash cannot 409 this honeypot forever. Only rows too old to still be

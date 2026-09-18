@@ -1,6 +1,27 @@
 from functools import lru_cache
 
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class HoneypotTarget(BaseModel):
+    """One honeypot the evaluation subsystem may be pointed at.
+
+    Server-side settings, never request input -- the containment rule below
+    is unchanged: a caller names a honeypot id, and the address it resolves
+    to was written by whoever configured the deployment.
+
+    The password has a default because Cowrie accepts any password; it is
+    not a per-honeypot secret, and demanding one per entry would put a
+    credential in the map for no gain.
+    """
+
+    host: str
+    ssh_port: int = 2222
+    ssh_username: str = "root"
+    ssh_password: str = "hivemind-evaluation"
+    container_name: str
+    capture_interface: str = "eth0"
 
 
 class Settings(BaseSettings):
@@ -50,6 +71,15 @@ class Settings(BaseSettings):
     # The agent's target is a fixed compose service name, never a
     # user-supplied address: there must be no code path from an HTTP request
     # to an arbitrary host, or the agent becomes an attack tool.
+    # Per-honeypot targets, keyed by honeypot id. Empty by default, and while
+    # it is empty the single evaluation_* target below serves every honeypot --
+    # one decoy needs no map. Once it holds anything, an unmapped id is
+    # REFUSED rather than falling back: evaluating honeypot A under honeypot
+    # B's label files every score, finding and fingerprint against the wrong
+    # decoy, which is the mis-attribution the target fingerprint exists to
+    # catch and is better prevented than detected.
+    evaluation_targets: dict[str, HoneypotTarget] = {}
+
     evaluation_target_host: str = "cowrie"
     evaluation_ssh_port: int = 2222
     evaluation_capture_interface: str = "eth0"

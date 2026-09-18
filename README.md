@@ -199,8 +199,8 @@ verdict is the exact failure this system exists to prevent.
 cd backend && .venv/Scripts/python -m pytest
 ```
 
-528 tests. They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `527 passed, 1 skipped` or `528 passed`** — there
+533 tests. They run against the live Docker stack and the real local model, so bring the
+infrastructure up first. **A clean run is `532 passed, 1 skipped` or `533 passed`** — there
 are no expected failures.
 
 The skip is the one end-to-end test that depends on whether `llama3.1:8b` infers a
@@ -321,6 +321,13 @@ rejects path traversal outright — rather than documented in a comment.
   network namespace. Clearing `EVALUATION_CAPTURE_IMAGE` falls back to a host `tcpdump`,
   which is only correct where the host shares the honeypot's network — not when the
   honeypot is a container reached through a published port.
+- **One honeypot per target entry.** `EVALUATION_TARGETS` maps honeypot ids to targets
+  (JSON, snake_case keys: `{"cowrie-degraded": {"host": "127.0.0.1", "ssh_port": 2322,
+  "container_name": "hivemind-degraded-1"}}`). Leave it empty and the single `EVALUATION_*` target serves
+  every honeypot, which is what a one-decoy deployment wants. Once it holds anything, an
+  unmapped id is refused rather than quietly sent to the default — evaluating one
+  honeypot under another's label would file every score, finding and fingerprint against
+  the wrong decoy.
 - **Single-worker deployment.** The job queue and WebSocket fan-out are in-process;
   multiple uvicorn workers would need Redis pub/sub.
 - **The deterministic scoring code is not fingerprinted** — only its data files are. Two
