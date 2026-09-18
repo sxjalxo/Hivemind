@@ -1560,7 +1560,9 @@ _REACHABILITY_TIMEOUT_SECONDS = 5.0
 
 
 async def _assert_target_reachable(
-    target: EvaluationTarget, timeout_seconds: float = _REACHABILITY_TIMEOUT_SECONDS
+    target: EvaluationTarget,
+    timeout_seconds: float = _REACHABILITY_TIMEOUT_SECONDS,
+    hint: str = "",
 ) -> None:
     """Confirm something is listening where the evaluation target points.
 
@@ -1585,9 +1587,12 @@ async def _assert_target_reachable(
         raise TargetUnreachableError(
             f"nothing accepted a connection at {target.host}:{target.port} "
             f"within {timeout_seconds}s ({exc}). "
-            f"EVALUATION_TARGET_HOST is {target.host!r}; the compose service "
-            f"name only resolves from inside the compose network, so set "
-            f"EVALUATION_TARGET_HOST=127.0.0.1 for a backend running on the host."
+            + (
+                hint
+                or "The compose service name only resolves from inside the "
+                "compose network, so set EVALUATION_TARGET_HOST=127.0.0.1 for a "
+                "backend running on the host."
+            )
         ) from exc
 
     # The question was answered the moment the connection was accepted;
@@ -1652,7 +1657,14 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
     # Running it and only then discovering the target was never reachable
     # destroys the previous run's residue to produce nothing at all. The
     # check that costs a TCP connect precedes the one with a side effect.
-    await _assert_target_reachable(target)
+    await _assert_target_reachable(
+        target,
+        hint=(
+            f"This address came from EVALUATION_TARGETS[{honeypot_id!r}]."
+            if settings.evaluation_targets
+            else ""
+        ),
+    )
     await _reset_target(container)
     # The password is deliberately not carried across: it does not change
     # what the honeypot is, and this value is hashed into a digest that gets

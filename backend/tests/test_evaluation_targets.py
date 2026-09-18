@@ -100,3 +100,29 @@ async def test_a_configured_target_admits_a_honeypot_with_no_events_yet(monkeypa
         assert router.targets.resolve("cowrie-fresh", get_settings()).host == "127.0.0.1"
     finally:
         get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_the_unreachable_message_names_the_setting_the_address_came_from() -> None:
+    """Block C made the old advice wrong, not merely incomplete.
+
+    It told the reader to set EVALUATION_TARGET_HOST while quoting a host that
+    came from EVALUATION_TARGETS -- pointing them at a setting the run was not
+    reading. An error message that sends someone to edit the wrong file is
+    worse than one that says less.
+    """
+    from app.services.evaluation import runs
+    from app.services.evaluation.agent import EvaluationTarget
+
+    dead = EvaluationTarget(host="127.0.0.1", port=59999, username="root", password="x")
+
+    with pytest.raises(runs.TargetUnreachableError) as mapped:
+        await runs._assert_target_reachable(
+            dead, timeout_seconds=1.0, hint="This address came from EVALUATION_TARGETS['x']."
+        )
+    assert "EVALUATION_TARGETS['x']" in str(mapped.value)
+    assert "set EVALUATION_TARGET_HOST" not in str(mapped.value)
+
+    with pytest.raises(runs.TargetUnreachableError) as unmapped:
+        await runs._assert_target_reachable(dead, timeout_seconds=1.0)
+    assert "EVALUATION_TARGET_HOST" in str(unmapped.value)
