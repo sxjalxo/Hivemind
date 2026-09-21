@@ -1,11 +1,10 @@
 import asyncio
 import contextlib
 import re
-import uuid
 from contextlib import asynccontextmanager
 
-from app.config import get_settings
 from app.db.models import FactStatus, ModuleStatus
+from app.services.evaluation import container
 from app.services.evaluation.outcomes import ModuleOutcome
 from app.services.evaluation.sanity import Observation
 
@@ -24,79 +23,65 @@ from app.services.evaluation.sanity import Observation
 # than a fabricated number.
 _PACKETS = re.compile(r"^\s*(\d+) packets captured", re.MULTILINE)
 
-# Set by `_spawn` when the capture runs as a container, read by `_request_stop`.
-# A capture is never concurrent with another within a run, and a stale name is
-# harmless: `docker kill` on a container that is already gone just fails.
-_container_name: str | None = None
 
+async def _spawn(interface: str, capture_container: str):
+    """Start tcpdump inside the capture sidecar. Replaced in tests.
 
-async def _spawn(interface: str):
-    """Start tcpdump on the evaluation interface only. Replaced in tests.
+    `docker exec`, never `docker run`. Creating a container is the one Docker
+    operation that is unconditionally equivalent to root on the host -- it
+    permits `-v /:/host --privileged` with no exploit required -- and this was
+    the only place in the application that needed one. The container is
+    declared in docker-compose.yml instead, sharing the honeypot's network
+    namespace, so `interface` is still the honeypot's own and the packets
+    counted are genuinely its own.
 
-    With `evaluation_capture_image` set, tcpdump runs inside the honeypot
-    container's OWN network namespace, so `interface` is the honeypot's
-    interface. This is not a convenience: where the honeypot is reached through
-    a published container port, a capture on the host (or in a WSL distro) sees
-    zero packets and the module would report `not_observed` -- a confident
-    claim that no traffic occurred, which is worse than reporting that we could
-    not look. Measured on this machine: 0 packets in a WSL distro against 30 in
-    the container's namespace, for the same SSH session.
+    That also removed the `--net=container:` argument this function used to
+    build, which is where a per-honeypot run could attach to the wrong
+    honeypot's namespace: which namespace the capture sees is now a property
+    of the compose declaration rather than of an argument assembled here.
+
+    Packet lines go to stdout and are discarded -- only the count is wanted,
+    and draining them would grow without bound on a busy interface. The
+    summary goes to stderr, kept on its own pipe so nothing can interleave
+    into it. See `_PACKETS`.
     """
-    global _container_name
-    settings = get_settings()
-    image = settings.evaluation_capture_image.strip()
-    if not image:
-        _container_name = None
-        return await asyncio.create_subprocess_exec(
+    return await container.spawn_checked(
+        [
+            "docker",
+            "exec",
+            capture_container,
             "tcpdump",
             "-i",
             interface,
             "-n",
             "-q",
-            # Packet lines go to stdout and are discarded -- only the count is
-            # wanted, and draining them would grow without bound on a busy
-            # interface. The summary goes to stderr, kept on its own pipe so
-            # nothing can interleave into it. See `_PACKETS`.
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-    _container_name = f"hivemind-capture-{uuid.uuid4().hex[:12]}"
-    return await asyncio.create_subprocess_exec(
-        "docker",
-        "run",
-        "--rm",
-        "--name",
-        _container_name,
-        f"--net=container:{settings.evaluation_container_name}",
-        image,
-        "tcpdump",
-        "-i",
-        interface,
-        "-n",
-        "-q",
+        ],
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
 
 
-async def _request_stop(process) -> None:
-    """Ask the capture to finish so tcpdump flushes its summary line.
+async def _request_stop(process, capture_container: str | None) -> None:
+    """Ask tcpdump to finish so it flushes its summary line.
 
-    `process.terminate()` is the right thing for a local tcpdump on POSIX, but
-    it is NOT enough for a containerised one on Windows: there `terminate()` is
-    TerminateProcess, a hard kill of the local docker CLI, which never reaches
-    tcpdump. It then exits without printing "N packets captured" and the module
-    reports `unknown` for a capture that actually worked. Signalling the
-    container itself gives tcpdump the interrupt it needs.
+    Signalling INSIDE the container, not the local process. `terminate()` only
+    reaps the `docker exec` client: on Windows it is TerminateProcess, which
+    never reaches tcpdump, so it exits without printing "N packets captured"
+    and the module reports `unknown` for a capture that worked. `pkill -INT`
+    reaches the process that is actually holding the count.
+
+    `-x tcpdump` is an exact-name match, so it cannot catch anything else the
+    sidecar happens to be running. It would signal a second concurrent tcpdump
+    in the SAME sidecar -- there is never one, because a honeypot admits one
+    run at a time (the advisory lock in `app.routers.evaluation`) and each
+    honeypot has its own sidecar.
+
+    `terminate()` still follows, to reap the client once its child is done.
     """
-    if _container_name:
-        with contextlib.suppress(OSError):
-            killer = await asyncio.create_subprocess_exec(
-                "docker",
-                "kill",
-                "--signal=INT",
-                _container_name,
+    if capture_container:
+        with contextlib.suppress(OSError, container.DockerPolicyError):
+            killer = await container.spawn_checked(
+                ["docker", "exec", capture_container, "pkill", "-INT", "-x", "tcpdump"],
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -127,17 +112,44 @@ class Capture:
     window -- not that the honeypot is plausible or convincing. That
     judgement belongs to the evaluator LLM, which consumes this module's
     output as one piece of evidence among several.
+
+    `capture_container` is the SIDECAR to exec into -- the one compose
+    declares with `network_mode: service:<honeypot>`. Which honeypot's traffic
+    this sees is therefore a property of that declaration, not of an argument
+    built here, which is what stops a run against one honeypot capturing
+    another's. Instance state, not module state: two honeypots can be
+    evaluated at once and each has its own sidecar.
+
+    `capture_container` may be None, meaning no capture is configured for
+    this target -- a generic honeypot that is a bare host or a VM has no
+    sidecar. That case is handled HERE rather than by the caller choosing a
+    different context manager, because the difference between "no capture was
+    configured" and "a capture ran and failed" is a fact about capturing, and
+    this is the module that owns those facts. The orchestrator used to carry a
+    second null implementation and a ternary to pick between them, which put
+    half of one concept in a file that has no other opinion about tcpdump.
     """
 
-    def __init__(self, interface: str, timeout_seconds: int) -> None:
+    def __init__(
+        self, interface: str, timeout_seconds: int, capture_container: str | None
+    ) -> None:
         self._interface = interface
         self._timeout_seconds = timeout_seconds
+        self._capture_container = capture_container
         self._process = None
         self.outcome: ModuleOutcome | None = None
 
     async def start(self) -> None:
+        if self._capture_container is None:
+            # Not configured. `outcome` stays None, which is NOT an `unknown`
+            # fact: a run with no capture made no claim about network
+            # activity, which is different from having looked and failed.
+            # Capturing on THIS host instead would watch an interface the
+            # honeypot's traffic never crosses and report "0 packets" as a
+            # confident `not_observed` for traffic that did occur.
+            return
         try:
-            self._process = await _spawn(self._interface)
+            self._process = await _spawn(self._interface, self._capture_container)
         except OSError as exc:
             # Could not even launch the capture. Our own inability to look is
             # not evidence that no traffic occurred -- leave the fact
@@ -145,7 +157,11 @@ class Capture:
             self._process = None
             self.outcome = _unknown_outcome(str(exc))
 
-    async def stop(self) -> ModuleOutcome:
+    async def stop(self) -> ModuleOutcome | None:
+        if self._capture_container is None:
+            # Never configured; see `start`. No outcome, so the caller records
+            # nothing and the run claims nothing about network activity.
+            return None
         if self._process is None:
             if self.outcome is None:
                 self.outcome = _unknown_outcome("capture never started")
@@ -159,7 +175,7 @@ class Capture:
         # captured into the outcome instead.
         try:
             try:
-                await _request_stop(self._process)
+                await _request_stop(self._process, self._capture_container)
             except ProcessLookupError:
                 # tcpdump already exited on its own (interface disappeared,
                 # permission revoked mid-run) -- a normal way for a capture
@@ -225,14 +241,19 @@ class Capture:
 
 
 @asynccontextmanager
-async def capture(interface: str, timeout_seconds: int):
+async def capture(
+    interface: str, timeout_seconds: int, capture_container: str | None
+):
     """Bracket the active evaluation window with a capture.
 
     `stop` runs in a finally so an exception in any stage of the evaluation
     -- the agent, the chain runner, anything -- cannot leave a tcpdump
     process running past the end of the run.
+
+    `capture_container` is required rather than defaulted: a default is what
+    let a run against one honeypot silently capture another's traffic.
     """
-    cap = Capture(interface, timeout_seconds)
+    cap = Capture(interface, timeout_seconds, capture_container)
     await cap.start()
     try:
         yield cap

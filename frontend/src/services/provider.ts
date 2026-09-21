@@ -70,11 +70,26 @@ export interface DataProvider {
    * Present only when the provider has a real source of stage updates. When it
    * is absent the UI shows an indeterminate running state rather than inventing
    * progress, so a spinner never implies knowledge the backend did not send.
+   *
+   * Returns a PROMISE, resolving once the channel is actually listening, and
+   * the caller must await it before starting the analysis. The backend
+   * publishes its first stage the moment the analysis begins and the channel
+   * has no replay, so a socket still completing its handshake misses however
+   * many stages it takes to finish -- silently, and differently on every run.
+   *
+   * This channel is keyed by the session id, which the caller already holds
+   * before it posts, so subscribing first closes the window completely.
+   * `subscribeEvaluationProgress` below is a promise too, but for a second
+   * reason: it must fetch a Clerk token before opening the socket. Awaiting
+   * does NOT close its ordering gap — its key is a run id the server
+   * allocates, so the client cannot subscribe until the POST has returned
+   * and the run is already under way. That gap is real, documented, and
+   * closed by reading the outcome back from the API, not from the socket.
    */
   subscribeAnalysisProgress?(
     sessionId: string,
     onEvent: (event: AnalysisProgressEvent) => void,
-  ): Unsubscribe;
+  ): Promise<Unsubscribe>;
 
   getMitreCoverage(params?: { sessionId?: string }): Promise<MitreCoverage>;
 
@@ -134,7 +149,7 @@ export interface DataProvider {
   subscribeEvaluationProgress?(
     runId: string,
     onEvent: (event: EvaluationProgressEvent) => void,
-  ): Unsubscribe;
+  ): Promise<Unsubscribe>;
 
   getDashboard(range: string): Promise<DashboardData>;
 }

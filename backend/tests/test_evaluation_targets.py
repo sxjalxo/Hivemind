@@ -126,3 +126,81 @@ async def test_the_unreachable_message_names_the_setting_the_address_came_from()
     with pytest.raises(runs.TargetUnreachableError) as unmapped:
         await runs._assert_target_reachable(dead, timeout_seconds=1.0)
     assert "EVALUATION_TARGET_HOST" in str(unmapped.value)
+
+
+# --- what the target IS, not just where it is ----------------------------
+
+
+def test_a_target_defaults_to_cowrie_and_needs_a_container() -> None:
+    """`cowrie` is the kind whose machinery needs something to exec into."""
+    from pydantic import ValidationError
+
+    assert HoneypotTarget(host="h", container_name="c").kind == "cowrie"
+
+    with pytest.raises(ValidationError, match="container_name"):
+        HoneypotTarget(host="h")
+
+
+def test_a_generic_target_needs_no_container() -> None:
+    """A real VM or bare host is not a container and must not have to pretend."""
+    target = HoneypotTarget(
+        kind="generic", host="192.0.2.10", ssh_port=22, ssh_password="hunter2"
+    )
+
+    assert target.container_name is None
+    assert target.ssh_port == 22
+
+
+def test_only_a_cowrie_target_simulates_commands() -> None:
+    """The property B3 rests on.
+
+    Cowrie's shell backend emulates every command, which is the only reason
+    the attack chains are safe to run at all. A real host runs them.
+    """
+    assert HoneypotTarget(host="h", container_name="c").simulates_commands is True
+    generic = HoneypotTarget(kind="generic", host="h", ssh_password="hunter2")
+    assert generic.simulates_commands is False
+    assert HoneypotTarget(host="h", container_name="c").has_own_event_log is True
+    assert generic.has_own_event_log is False
+
+
+def test_an_unknown_kind_is_refused_rather_than_treated_as_generic() -> None:
+    """A typo must not silently pick a behaviour.
+
+    Refusing is safe in both directions here: `kind` decides whether we run
+    destructive commands AND whether we skip machinery that cannot work, so
+    a value nobody defined has no correct interpretation.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        HoneypotTarget(kind="real-vm", host="h")
+
+
+def test_a_generic_target_must_state_its_own_password() -> None:
+    """The default is a Cowrie fact, not a universal one.
+
+    Cowrie accepts any password and the credential is not a secret. Against
+    a real machine the same default authenticates with a string nobody chose
+    -- and fails in the shape of a honeypot refusing a login rather than a
+    setting nobody filled in.
+    """
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="ssh_password"):
+        HoneypotTarget(kind="generic", host="192.0.2.10", ssh_port=22)
+
+    with pytest.raises(ValidationError, match="ssh_password"):
+        HoneypotTarget(kind="generic", host="192.0.2.10", ssh_port=22, ssh_password="")
+
+    stated = HoneypotTarget(
+        kind="generic", host="192.0.2.10", ssh_port=22, ssh_password="hunter2"
+    )
+    assert stated.ssh_password == "hunter2"
+
+
+def test_a_cowrie_target_keeps_the_shared_default() -> None:
+    """Requiring one here would put a credential in the map for no gain."""
+    target = HoneypotTarget(host="cowrie", container_name="hivemind-cowrie-1")
+
+    assert target.ssh_password == "hivemind-evaluation"

@@ -1,7 +1,9 @@
 import re
+import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal_column, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.db.models import Indicator as IndicatorRow
 from app.db.models import IndicatorSession
@@ -97,27 +99,45 @@ async def correlate(
     time ever (never seen in any prior session) -- not the number of
     session links created, and unaffected by re-linking an already-seen
     session.
+
+    **Both writes are upserts, and that is a correctness property, not a
+    tidiness one.** This was a SELECT, then an INSERT if the SELECT found
+    nothing. Two analyses running at once both read "not there" and both
+    insert, and the second violates `uq_indicator_type_value`: an
+    IntegrityError that rolls the whole transaction back and surfaces as a
+    500 on an analysis that had already done all its work. That is not an
+    exotic race -- every session records its attacker's IP as an indicator,
+    so any two analyses of sessions from the same attacker collide on it,
+    and nothing anywhere serialises them.
+
+    The upsert also fixes a quieter bug of the same origin, and this is the
+    half worth reading twice. `source` is CORRELATED only when the value was
+    genuinely seen in more than one session, and it is computed by counting
+    distinct linked sessions AFTER the link is written. Under the old code
+    two concurrent analyses each inserted their own link, each counted one
+    (neither could see the other's uncommitted row), and both wrote
+    OBSERVED -- so a value that really did appear in two sessions was
+    reported as appearing in one, permanently, with nothing to notice it.
+    `ON CONFLICT DO UPDATE` takes a row lock on the conflicting indicator
+    for the rest of the transaction, so the second analysis now blocks until
+    the first commits and then counts both links. The serialisation falls
+    out of the statement that was needed anyway; no extra locking.
+
+    `xmax = 0` is how the first write reports whether it inserted or
+    updated. Postgres sets `xmax` to the locking transaction on the DO
+    UPDATE path and leaves it zero on a fresh insert, so this distinguishes
+    the two without a second query -- which matters because the answer has
+    to come from the same statement that did the write, or it is a second
+    race in place of the one just closed.
     """
     now = datetime.now(timezone.utc)
     new_count = 0
 
     async with get_session_factory()() as db:
         for payload, _ in extracted:
-            existing = (
-                (
-                    await db.execute(
-                        select(IndicatorRow).where(
-                            IndicatorRow.type == payload["type"],
-                            IndicatorRow.value == payload["value"],
-                        )
-                    )
-                )
-                .scalars()
-                .first()
-            )
-
-            if existing is None:
-                existing = IndicatorRow(
+            upsert = (
+                pg_insert(IndicatorRow)
+                .values(
                     type=payload["type"],
                     value=payload["value"],
                     confidence=1.0,
@@ -126,70 +146,129 @@ async def correlate(
                     source="OBSERVED",
                     tags=[],
                 )
-                db.add(existing)
-                await db.flush()
-                new_count += 1
-            else:
-                existing.last_seen = now
-                db.add(existing)
-
-            link = await db.get(IndicatorSession, (existing.id, session_id))
-            if link is None:
-                db.add(
-                    IndicatorSession(indicator_id=existing.id, session_id=session_id)
+                .on_conflict_do_update(
+                    constraint="uq_indicator_type_value",
+                    # `first_seen` is deliberately NOT touched: it means the
+                    # first time this value was ever seen, and an upsert that
+                    # refreshed it would erase exactly the history the field
+                    # exists to record.
+                    set_={"last_seen": now},
                 )
-                await db.flush()
+                .returning(IndicatorRow.id, literal_column("xmax") == 0)
+            )
+            indicator_id, inserted = (await db.execute(upsert)).one()
+            if inserted:
+                new_count += 1
+
+            await db.execute(
+                pg_insert(IndicatorSession)
+                .values(indicator_id=indicator_id, session_id=session_id)
+                # Re-analysing a session links the same pair again. DO
+                # NOTHING rather than DO UPDATE: there is no non-key column
+                # to refresh, and the row already says everything it says.
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        IndicatorSession.indicator_id,
+                        IndicatorSession.session_id,
+                    ]
+                )
+            )
 
             session_count = (
                 await db.execute(
                     select(func.count(func.distinct(IndicatorSession.session_id))).where(
-                        IndicatorSession.indicator_id == existing.id
+                        IndicatorSession.indicator_id == indicator_id
                     )
                 )
             ).scalar_one()
-            existing.source = "CORRELATED" if session_count > 1 else "OBSERVED"
-            db.add(existing)
+            await db.execute(
+                update(IndicatorRow)
+                .where(IndicatorRow.id == indicator_id)
+                .values(source="CORRELATED" if session_count > 1 else "OBSERVED")
+            )
 
         await db.commit()
 
     return new_count
 
 
+def _like_escaped(term: str) -> str:
+    """Escape a user term for a LIKE pattern.
+
+    `%` and `_` are wildcards, so an unescaped `%` matches everything and
+    turns a filter into a no-op that still looks like it filtered. That is
+    the quietest kind of wrong this codebase keeps finding: same shape of
+    answer, silently wider. The backslash must be escaped first, or it would
+    go on to escape the escapes added after it.
+    """
+    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 async def list_indicators(
     type_: str | None = None, q: str | None = None
 ) -> list[Indicator]:
+    """Every indicator, filtered, with the sessions each was seen in.
+
+    Two queries total, not one per indicator. This loaded every row and then
+    issued a SELECT per row for its session links -- fine against a seed
+    corpus, and a query per IOC once a honeypot has been collecting for a
+    while. `create_report` calls it with no filter and keeps one session's
+    worth, so a report cost a full scan plus N round trips.
+
+    `q` is filtered in SQL rather than in Python for the same reason, and
+    `type_` always was. Both narrow the row set BEFORE the link query, so the
+    second query carries only the ids actually being returned.
+
+    Ordering is explicit. Postgres guarantees none without it -- physical
+    order shifts under vacuum -- and this list is rendered in a UI, so rows
+    silently reshuffling between two identical requests reads as data
+    changing. `session_ids` is sorted for the same reason.
+    """
     async with get_session_factory()() as db:
         statement = select(IndicatorRow)
         if type_:
             statement = statement.where(IndicatorRow.type == type_)
-        rows = (await db.execute(statement)).scalars().all()
-
-        results: list[Indicator] = []
-        for row in rows:
-            if q and q.lower() not in row.value.lower():
-                continue
-            links = (
-                (
-                    await db.execute(
-                        select(IndicatorSession).where(
-                            IndicatorSession.indicator_id == row.id
-                        )
+        if q:
+            statement = statement.where(
+                IndicatorRow.value.ilike(f"%{_like_escaped(q)}%", escape="\\")
+            )
+        rows = (
+            (
+                await db.execute(
+                    statement.order_by(
+                        IndicatorRow.last_seen.desc(), IndicatorRow.id
                     )
                 )
-                .scalars()
-                .all()
             )
-            results.append(
-                Indicator(
-                    id=str(row.id),
-                    type=row.type,
-                    value=row.value,
-                    confidence=row.confidence,
-                    first_seen=row.first_seen.isoformat().replace("+00:00", "Z"),
-                    last_seen=row.last_seen.isoformat().replace("+00:00", "Z"),
-                    session_ids=[link.session_id for link in links],
-                    source=row.source,
-                    tags=row.tags or [],
+            .scalars()
+            .all()
+        )
+        if not rows:
+            return []
+
+        links = (
+            await db.execute(
+                select(IndicatorSession).where(
+                    IndicatorSession.indicator_id.in_([row.id for row in rows])
                 )
             )
-        return results
+        ).scalars().all()
+
+        by_indicator: dict[uuid.UUID, list[str]] = {}
+        for link in links:
+            by_indicator.setdefault(link.indicator_id, []).append(link.session_id)
+
+        return [
+            Indicator(
+                id=str(row.id),
+                type=row.type,
+                value=row.value,
+                confidence=row.confidence,
+                first_seen=row.first_seen.isoformat().replace("+00:00", "Z"),
+                last_seen=row.last_seen.isoformat().replace("+00:00", "Z"),
+                session_ids=sorted(by_indicator.get(row.id, [])),
+                source=row.source,
+                tags=row.tags or [],
+            )
+            for row in rows
+        ]

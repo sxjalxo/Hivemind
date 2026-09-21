@@ -9,6 +9,7 @@ from app.services.chunking import (
     SESSION_TOKEN_BUDGET,
     chunk_items,
     estimate_tokens,
+    flatten,
     truncate_text,
 )
 from app.services.compaction import CompactedCommand
@@ -123,18 +124,33 @@ def _render_prompt(commands: list[CompactedCommand], ruled_ids: set[str]) -> str
     deterministically. If that would empty the list (rules covered the whole
     catalog — unlikely with 21 entries, but not impossible in principle), fall
     back to the full catalog rather than send an empty, incoherent prompt.
+
+    `c.command` is attacker-authored and this prompt is line-oriented -- the
+    fence delimiters and each `- event_id:` / `  command:` pair are whole
+    lines -- so it goes through `chunking.flatten`, which is what stops a
+    command containing a line break from closing the fence or forging an
+    extra entry under an event_id that really was offered (the citation check
+    only catches invented *ids*). `event_id` is ours; flattened anyway, for
+    the same reason `evaluator._render` flattens its ids.
+
+    `{commands}` is substituted LAST, and that ordering is load-bearing:
+    replacing it first let a command containing the literal string
+    `{allowed_techniques}` be expanded by the following pass -- attacker text
+    choosing what else gets spliced into the prompt. `evaluator._render`
+    records the same rule.
     """
     catalog = load_catalog()
     rendered = "\n".join(
-        f"- event_id: {c.event_id}\n  command: {c.command}" for c in commands
+        f"- event_id: {flatten(c.event_id)}\n  command: {flatten(c.command)}"
+        for c in commands
     )
     remaining = [e for e in catalog.values() if e.id not in ruled_ids]
     if not remaining:
         remaining = list(catalog.values())
     allowed = "\n".join(f"- {e.id} ({e.name}) — {e.tactic}" for e in remaining)
     template = _PROMPT_PATH.read_text(encoding="utf-8")
-    return template.replace("{commands}", rendered).replace(
-        "{allowed_techniques}", allowed
+    return template.replace("{allowed_techniques}", allowed).replace(
+        "{commands}", rendered
     )
 
 

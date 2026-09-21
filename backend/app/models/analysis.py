@@ -80,6 +80,11 @@ class SessionAnalysis(CamelModel):
     risk_score: int
     risk: str
     behavior_summary: str
+    # Who ran this: `user:<clerk_id>`, `unauthenticated` (no identity existed
+    # to record) or `unrecorded` (predates the audit trail). Three distinct
+    # values -- see `db.models.Analysis`.
+    started_by: str = "unrecorded"
+    started_by_label: str | None = None
     observed_behavior: list[LabelledEvidence]
     suspicious_indicators: list[SeverityEvidence]
     recommended_actions: list[RecommendedActionOut]

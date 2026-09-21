@@ -42,7 +42,19 @@ services:
       retries: 12
 
   cowrie:
-    image: cowrie/cowrie:latest
+    # Pinned by digest, not `:latest`. Two reasons, and the second is the one
+    # that matters here: `docker inspect --format {{.Image}}` on this
+    # container is hashed into `honeypot_fingerprint`, so an upstream re-push
+    # under the same tag silently changes the thing under test between two
+    # runs that the comparison view then calls comparable. Every other
+    # service in this file is pinned; this one and netshoot were the two that
+    # were not, and they are also the two the backend `docker exec`s into and
+    # runs with `--net=container:`.
+    #
+    # To move: pull the tag, read the new digest with
+    # `docker image inspect cowrie/cowrie:latest --format '{{index .RepoDigests 0}}'`,
+    # and paste it here as a deliberate change.
+    image: cowrie/cowrie@sha256:42e01e0e5fe705a0a63dacc0f1992b2d230740ac149af7675f48197abf740d44
     ports:
       - "127.0.0.1:2222:2222"
       - "127.0.0.1:2223:2223"
@@ -50,6 +62,34 @@ services:
       - ./infra/cowrie/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
       - cowrie-logs:/cowrie/cowrie-git/var/log/cowrie
     restart: unless-stopped
+
+  capture:
+    # The packet-capture sidecar. It exists so the backend never needs
+    # `docker run`.
+    #
+    # Creating a container is the one Docker operation that is unconditionally
+    # equivalent to root on the host: `docker run -v /:/host --privileged`
+    # requires no exploit, only the ability to make the call. The capture was
+    # the backend's only reason to create one, so the container is declared
+    # here instead and the backend merely `docker exec`s tcpdump into it --
+    # a verb whose blast radius is this container, which mounts nothing from
+    # the host.
+    #
+    # `network_mode: service:cowrie` puts it in the honeypot's own network
+    # namespace, so `eth0` here IS the honeypot's interface and the packets
+    # counted are genuinely its own. That is the same reason the old
+    # `--net=container:` flag existed, now declared rather than constructed.
+    #
+    # Idle until used: tcpdump is started per run by `docker exec` and stopped
+    # by signalling it inside this container. tcpdump needs CAP_NET_RAW, which
+    # is in Docker's default capability set, so no added privilege here either.
+    image: nicolaka/netshoot@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+    command: ["sleep", "infinity"]
+    network_mode: "service:cowrie"
+    restart: unless-stopped
+    depends_on:
+      cowrie:
+        condition: service_started
 
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.15.3

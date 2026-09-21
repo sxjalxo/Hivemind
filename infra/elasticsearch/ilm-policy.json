@@ -1,0 +1,39 @@
+{
+  "_comment": [
+    "Index lifecycle for honeypot-events. ROLLOVER ONLY -- there is deliberately",
+    "no delete phase, and adding one is a decision, not a tidy-up.",
+    "",
+    "Captured attacker telemetry is this project's research data and a delete",
+    "phase is irreversible: it runs on a timer, against data nobody is watching,",
+    "and the first sign it was wrong is a gap in a paper. What this policy buys",
+    "instead is that no single index grows without bound, so old indices become",
+    "individually droppable BY HAND once you have decided you do not need them.",
+    "Disk still fills eventually -- slowly, and visibly in _cat/indices.",
+    "",
+    "max_primary_shard_size over max_size because it is the one that tracks what",
+    "actually degrades: a shard past ~50gb is slow to search and slow to",
+    "relocate. 5gb is conservative for a single-node cluster with a 1gb heap",
+    "(see docker-compose.yml, ES_JAVA_OPTS).",
+    "",
+    "max_age caps how long a single index stays open for writes even on a quiet",
+    "honeypot, so a VPS collecting a trickle still produces separable indices",
+    "rather than one index spanning a year.",
+    "",
+    "No warm or cold phase: this is a single-node cluster with number_of_replicas",
+    "0, so there is no second tier to move anything to. forcemerge and",
+    "set_priority would be motion without effect."
+  ],
+  "policy": {
+    "phases": {
+      "hot": {
+        "min_age": "0ms",
+        "actions": {
+          "rollover": {
+            "max_primary_shard_size": "5gb",
+            "max_age": "30d"
+          }
+        }
+      }
+    }
+  }
+}

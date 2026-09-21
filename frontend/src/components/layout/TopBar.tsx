@@ -1,17 +1,10 @@
+import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/tanstack-react-start";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, ChevronDown, LogOut, Menu, Settings, ShieldCheck, UserRound } from "lucide-react";
+import { Bell, Menu } from "lucide-react";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TimeRangeSelector } from "./TimeRangeSelector";
 import { StatusDot } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { systemStatusQuery } from "@/services/honeypots";
 import type { ServiceStatus } from "@/types";
 
@@ -82,41 +75,50 @@ export function TopBar({
           ) : null}
         </Button>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="flex items-center gap-2 rounded-md border border-border bg-surface px-2 py-1.5 text-left transition-colors hover:border-border-strong"
-            >
-              <span className="flex size-6 items-center justify-center rounded bg-primary/15">
-                <ShieldCheck className="size-3.5 text-primary" aria-hidden />
-              </span>
-              <span className="hidden leading-tight sm:block">
-                <span className="block text-xs font-medium text-foreground">Analyst</span>
-                <span className="block font-mono text-[10px] text-muted-foreground">tier-2</span>
-              </span>
-              <ChevronDown className="size-3.5 text-muted-foreground" aria-hidden />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
-            <DropdownMenuLabel className="font-normal">
-              <p className="text-xs font-medium text-foreground">SOC Analyst</p>
-              <p className="font-mono text-[11px] text-muted-foreground">Tier-2 investigator</p>
-            </DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-xs">
-              <UserRound className="size-3.5" /> Profile
-            </DropdownMenuItem>
-            <DropdownMenuItem className="text-xs">
-              <Settings className="size-3.5" /> Preferences
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-xs">
-              <LogOut className="size-3.5" /> Sign out
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <AccountControls />
       </div>
     </header>
+  );
+}
+
+/**
+ * Real account controls, replacing the mock "SOC Analyst / tier-2" dropdown
+ * that shipped with the original UI build.
+ *
+ * That menu looked like authentication and was not: its Profile, Preferences
+ * and Sign out items did nothing, and the identity was a hardcoded string.
+ * Leaving it beside a working sign-in would have given the app two user
+ * menus, one of them lying.
+ *
+ * `Show` is this SDK's gate; the older `SignedIn`/`SignedOut` pair is not
+ * exported by `@clerk/react` at this version.
+ */
+function AccountControls() {
+  return (
+    <>
+      <Show when="signed-out">
+        <SignInButton mode="modal">
+          <Button variant="ghost" size="sm" className="h-8 text-xs">
+            Sign in
+          </Button>
+        </SignInButton>
+        <SignUpButton mode="modal">
+          <Button size="sm" className="h-8 text-xs">
+            Sign up
+          </Button>
+        </SignUpButton>
+      </Show>
+      <Show when="signed-in">
+        <UserButton
+          appearance={{
+            elements: {
+              // Match the 32px control height the rest of this bar uses, so
+              // the avatar does not sit taller than the buttons beside it.
+              userButtonAvatarBox: "size-7",
+            },
+          }}
+        />
+      </Show>
+    </>
   );
 }

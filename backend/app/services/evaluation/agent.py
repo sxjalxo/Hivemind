@@ -25,6 +25,23 @@ class EvaluationTarget(BaseModel):
     port: int
     username: str
     password: str
+    # What is at the other end -- see `app.config.HoneypotTarget.kind`.
+    #
+    # The default is the CONSERVATIVE value, not the common one. A caller
+    # that forgets to carry the kind across gets a target treated as a real
+    # machine: no destructive chain steps, no chain read-back. Defaulting to
+    # "cowrie" would mean a forgotten field is what decides whether
+    # `rm -rf /root/.ssh` runs for real, and the cost of the two mistakes is
+    # not remotely symmetric.
+    kind: str = "generic"
+
+    @property
+    def simulates_commands(self) -> bool:
+        return self.kind == "cowrie"
+
+    @property
+    def has_own_event_log(self) -> bool:
+        return self.kind == "cowrie"
 
 
 class AgentBudget(BaseModel):

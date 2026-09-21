@@ -1,9 +1,17 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from elasticsearch import NotFoundError
 
 from app.config import get_settings
 from app.es.client import get_es
-from app.seed.seeder import load_corpus, seed, seeded_count
+from app.seed.seeder import (
+    SEED_TRAILING_MARGIN,
+    load_corpus,
+    seed,
+    seed_base_time,
+    seeded_count,
+)
 
 EXPECTED_SESSIONS = {
     "seed-botnet-01",
@@ -93,3 +101,61 @@ async def test_seeded_scoping_ignores_stray_non_seed_prefixed_documents() -> Non
             await es.delete(index=settings.es_index, id=stray_id)
         except NotFoundError:
             pass
+
+
+def test_the_corpus_lands_inside_the_windows_the_dashboard_queries() -> None:
+    """The corpus exists to fill every screen before an attacker connects.
+
+    It was anchored to a fixed calendar date, so it aged out of the 30d
+    window and every panel went blank -- with nothing logged, because an
+    out-of-range document is indexed and counted exactly like any other.
+    Pinning the anchor against a FIXED `now` keeps this a statement about
+    the corpus rather than about the clock the suite happened to run on.
+    """
+    now = datetime(2027, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+    stamps = [
+        datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00"))
+        for e in load_corpus(now=now)
+    ]
+
+    assert stamps
+    # Nothing in the future: a honeypot event dated after the present moment
+    # is a nonsense, and it would fall outside every window too.
+    assert max(stamps) <= now
+    # The newest event sits exactly the margin back, so it is in range of the
+    # narrowest window the UI offers rather than merely inside 30d.
+    assert now - max(stamps) == SEED_TRAILING_MARGIN
+    assert now - min(stamps) < timedelta(hours=1), (
+        "the corpus no longer fits the 1h dashboard window; "
+        "shrink a fixture's offsets or accept a wider narrowest window"
+    )
+
+
+def test_the_anchor_moves_but_the_identity_of_an_event_does_not() -> None:
+    """Re-anchoring must not fork the corpus into new documents.
+
+    `seed(reset=True)` deletes by the id set `load_corpus()` reports, so an
+    id derived from a timestamp would leave every previous seeding behind on
+    each run instead of overwriting it.
+    """
+    early = load_corpus(now=datetime(2027, 3, 1, 12, 0, 0, tzinfo=timezone.utc))
+    later = load_corpus(now=datetime(2027, 6, 14, 9, 30, 0, tzinfo=timezone.utc))
+
+    assert [e["_id"] for e in early] == [e["_id"] for e in later]
+    assert [e["session"] for e in early] == [e["session"] for e in later]
+    # Intervals are what the timeline and session durations are built from.
+    def spans(events):
+        base = datetime.fromisoformat(events[0]["timestamp"].replace("Z", "+00:00"))
+        return [
+            datetime.fromisoformat(e["timestamp"].replace("Z", "+00:00")) - base
+            for e in events
+        ]
+
+    assert spans(early) == spans(later)
+
+
+def test_the_base_time_follows_a_corpus_that_grows() -> None:
+    """A fixture added with a later offset must move the anchor back with it."""
+    now = datetime(2027, 3, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert seed_base_time(3030, now) > seed_base_time(9000, now)
+    assert now - seed_base_time(9000, now) == SEED_TRAILING_MARGIN + timedelta(seconds=9000)

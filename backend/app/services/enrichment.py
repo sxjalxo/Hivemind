@@ -124,18 +124,56 @@ async def write_back_enrichment(
                 citation.event_id, (technique.technique_id, technique.tactic)
             )
 
-    for event_id, (technique_id, tactic) in event_to_technique.items():
-        try:
-            await es.update(
-                index=settings.es_index,
-                id=event_id,
-                doc={"mitre": {"technique_id": technique_id, "tactic": tactic}},
-            )
-        except Exception as exc:  # noqa: BLE001 -- one bad event id must not
-            # abort the rest of the write-back; Postgres already holds the
-            # authoritative record regardless of whether this projection
-            # fully lands.
-            logger.warning("failed to stamp mitre.* on event %s: %s", event_id, exc)
+    if not event_to_technique:
+        return
 
-    if event_to_technique:
-        await es.indices.refresh(index=settings.es_index)
+    # One `update_by_query` for every event, not one `update` per event.
+    #
+    # Two reasons, and the second is not a performance one. A session with
+    # forty rule-matched commands cost forty round trips, serially, after the
+    # analysis had already finished -- the same N+1 shape as
+    # `intel.list_indicators`.
+    #
+    # The other is that `es.update(index=..., id=...)` only ever reaches the
+    # WRITE index. Point `es_index` at an alias -- which is what index
+    # lifecycle rollover requires -- and every event older than the current
+    # write index raises `document_missing_exception` instead, caught below,
+    # logged as a warning, and never stamped. The dashboard's technique
+    # filter would quietly stop covering anything but the newest index.
+    # `update_by_query` resolves the alias across all of its indices, so this
+    # form works whether `es_index` names a concrete index or an alias.
+    # Verified against a two-index alias, not assumed.
+    stamps = {
+        event_id: {"technique_id": technique_id, "tactic": tactic}
+        for event_id, (technique_id, tactic) in event_to_technique.items()
+    }
+    try:
+        await es.update_by_query(
+            index=settings.es_index,
+            query={"ids": {"values": list(stamps)}},
+            script={
+                # Per-document lookup: each event gets ITS technique, not a
+                # single value broadcast across the session. The null check
+                # matters because `ids` can match nothing for an id that was
+                # cited but never indexed, and a painless NPE fails the whole
+                # request rather than that one document.
+                "source": (
+                    "def stamp = params.stamps.get(ctx._id); "
+                    "if (stamp != null) { ctx._source.mitre = "
+                    "['technique_id': stamp.technique_id, 'tactic': stamp.tactic]; }"
+                ),
+                "lang": "painless",
+                "params": {"stamps": stamps},
+            },
+            conflicts="proceed",
+            refresh=True,
+        )
+    except Exception as exc:  # noqa: BLE001 -- the projection is best-effort;
+        # Postgres already holds the authoritative record regardless of
+        # whether this lands. Loud enough to find, never fatal.
+        logger.warning(
+            "failed to stamp mitre.* for session %s (%d events): %s",
+            session_id,
+            len(stamps),
+            exc,
+        )

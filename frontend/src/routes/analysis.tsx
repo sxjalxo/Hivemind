@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAnalysisRun } from "@/hooks/useAnalysisRun";
+import { useAdminForSession } from "@/hooks/useAdminFor";
 import { analysisQueries } from "@/services/analysis";
 import { sessionQueries } from "@/services/sessions";
 import { isDemoMode } from "@/services";
@@ -49,6 +50,10 @@ function AnalysisPage() {
 
   const [target, setTarget] = useState<string>("");
   const { isRunning, run, analyze, analysis } = useAnalysisRun(target);
+  // Roles are per-honeypot and a session belongs to one, so this resolves
+  // the selected session to its honeypot rather than asking the coarser
+  // "admin anywhere" question the backend only uses as a pre-filter.
+  const canAnalyze = useAdminForSession(target);
 
   return (
     <div className="space-y-5">
@@ -86,7 +91,8 @@ function AnalysisPage() {
             </Select>
             <Button
               onClick={analyze}
-              disabled={!target || isRunning}
+              disabled={!target || isRunning || !canAnalyze.allowed}
+              title={!target ? undefined : canAnalyze.title}
               className="bg-ai text-ai-foreground hover:bg-ai/90"
             >
               <Sparkles className="size-3.5" />

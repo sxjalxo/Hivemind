@@ -184,6 +184,13 @@ class EvaluationRunOut(CamelModel):
     evaluator_status: str
     honeypot_fingerprint: str
     evaluation_config_fingerprint: str
+    # Who started this run: `user:<clerk_id>`, `unauthenticated` (no identity
+    # existed to record) or `unrecorded` (the run predates the audit trail).
+    # Three distinct values on purpose -- see `db.models.EvaluationRun`.
+    started_by: str = "unrecorded"
+    # The actor's email as the token asserted it at the time. A label for a
+    # human reading the history, never the identity.
+    started_by_label: str | None = None
     category_scores: list[CategoryScoreOut]
     modules: list[ModuleResultOut]
     findings: list[FindingOut]
@@ -245,6 +252,13 @@ class EvaluationRunSummary(CamelModel):
     evaluator_status: str
     honeypot_fingerprint: str
     evaluation_config_fingerprint: str
+    # Who started this run: `user:<clerk_id>`, `unauthenticated` (no identity
+    # existed to record) or `unrecorded` (the run predates the audit trail).
+    # Three distinct values on purpose -- see `db.models.EvaluationRun`.
+    started_by: str = "unrecorded"
+    # The actor's email as the token asserted it at the time. A label for a
+    # human reading the history, never the identity.
+    started_by_label: str | None = None
     category_scores: list[CategoryScoreOut]
 
 

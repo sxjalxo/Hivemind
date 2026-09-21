@@ -76,8 +76,72 @@ async def _spawn(argv: list[str]):
     )
 
 
+# Every docker verb this application is permitted to use.
+#
+# `run` and `create` are NOT here, and their absence is the point. Creating a
+# container is the one Docker operation that is unconditionally equivalent to
+# root on the host -- `docker run -v /:/host --privileged` needs no exploit,
+# just the ability to make the call -- so no socket proxy, seccomp profile or
+# API policy can make it safe. It can only be not used. The packet capture was
+# the sole caller; it now `exec`s into a sidecar that docker-compose starts
+# with the honeypot's network namespace, which needs no create at all.
+#
+# What remains is bounded by what the target container already is:
+#
+#   inspect   read-only metadata
+#   exec      root INSIDE that container -- the cowrie image is distroless,
+#             unprivileged, and mounts nothing from the host but a read-only
+#             config file
+#   kill      signals a container this deployment declared
+#
+# So a compromised backend can reach into the honeypot and the capture
+# sidecar, which is bad but bounded, rather than into the host, which is not.
+# See the threat model in the README.
+_ALLOWED_VERBS = frozenset({"exec", "inspect", "kill"})
+
+
+class DockerPolicyError(RuntimeError):
+    """A docker command this application is not permitted to run.
+
+    Raised rather than filtered: a caller asking for a verb outside the
+    allowlist has a bug or is being driven by something that does, and
+    silently dropping the call would hide both.
+    """
+
+
+def _check_policy(argv: list[str]) -> None:
+    if not argv or argv[0] != "docker":
+        raise DockerPolicyError(f"not a docker command: {argv[:1]}")
+    verb = argv[1] if len(argv) > 1 else ""
+    if verb not in _ALLOWED_VERBS:
+        raise DockerPolicyError(
+            f"docker {verb!r} is not permitted; this application may only use "
+            f"{sorted(_ALLOWED_VERBS)}. Creating a container is equivalent to "
+            f"root on the host and has no safe form, so it is not used at all."
+        )
+
+
+async def spawn_checked(argv: list[str], **kwargs):
+    """Start a long-running docker command, policy-checked, without awaiting it.
+
+    `run` is for commands that finish and hand back stdout. The packet capture
+    does neither: it streams until it is signalled. It still has to go through
+    the same allowlist, or the one caller that cannot use `run` would be the
+    one place a forbidden verb could slip back in.
+    """
+    _check_policy(argv)
+    return await asyncio.create_subprocess_exec(*argv, **kwargs)
+
+
 async def run(argv: list[str], *, timeout_seconds: float) -> bytes:
     """Run a docker command and return its stdout, or raise.
+
+    Every docker invocation in this application goes through here, and the
+    verb is checked against `_ALLOWED_VERBS` first. That does not defend
+    against an attacker who already has code execution -- they would call the
+    docker CLI directly -- it defends against US: it makes the set of Docker
+    operations this backend performs enumerable, and stops a future caller
+    from quietly reintroducing container creation.
 
     Three things this deliberately does that the obvious version does not:
     stderr is captured rather than sent to DEVNULL, the return code is
@@ -85,6 +149,8 @@ async def run(argv: list[str], *, timeout_seconds: float) -> bytes:
     failed command into empty output that the caller cannot distinguish
     from a real, empty result.
     """
+    _check_policy(argv)
+
     try:
         process = await _spawn(argv)
     except OSError as exc:

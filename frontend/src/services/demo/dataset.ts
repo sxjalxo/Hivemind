@@ -552,6 +552,8 @@ export const analysisFor8F42A1: SessionAnalysis = {
   risk: "high",
   behaviorSummary:
     "The attacker performed system reconnaissance, credential discovery and payload retrieval before attempting execution. Command cadence (2-8s intervals) and the absence of typographical errors indicate scripted, non-interactive automation.",
+  startedBy: "user:user_2xDemoAnalyst",
+  startedByLabel: "analyst@example.com",
   observedBehavior: [
     {
       label: "System reconnaissance",
@@ -1163,6 +1165,8 @@ export const reports: ThreatReport[] = [
  *    long; truncate them for display, never assume a readable tag.
  */
 const evaluationRunA: EvaluationRun = {
+  startedBy: "user:user_2xDemoAnalyst",
+  startedByLabel: "analyst@example.com",
   id: "8f3c1d20-4a55-4f18-9b2e-6c1a77d90a11",
   honeypotId: "hp-cowrie-ssh-01",
   status: "completed",
@@ -1269,6 +1273,8 @@ const evaluationRunA: EvaluationRun = {
  * is no rating for any characteristic and no evaluator model to name.
  */
 const evaluationRunB: EvaluationRun = {
+  startedBy: "unauthenticated",
+  startedByLabel: null,
   id: "1b7e4a09-5d31-42c6-8a10-c9f2b40e5d77",
   honeypotId: "hp-cowrie-ssh-01",
   status: "completed",
@@ -1361,6 +1367,8 @@ const evaluationRunB: EvaluationRun = {
  * measured what they measured; our own orchestration is what failed.
  */
 const evaluationRunC: EvaluationRun = {
+  startedBy: "unrecorded",
+  startedByLabel: null,
   id: "c40a9e63-2f88-4b71-a3d5-0e6b18f42c05",
   honeypotId: "hp-ubuntu-web-01",
   status: "failed",
@@ -1393,6 +1401,8 @@ const toEvaluationSummary = (run: EvaluationRun): EvaluationRunSummary => ({
   honeypotId: run.honeypotId,
   status: run.status,
   startedAt: run.startedAt,
+  startedBy: run.startedBy,
+  startedByLabel: run.startedByLabel,
   finishedAt: run.finishedAt,
   agentModel: run.agentModel,
   evaluatorModel: run.evaluatorModel,

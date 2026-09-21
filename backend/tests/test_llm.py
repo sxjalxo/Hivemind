@@ -67,3 +67,39 @@ def test_valid_classification_is_accepted() -> None:
         ],
     )
     assert result.evidence[0].event_id == "seed-botnet-01-008"
+
+
+def test_an_unbounded_classification_label_is_rejected() -> None:
+    """`classification` is the model's free text, written after it read
+    attacker-chosen commands, and it goes on to be interpolated into the
+    recommend prompt, stored, used as a report title and indexed into
+    Elasticsearch as `ai_classification` -- a `keyword`, where past Lucene's
+    term limit the enrichment write fails and the session stays silently
+    un-enriched. Rejecting it here degrades to the visible "Unclassified"
+    fallback instead.
+    """
+    with pytest.raises(ValidationError):
+        ClassificationResult(
+            classification="A" * 5000,
+            confidence=0.5,
+            risk_score=10,
+            risk="low",
+            behavior_summary="ok",
+            evidence=[EvidenceCitation(event_id="e-1", artifact="ls")],
+        )
+
+
+def test_a_long_behavior_summary_is_still_accepted() -> None:
+    """Deliberately unbounded: `_merge_classifications` concatenates one
+    summary per chunk, so a per-call bound would be breached by our own
+    merge -- a ValidationError in our code, aborting a completed analysis
+    rather than degrading it."""
+    result = ClassificationResult(
+        classification="Automated botnet dropper",
+        confidence=0.5,
+        risk_score=10,
+        risk="low",
+        behavior_summary="B" * 20000,
+        evidence=[EvidenceCitation(event_id="e-1", artifact="ls")],
+    )
+    assert len(result.behavior_summary) == 20000

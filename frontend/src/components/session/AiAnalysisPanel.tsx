@@ -26,6 +26,8 @@ import {
 import { SEVERITY_COLOR } from "@/components/charts/palette";
 import { Button } from "@/components/ui/button";
 import { useAnalysisRun } from "@/hooks/useAnalysisRun";
+import { RunActor } from "@/components/evaluation/RunActor";
+import { useAdminForHoneypot } from "@/hooks/useAdminFor";
 import { isDemoMode } from "@/services";
 import { formatDuration } from "@/utils/format";
 import { cn } from "@/lib/utils";
@@ -40,15 +42,22 @@ import type { EvidenceRef, SessionAnalysis } from "@/types";
  */
 export function AiAnalysisPanel({
   sessionId,
+  honeypotId,
   existing,
   onTechniqueSelect,
 }: {
   sessionId: string;
+  /** Which honeypot this session belongs to. Roles are per-honeypot,
+   *  so the button asks about THIS one, not about admin-anywhere. */
+  honeypotId: string;
   /** A previously stored analysis for this session, if the backend has one. */
   existing?: SessionAnalysis | null;
   onTechniqueSelect?: (techniqueId: string) => void;
 }) {
   const { analysis, isRunning, error, run, analyze, reset } = useAnalysisRun(sessionId);
+  // Presentation only: the backend refuses a viewer regardless. Offering
+  // a button that is certain to 403 is just a worse way to say no.
+  const canAnalyze = useAdminForHoneypot(honeypotId);
   const result = analysis ?? existing ?? null;
 
   return (
@@ -76,7 +85,8 @@ export function AiAnalysisPanel({
           <Button
             size="sm"
             onClick={analyze}
-            disabled={isRunning}
+            disabled={isRunning || !canAnalyze.allowed}
+            title={canAnalyze.title}
             className="bg-ai text-ai-foreground hover:bg-ai/90"
           >
             <Sparkles className={cn("size-3.5", isRunning && "animate-pulse")} />
@@ -324,7 +334,8 @@ function AnalysisResult({
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
         <span className="text-[11px] text-muted-foreground">
           Analysis <Mono className="text-[11px]">{analysis.id}</Mono> of session{" "}
-          <Mono className="text-[11px]">{analysis.sessionId}</Mono>
+          <Mono className="text-[11px]">{analysis.sessionId}</Mono>, run by{" "}
+          <RunActor startedBy={analysis.startedBy} startedByLabel={analysis.startedByLabel} />
         </span>
         <Link
           to="/reports"

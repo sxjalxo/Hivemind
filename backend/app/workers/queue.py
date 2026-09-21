@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from app.auth import authenticate_websocket
 from app.models.analysis import AnalysisProgressEvent
 
 logger = logging.getLogger(__name__)
@@ -68,17 +69,18 @@ class JobQueue:
     def enqueue(self, job_key: str, coro: Coroutine[Any, Any, Any]) -> str:
         """Fire-and-forget `coro`, tracked by a generated job id.
 
-        Not currently wired to any caller: `POST /api/analyze/{session_id}`
-        (`app/routers/analyze.py`) still calls `run_analysis` directly and
-        awaits it inline, matching the brief's own sample route -- so today
-        a slow analysis blocks the HTTP request that triggered it. This
-        method exists because the brief's public interface requires
-        `JobQueue.enqueue(job_key) -> str`; it's kept, documented, and
-        made safe (see `_log_task_exception`) rather than removed, for
-        whoever wires up true background dispatch later. `job_key` is
-        accepted (matching that interface) but not otherwise used here --
-        `coro` is expected to already be the call that will itself publish
-        progress for that job via `publish`.
+        Used by `POST /api/evaluations`, which must return a run id before
+        the run publishes anything on that id's channel. `POST /api/analyze/
+        {session_id}` does NOT use it and awaits `run_analysis` inline: its
+        channel is keyed by the session id, which the caller already holds,
+        so a client subscribes before it posts and no frame can be published
+        to a channel nobody is listening on. Dispatching it would buy only
+        the shorter request, at the cost of a second id for the client to
+        track. See that route's docstring.
+
+        `job_key` is accepted (the interface requires it) but not otherwise
+        used here -- `coro` is expected to already be the call that will
+        itself publish progress for that job via `publish`.
         """
         job_id = str(uuid.uuid4())
         task = asyncio.create_task(coro)
@@ -193,7 +195,21 @@ async def stream_progress(
     one-way by design.
     """
     jobs = queue if queue is not None else get_queue()
-    await websocket.accept()
+
+    # Authenticate BEFORE accepting. A browser cannot set an Authorization
+    # header on a WebSocket handshake, so the token arrives as a subprotocol
+    # (see `app.auth.websocket_token`) and the router-level HTTP dependency
+    # cannot see it -- every progress channel would otherwise be readable by
+    # anyone who could guess a run id, which is a uuid the POST just handed
+    # out. Returns None and closes the socket itself when the token is
+    # missing or bad; nothing further may be sent after that.
+    allowed, subprotocol = await authenticate_websocket(websocket)
+    if not allowed:
+        return
+    # Starlette sends no subprotocol when this is None, which is correct for a
+    # client that offered none. Echoing one that was never offered fails the
+    # handshake in the browser.
+    await websocket.accept(subprotocol=subprotocol)
     async with jobs.subscription(job_key) as events:
         closed = asyncio.ensure_future(_wait_for_disconnect(websocket))
         try:

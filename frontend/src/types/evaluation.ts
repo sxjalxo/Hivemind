@@ -342,6 +342,15 @@ export interface EvaluationRun {
   honeypotId: string;
   status: EvaluationRunStatus;
   startedAt: string;
+  /**
+   * Who started the run: `user:<clerk_id>`, `unauthenticated` (no identity
+   * existed to record) or `unrecorded` (the run predates the audit trail).
+   * Three distinct values deliberately -- a gap in the history is not an
+   * anonymous action.
+   */
+  startedBy: string;
+  /** The actor's email as the token asserted it at the time; never the identity. */
+  startedByLabel: string | null;
   finishedAt: string | null;
   agentModel: string;
   /** Null when the evaluator never ran. */
@@ -375,6 +384,15 @@ export interface EvaluationRunSummary {
   honeypotId: string;
   status: EvaluationRunStatus;
   startedAt: string;
+  /**
+   * Who started the run: `user:<clerk_id>`, `unauthenticated` (no identity
+   * existed to record) or `unrecorded` (the run predates the audit trail).
+   * Three distinct values deliberately -- a gap in the history is not an
+   * anonymous action.
+   */
+  startedBy: string;
+  /** The actor's email as the token asserted it at the time; never the identity. */
+  startedByLabel: string | null;
   finishedAt: string | null;
   agentModel: string;
   evaluatorModel: string | null;

@@ -344,9 +344,13 @@ export const DemoProvider: DataProvider = {
       );
     });
 
-    return () => {
+    // Already listening -- these are local timers, not a socket, so there is
+    // no handshake to wait out. The promise exists to match the interface,
+    // which the FastAPI provider needs (see `subscribeAnalysisProgress` in
+    // provider.ts).
+    return Promise.resolve(() => {
       for (const timer of timers) clearTimeout(timer);
-    };
+    });
   },
 
   async getMitreCoverage(params) {

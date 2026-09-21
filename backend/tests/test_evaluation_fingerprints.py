@@ -26,6 +26,7 @@ BUDGET = AgentBudget(max_commands=40, max_seconds=120)
 def _target(**overrides) -> "fingerprints.Target":
     """The default target, with individual fields overridden per test."""
     base = {
+        "kind": "cowrie",
         "container_name": "hivemind-cowrie-1",
         "host": "cowrie",
         "ssh_port": 2222,
@@ -38,7 +39,7 @@ def _apparatus(**overrides) -> "fingerprints.Apparatus":
     """The default measurement apparatus, overridden field by field."""
     base = {
         "capture_interface": "eth0",
-        "capture_image": "nicolaka/netshoot",
+        "capture_container": "hivemind-capture-1",
         "nmap_timeout_seconds": 120,
         "capture_timeout_seconds": 30,
     }
@@ -109,7 +110,7 @@ _LOADERS = {
         chains,
         "_CHAINS_PATH",
         lambda: (chains._raw, chains.load_chains),
-        '  - id: extra_chain\n    steps: ["whoami"]\n    expected_technique_ids: ["T1033"]\n',
+        '  - id: extra_chain\n    destructive: false\n    steps: ["whoami"]\n    expected_technique_ids: ["T1033"]\n',
     ),
     "rulebook": (
         rules,
@@ -309,13 +310,20 @@ def test_the_declared_version_and_its_hash_describe_the_same_file(
     # disk, so one stored fingerprint could name version 1 and hash version
     # 2. Both must come from the loader's single cached read.
     source = _real_source(name)
+    # Rewrite whatever version the file declares, rather than assuming "1":
+    # bumping a real yaml's version should not break this test, and the
+    # property under test has nothing to do with the current value.
+    declared = re.search(r'^version:\s*"([^"]+)"', source, re.MULTILINE)
+    assert declared, f"{name}.yaml declares no version"
+    original = declared.group(0)
+
     stand_in = tmp_path / f"{name}.yaml"
-    stand_in.write_text(source.replace('version: "1"', 'version: "97"', 1), encoding="utf-8")
+    stand_in.write_text(source.replace(original, 'version: "97"', 1), encoding="utf-8")
     reload_loader(name, stand_in)
     first = fingerprints._config_parts(BUDGET, _apparatus())
     assert first[version_key] == "97"
 
-    stand_in.write_text(source.replace('version: "1"', 'version: "98"', 1), encoding="utf-8")
+    stand_in.write_text(source.replace(original, 'version: "98"', 1), encoding="utf-8")
     reload_loader(name, stand_in)
     second = fingerprints._config_parts(BUDGET, _apparatus())
 
@@ -735,7 +743,10 @@ def test_the_target_carries_no_credential() -> None:
     """
     names = {field.name for field in dataclasses.fields(fingerprints.Target)}
 
-    assert names == {"container_name", "host", "ssh_port", "ssh_username"}
+    assert names == {"kind", "container_name", "host", "ssh_port", "ssh_username"}
+    # The property, not just the current field list: any future field
+    # whose name looks like a credential fails here too.
+    assert not {n for n in names if "password" in n or "secret" in n or "key" in n}
 
 
 def test_the_target_is_frozen() -> None:
@@ -780,7 +791,7 @@ async def test_an_invalid_container_name_still_raises_through_the_target(
     "field,value",
     [
         ("capture_interface", "eth1"),
-        ("capture_image", ""),
+        ("capture_container", "hivemind-capture-other-1"),
         ("nmap_timeout_seconds", 5),
         ("capture_timeout_seconds", 1),
     ],
@@ -859,3 +870,90 @@ async def test_the_apparatus_does_not_touch_the_honeypot_fingerprint(monkeypatch
     second = await fingerprints.honeypot_fingerprint(_target())
 
     assert first == second
+
+
+# --- A4: a target we cannot look inside ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_generic_target_fingerprints_without_touching_docker(monkeypatch) -> None:
+    """A real VM has no image id and no cowrie.cfg.
+
+    The Cowrie path `docker exec`s into the container for both. Running it
+    against a bare host fails with exit 127 on a missing interpreter, which
+    `honeypot_fingerprint` turns into a FingerprintError -- and because
+    fingerprints are a precondition, the run is refused before its row
+    exists. That is the A4 blocker: the experiment cannot even start.
+    """
+
+    async def _must_not_spawn(argv):  # pragma: no cover - asserts absence
+        raise AssertionError(f"docker was invoked for a generic target: {argv}")
+
+    monkeypatch.setattr(container, "_spawn", _must_not_spawn)
+
+    value = await fingerprints.honeypot_fingerprint(
+        _target(kind="generic", container_name=None, host="192.0.2.10", ssh_port=22)
+    )
+
+    algorithm, _, hexdigest = value.partition(":")
+    assert algorithm == "sha256"
+    assert len(hexdigest) == 64
+
+
+@pytest.mark.asyncio
+async def test_two_generic_targets_at_different_addresses_differ(monkeypatch) -> None:
+    """Where it is, is all we have -- so that much must at least be covered."""
+
+    async def _must_not_spawn(argv):  # pragma: no cover - asserts absence
+        raise AssertionError("docker was invoked")
+
+    monkeypatch.setattr(container, "_spawn", _must_not_spawn)
+
+    a = await fingerprints.honeypot_fingerprint(
+        _target(kind="generic", container_name=None, host="192.0.2.10", ssh_port=22)
+    )
+    b = await fingerprints.honeypot_fingerprint(
+        _target(kind="generic", container_name=None, host="192.0.2.11", ssh_port=22)
+    )
+    assert a != b
+
+
+@pytest.mark.asyncio
+async def test_kind_alone_moves_the_honeypot_fingerprint(monkeypatch) -> None:
+    """A Cowrie and a generic host at the same address are not the same thing.
+
+    Without `kind` in the digest they would fingerprint identically whenever
+    the Cowrie path happened to produce the same image and config -- and more
+    importantly, the two runs measured different things (one reset and
+    ran chains, one did neither) while claiming to be comparable.
+    """
+    _fake_docker(monkeypatch, image=b"sha256:aaaa\n", config_digest=b"1111" * 16)
+
+    as_cowrie = await fingerprints.honeypot_fingerprint(_target(kind="cowrie"))
+    as_generic = fingerprints._uninspectable_fingerprint(_target(kind="generic"))
+
+    assert as_cowrie != as_generic
+
+
+def test_the_uninspectable_fingerprint_carries_nulls_not_empty_strings() -> None:
+    """An empty string hashes cleanly and reads as a real, reproducible read.
+
+    That is the silent lie `_container_config_digest` refuses to tell, and it
+    must not come back in through the door for targets we cannot read at all.
+    """
+    import json
+
+    generic = _target(kind="generic", container_name=None)
+    expected = fingerprints._digest(
+        {
+            "image": None,
+            "config": None,
+            "target": dataclasses.asdict(generic),
+        }
+    )
+    assert fingerprints._uninspectable_fingerprint(generic) == expected
+    # And it is genuinely distinct from the empty-string spelling.
+    assert fingerprints._uninspectable_fingerprint(generic) != fingerprints._digest(
+        {"image": "", "config": "", "target": dataclasses.asdict(generic)}
+    )
+    json.dumps(dataclasses.asdict(generic))  # the payload must stay serialisable

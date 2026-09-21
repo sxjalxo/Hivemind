@@ -1,4 +1,4 @@
-import { API_BASE_URL, endpoints, request } from "./api";
+import { API_BASE_URL, endpoints, request, wsProtocols } from "./api";
 import type { AnalysisProgressEvent, DashboardData, DataProvider, Unsubscribe } from "./provider";
 import type {
   AttackSession,
@@ -77,15 +77,38 @@ export const FastAPIProvider: DataProvider = {
    * UI to animate the stepper from real backend stages instead of falling
    * back to an indeterminate running state.
    */
-  subscribeAnalysisProgress(sessionId, onEvent): Unsubscribe {
+  async subscribeAnalysisProgress(sessionId, onEvent): Promise<Unsubscribe> {
     const wsBase = API_BASE_URL.replace(/^http/, "ws");
-    const socket = new WebSocket(`${wsBase}${endpoints.analyze(sessionId)}/progress`);
+    const socket = new WebSocket(
+      `${wsBase}${endpoints.analyze(sessionId)}/progress`,
+      await wsProtocols(),
+    );
 
     socket.onmessage = (message) => {
       onEvent(JSON.parse(message.data as string) as AnalysisProgressEvent);
     };
 
-    return () => socket.close();
+    // Resolve only once the socket is actually open. `new WebSocket` returns
+    // immediately with the handshake still in flight, so posting right after
+    // this call raced the connection: the backend publishes stage 0 as soon
+    // as the analysis starts and the channel has no replay, so whichever
+    // early stages landed before the handshake finished were gone. It looked
+    // like a flickering stepper rather than a bug, and it varied run to run.
+    return new Promise<Unsubscribe>((resolve) => {
+      const done = () => resolve(() => socket.close());
+      if (socket.readyState === WebSocket.OPEN) {
+        done();
+        return;
+      }
+      socket.addEventListener("open", done, { once: true });
+      // Resolve on failure too, never reject. A progress channel that could
+      // not connect must not stop the analysis from running -- the UI already
+      // knows how to show an indeterminate state, and the result is read back
+      // from the API regardless. Rejecting here would turn a cosmetic
+      // degradation into a failed analysis.
+      socket.addEventListener("error", done, { once: true });
+      socket.addEventListener("close", done, { once: true });
+    });
   },
 
   getMitreCoverage: (params) =>
@@ -137,9 +160,12 @@ export const FastAPIProvider: DataProvider = {
    * terminal `failed` frame, which reports a run that never got a row and so
    * has no GET to read back.
    */
-  subscribeEvaluationProgress(runId, onEvent): Unsubscribe {
+  async subscribeEvaluationProgress(runId, onEvent): Promise<Unsubscribe> {
     const wsBase = API_BASE_URL.replace(/^http/, "ws");
-    const socket = new WebSocket(`${wsBase}${endpoints.evaluation(runId)}/progress`);
+    const socket = new WebSocket(
+      `${wsBase}${endpoints.evaluation(runId)}/progress`,
+      await wsProtocols(),
+    );
 
     socket.onmessage = (message) => {
       onEvent(JSON.parse(message.data as string) as EvaluationProgressEvent);

@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import select
 
+from app.auth import Actor
 from app.db.models import Report as ReportRow
 from app.db.session import get_session_factory
 from app.models.report import (
@@ -16,7 +17,7 @@ from app.services.intel import list_indicators
 from app.services.session_builder import build_timeline, get_session
 
 
-async def create_report(session_id: str) -> ThreatReport:
+async def create_report(session_id: str, actor: Actor | None = None) -> ThreatReport:
     """Assemble a report from the session's latest analysis.
 
     If the session has never been analyzed, analyze it first — a report
@@ -24,7 +25,11 @@ async def create_report(session_id: str) -> ThreatReport:
     """
     analysis = await latest_for_session(session_id)
     if analysis is None:
-        await run_analysis(session_id)
+        # The analysis this triggers is credited to whoever asked for the
+        # report -- it is the same action from the operator's side, and
+        # recording it as `unrecorded` would put a hole in the trail at
+        # exactly the point where one request did two things.
+        await run_analysis(session_id, actor=actor)
         analysis = await latest_for_session(session_id)
     if analysis is None:
         raise ValueError(f"could not analyze session {session_id}")

@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useAdminForSession } from "@/hooks/useAdminFor";
 import { provider, isDemoMode } from "@/services";
 import { reportQueries } from "@/services/reports";
 import { sessionQueries } from "@/services/sessions";
@@ -53,6 +54,10 @@ function ReportsPage() {
   const sessions = useQuery(sessionQueries.list());
   const [generated, setGenerated] = useState<ThreatReport | null>(null);
   const [target, setTarget] = useState(search.session ?? "");
+  // Report creation runs an analysis when the session has none, so it is an
+  // admin action on the backend, scoped to the session's honeypot.
+  // Presentation only -- it 403s either way.
+  const canGenerate = useAdminForSession(target);
 
   const generate = useMutation<ThreatReport, Error, string>({
     mutationFn: (sessionId) => provider.createReport(sessionId),
@@ -110,7 +115,8 @@ function ReportsPage() {
           </Select>
           <Button
             onClick={() => target && generate.mutate(target)}
-            disabled={!target || generate.isPending}
+            disabled={!target || generate.isPending || !canGenerate.allowed}
+            title={!target ? undefined : canGenerate.title}
           >
             {generate.isPending ? (
               <Loader2 className="size-3.5 animate-spin" />

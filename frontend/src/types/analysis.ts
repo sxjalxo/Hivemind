@@ -53,6 +53,14 @@ export interface SessionAnalysis {
   riskScore: number;
   risk: RiskLevel;
   behaviorSummary: string;
+  /**
+   * Who ran it: `user:<clerk_id>`, `unauthenticated` (no identity existed to
+   * record) or `unrecorded` (predates the audit trail). Three distinct values
+   * -- a gap in the history is not an anonymous action.
+   */
+  startedBy: string;
+  /** The actor's email as the token asserted it; never the identity. */
+  startedByLabel: string | null;
   observedBehavior: { label: string; evidence: EvidenceRef[] }[];
   suspiciousIndicators: { label: string; severity: RiskLevel; evidence: EvidenceRef[] }[];
   recommendedActions: { priority: "P1" | "P2" | "P3"; action: string; rationale: string }[];

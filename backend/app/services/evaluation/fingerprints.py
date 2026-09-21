@@ -59,7 +59,8 @@ class Target:
     at whatever unrelated point the settings were first read.
     """
 
-    container_name: str
+    kind: str
+    container_name: str | None
     host: str
     ssh_port: int
     ssh_username: str
@@ -82,7 +83,18 @@ class Apparatus:
     """
 
     capture_interface: str
-    capture_image: str
+    # The capture sidecar, replacing the old `capture_image`. The backend no
+    # longer chooses an image -- compose declares the container and the
+    # backend execs into it -- so fingerprinting an image setting would claim
+    # to describe something this side does not control. What IS covered is
+    # which sidecar was used; the image behind it is the operator's, the same
+    # accepted gap as the honeypot container's writable layer.
+    #
+    # Renaming the field moves every stored evaluation-config fingerprint
+    # once. That is this module's preferred direction of error: one lost
+    # comparison, rather than two runs measured through different apparatus
+    # comparing as though they were the same.
+    capture_container: str | None
     nmap_timeout_seconds: int
     capture_timeout_seconds: int
 
@@ -326,6 +338,35 @@ async def _container_config_digest(name: str, timeout_seconds: float) -> str:
     return digest
 
 
+def _uninspectable_fingerprint(target: Target) -> str:
+    """The fingerprint of a target we cannot look inside.
+
+    A `generic` target -- a real VM, a bare host, another team's decoy -- has
+    no image id to read and no `cowrie.cfg` to digest. This covers WHERE it
+    is and what kind of thing it is, and nothing about what it CONTAINS.
+
+    That limit is stated rather than hidden, because it is the dangerous
+    direction this module's own preamble names: a fingerprint that stays
+    stable when it should have moved merges two different honeypots into one
+    trend line silently. Reinstall a generic target between two runs,
+    reconfigure its services, patch its kernel -- the fingerprint does not
+    move, and the comparison view will call the delta attributable. It is
+    not. **Two runs against a generic target are comparable only insofar as
+    the operator did not change it, and nothing here can check that.**
+
+    `image` and `config` are carried as explicit nulls rather than omitted or
+    empty-stringed. Omitting them would make this digest collide with a
+    hypothetical future payload shape; an empty string is precisely the
+    silent lie `_container_config_digest` refuses to tell. A null says "there
+    was nothing to read", which is what happened.
+
+    It cannot raise. There is no subprocess, nothing to time out, nothing to
+    swallow -- so unlike the Cowrie path there is no failure to convert into
+    a `FingerprintError`.
+    """
+    return _digest({"image": None, "config": None, "target": asdict(target)})
+
+
 async def honeypot_fingerprint(
     target: Target, timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
 ) -> str:
@@ -373,8 +414,11 @@ async def honeypot_fingerprint(
     fingerprint identically. The config is therefore hashed by the
     container's own interpreter; see `container.CONTAINER_PYTHON`.
     """
+    if target.kind != "cowrie":
+        return _uninspectable_fingerprint(target)
+
     name = target.container_name
-    if not container.CONTAINER_NAME.fullmatch(name):
+    if not name or not container.CONTAINER_NAME.fullmatch(name):
         raise FingerprintError(f"invalid container name: {name!r}")
 
     try:

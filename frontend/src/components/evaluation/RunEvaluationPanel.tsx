@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useEvaluationRun } from "@/hooks/useEvaluationRun";
+import { useAdminForHoneypot } from "@/hooks/useAdminFor";
 import { honeypotQueries } from "@/services/honeypots";
 import { EVALUATION_STAGE_COUNT, RUN_STATUS_LABELS } from "@/services/evaluation";
 import { cn } from "@/lib/utils";
@@ -34,6 +35,11 @@ export function RunEvaluationPanel() {
   const [target, setTarget] = useState<string>("");
   const { runId, phase, progress, run, dispatchError, startFailure, isBusy, start, reset } =
     useEvaluationRun();
+  // A run RESETS the honeypot's container and executes attack chains, so
+  // this is the control most worth not offering to a viewer -- and roles
+  // are per-honeypot, so the question is about the SELECTED one, not about
+  // holding admin somewhere.
+  const canRun = useAdminForHoneypot(target || undefined);
 
   return (
     <Panel
@@ -66,7 +72,8 @@ export function RunEvaluationPanel() {
         <Button
           size="sm"
           className="h-9"
-          disabled={target === "" || isBusy}
+          disabled={target === "" || isBusy || !canRun.allowed}
+          title={target === "" ? undefined : canRun.title}
           onClick={() => start(target)}
         >
           <FlaskConical className={cn("size-3.5", isBusy && "animate-pulse")} aria-hidden />

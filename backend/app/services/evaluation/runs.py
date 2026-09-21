@@ -65,15 +65,12 @@ that died before any `finally` could run at all.
 
 import asyncio
 import logging
-import time
 import uuid
-from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from pydantic import BaseModel
 from sqlalchemy import delete, select
 
+from app.auth import Actor
 from app.config import get_settings
 from app.db.models import (
     Characteristic,
@@ -85,35 +82,22 @@ from app.db.models import (
     EvaluationProbeResult,
     EvaluationRun,
     EvaluatorStatus,
-    EvidenceKind,
     FactStatus,
     ModuleStatus,
     RunStatus,
 )
 from app.db.session import get_session_factory
-from app.es.client import get_es
 from app.models.evaluation import (
     EVALUATION_STAGES,
-    CategoryScoreOut,
-    ChainStepOut,
     EvaluationProgressEvent,
-    EvaluationRunOut,
-    EvaluationRunSummary,
-    EvidenceOut,
-    FindingOut,
     LiveEvaluationMetrics,
-    ModuleResultOut,
-    ProbeResultOut,
-    FindingLifecycleOut,
-    RunComparison,
 )
 from app.services.chunking import MAX_ITEM_CHARS, truncate_text
-from app.services.compaction import CompactedCommand
 from app.services.evaluation import agent as agent_module
+from app.services.evaluation import chain_runner
 from app.services.evaluation import (
     finding_keys,
     fingerprints,
-    lifecycle,
     probes,
     sanity,
     scoring,
@@ -121,9 +105,18 @@ from app.services.evaluation import (
 )
 from app.services.evaluation.agent import AgentBudget, EvaluationTarget
 from app.services.evaluation.evaluator import EvidenceItem, evaluate_characteristic
+from app.services.evaluation.findings import (
+    contradiction_findings as _contradiction_findings,
+)
+from app.services.evaluation.findings import _chain_summary, _evidence_for
+from app.services.evaluation.findings import _probe_summary, _severity_for
+from app.services.evaluation.findings import fact_findings as _fact_findings
+from app.services.evaluation.findings import flush_findings as _flush_findings
+from app.services.evaluation.findings import stage_finding as _stage_finding
 from app.services.evaluation.outcomes import ModuleOutcome
 from app.services.evaluation.reset import ResetBoundaryError, ResetError, reset_target
-from app.services.evaluation.static import chains as chains_module
+from app.services.evaluation.state import PendingFinding, RunNotFoundError
+from app.services.evaluation.state import Collected as _Collected
 from app.services.evaluation.static import nmap as nmap_module
 from app.services.evaluation.static import tcpdump
 from app.services.evaluation.static.chains import ChainStepResult
@@ -140,6 +133,7 @@ __all__ = [
     "compare_runs",
     "delete_run",
     "is_running",
+    "list_run_summaries",
     "list_runs",
     "load_run",
     "reconcile_orphaned_runs_at_startup",
@@ -175,14 +169,6 @@ MAX_PACKAGE_CHARS = 60_000
 MIN_ITEM_CHARS = 400
 TRUNCATION_NOTICE_ID = "package-truncation-notice"
 
-# --- chain read-back ---------------------------------------------------
-#
-# Reset deliberately PRESERVES cowrie.json (it is the source of every session
-# this whole system analyses), and does not restart Cowrie. So the log still
-# holds run A's commands when run B starts, and the read-back must be scoped
-# or run B verifies its chains against run A's events.
-CHAIN_INGEST_TIMEOUT_SECONDS = 30.0
-CHAIN_INGEST_POLL_SECONDS = 1.0
 # --- stale-run reconciliation ------------------------------------------
 #
 # A run that dies between its INSERT and `_persist` -- the process is killed,
@@ -200,13 +186,6 @@ STALE_RUN_MARGIN_SECONDS = 600
 # `ByokClient` gives httpx a 300s timeout and `_evaluate` issues one call per
 # characteristic, sequentially, with no retry.
 _EVALUATOR_WORST_CASE_SECONDS = 300 * len(Characteristic)
-# Cowrie stamps `@timestamp` from the container's clock and Filebeat ships
-# asynchronously. The window is widened by this much on both sides so a small
-# clock offset cannot drop a command that really was executed -- being
-# narrow here would blame the honeypot for our own skew. Over-inclusion is
-# then closed off separately: only commands whose text is one of the chain's
-# own declared steps are fed to `verify_chain`.
-CHAIN_CLOCK_SKEW_SECONDS = 5
 
 
 class TargetUnreachableError(RuntimeError):
@@ -226,57 +205,6 @@ class TargetUnreachableError(RuntimeError):
     """
 
 
-class RunNotFoundError(LookupError):
-    """No evaluation run with that id."""
-
-
-class ChainRun(BaseModel):
-    """Chain results plus how the chain stage itself went.
-
-    `_run_chains` may also return a bare `list[ChainStepResult]`; see
-    `_as_chain_run`. Two shapes are accepted because the stage has to report
-    an ingest timeout (which is OUR failure, not the honeypot's) without
-    forcing every caller and stub to construct a wrapper.
-    """
-
-    results: list[ChainStepResult] = []
-    module_status: str = ModuleStatus.COMPLETED
-    detail: str | None = None
-
-
-@dataclass
-class PendingFinding:
-    """A finding and the evidence that grounds it, kept together.
-
-    Migration `ad6b0d86d035` installs a CONSTRAINT TRIGGER ... DEFERRABLE
-    INITIALLY DEFERRED that rejects any `evaluation_findings` row reaching
-    COMMIT with no `evaluation_evidence`. It fires at COMMIT, not at INSERT,
-    so a finding and its evidence must be written in ONE transaction. Pairing
-    them in one object is what makes "commit a finding, then add evidence"
-    unrepresentable in this module.
-    """
-
-    finding: EvaluationFinding
-    evidence: list[EvaluationEvidence]
-
-
-@dataclass
-class _Collected:
-    """Everything gathered so far, so a `finally` can persist a partial run."""
-
-    modules: list[EvaluationModuleResult] = field(default_factory=list)
-    probe_rows: list[EvaluationProbeResult] = field(default_factory=list)
-    chain_rows: list[EvaluationChainStep] = field(default_factory=list)
-    scores: dict[str, float | None] = field(default_factory=dict)
-    ratings: dict[str, float] = field(default_factory=dict)
-    findings: list[PendingFinding] = field(default_factory=list)
-    evaluator_status: str = EvaluatorStatus.UNAVAILABLE
-    evaluator_model: str | None = None
-    # probe row id -> the characteristic it belongs to, so evidence packages
-    # can be assembled per characteristic without a second pass over probes.
-    characteristic_by_probe_row: dict[uuid.UUID, str] = field(default_factory=dict)
-
-
 # --- seams -------------------------------------------------------------
 #
 # Thin module-level indirections so tests can replace EVERY subprocess and SSH
@@ -285,34 +213,21 @@ class _Collected:
 # session data.
 
 _reset_target = reset_target
+# Chain execution moved to `chain_runner`; this stays a seam here because
+# `_execute_run` calls it and the suite patches it by this name. The
+# functions chain_runner calls INTERNALLY are patched on that module.
+_run_chains = chain_runner.run_chains
 _honeypot_fingerprint = fingerprints.honeypot_fingerprint
 _evaluation_config_fingerprint = fingerprints.evaluation_config_fingerprint
 _capture = tcpdump.capture
 _score = scoring.score_characteristics
 
 
-class _NoCapture:
-    """Stands in for a `tcpdump.Capture` that was never started."""
-
-    outcome: ModuleOutcome | None = None
-
-
-@asynccontextmanager
-async def _null_capture(interface: str, timeout_seconds: int):
-    """A capture that captures nothing and claims nothing.
-
-    `outcome is None` is deliberately NOT an `unknown` tcpdump fact: a run
-    with no capture at all made no claim about network activity, which is
-    different from having looked and failed. Nothing is persisted for it.
-    """
-    yield _NoCapture()
-
-
 def _evaluator_client() -> LLMClient | None:
     """The BYOK evaluator, or None. NEVER the local model.
 
-    `llm.get_evaluator_client()` falls back to Ollama; that is right for
-    session analysis and wrong here. The source paper measured sub-70b models
+    `llm.get_recommendation_client()` falls back to Ollama; that is right
+    for the analysis pipeline's recommendation stage and wrong here. The source paper measured sub-70b models
     as returning "only superficial results" for the realism-judgement role,
     and a shallow-but-plausible realism verdict is the exact failure this
     system exists to prevent. No key means `evaluator_status=UNAVAILABLE`,
@@ -331,266 +246,12 @@ def _evaluator_client() -> LLMClient | None:
     return None
 
 
-async def _run_nmap(target: str, timeout_seconds: int) -> ModuleOutcome:
-    return await nmap_module.scan(target, timeout_seconds)
+async def _run_nmap(target: str, timeout_seconds: int, ssh_port: int) -> ModuleOutcome:
+    return await nmap_module.scan(target, timeout_seconds, ssh_port)
 
 
 async def _run_agent(target: EvaluationTarget, budget: AgentBudget) -> ModuleOutcome:
     return await agent_module.run_probes(target, budget)
-
-
-async def _run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
-    """Execute the predefined chains, then verify them from Cowrie's own log.
-
-    Chains are fixed ids from `chains.yaml`, never caller-supplied command
-    sequences: `EvaluationTarget` is built from settings only, so there is no
-    path from an HTTP request to an arbitrary command against an arbitrary
-    host.
-
-    The SSH primitives come from `agent`'s own seams so chain execution
-    inherits the same bounded exit-status wait a probe gets (Cowrie can leave
-    a channel open without ever sending an exit status; see
-    `agent.PER_COMMAND_TIMEOUT_SECONDS`).
-
-    A chain is only verified when every one of its steps was found in the
-    read-back window. A chain whose commands never arrived is OMITTED, and the
-    stage reports TIMEOUT. `verify_chain` hardcodes `not_observed` for a
-    missing technique, justified by "the commands WERE executed and the rules
-    WERE applied" -- that justification fails when we could not read the log
-    at all, and feeding it a partial command list would score our own ingest
-    lag as a honeypot defect. Omitting the chain leaves it `unknown` by
-    absence, which scoring excludes from both numerator and denominator.
-
-    The read-back is scoped to the SOURCE PORT of the session opened here, so
-    a concurrent attacker session cannot complete one of our chains. If that
-    port cannot be determined the read-back is not attempted at all: an
-    unscoped one would attribute somebody else's command to this run, and
-    evidence provenance is the promise this whole system rests on.
-    """
-    loaded = chains_module.load_chains()
-    if not loaded:
-        return ChainRun(results=[], module_status=ModuleStatus.SKIPPED, detail="no chains configured")
-
-    started = datetime.now(timezone.utc)
-    async with agent_module._open_session(target) as session:
-        marker = session.marker
-        for chain in loaded:
-            for step in chain.steps:
-                await agent_module._execute(session, step)
-    finished = datetime.now(timezone.utc)
-
-    session_id = await _discover_cowrie_session_id(honeypot_id, marker, started, finished)
-    if session_id is None:
-        # The commands WERE executed; we simply cannot prove which log entries
-        # are ours. Every chain is left unverified -- `unknown` by absence,
-        # excluded from numerator and denominator alike -- rather than
-        # verified from events that may belong to another session.
-        return ChainRun(
-            results=[],
-            module_status=ModuleStatus.ERROR,
-            detail=(
-                "could not determine the honeypot-side session id for the chain session, "
-                "so the read-back could not be scoped to it; chains were left unverified "
-                "rather than verified from events that may belong to another session"
-            ),
-        )
-
-    wanted = {step for chain in loaded for step in chain.steps}
-    found = await _read_back_commands(honeypot_id, started, finished, wanted, session_id)
-
-    results: list[ChainStepResult] = []
-    incomplete: list[str] = []
-    for chain in loaded:
-        if any(step not in found for step in chain.steps):
-            incomplete.append(chain.id)
-            continue
-        results.extend(chains_module.verify_chain(chain, [found[step] for step in chain.steps]))
-
-    if incomplete:
-        return ChainRun(
-            results=results,
-            module_status=ModuleStatus.TIMEOUT,
-            detail=(
-                f"commands for chain(s) {', '.join(incomplete)} were not indexed within "
-                f"{CHAIN_INGEST_TIMEOUT_SECONDS}s; those chains were left unverified rather "
-                f"than scored as absent"
-            ),
-        )
-    return ChainRun(results=results, module_status=ModuleStatus.COMPLETED)
-
-
-async def _discover_cowrie_session_id(
-    honeypot_id: str, marker: str, start: datetime, end: datetime
-) -> str | None:
-    """Cowrie's own session id for the shell WE opened, or None.
-
-    This is what scopes the chain read-back to our session. Without it, a real
-    attacker running `cd /tmp` or `chmod 777 xmrig` inside our window would
-    complete a chain's `found` set and put a FOREIGN `cowrie_event_id` into
-    `evaluation_chain_steps`, where it is then cited as this run's evidence.
-
-    We find it by looking up the per-session nonce the agent already writes
-    after every command (see `agent._execute`). That nonce is generated here
-    and appears in no other session, so the document carrying it is ours by
-    construction -- it cannot be guessed, reused, or coincidentally matched.
-
-    The local TCP port would be knowable without any lookup, and was used
-    first, but it is simply not the port Cowrie records: the honeypot is
-    reached through a published container port, so Docker re-originates the
-    connection and Cowrie sees the proxy's port, not ours. Measured on this
-    deployment -- we opened from 11024, Cowrie logged 39108 -- which silently
-    matched nothing and left every chain unverified. Cowrie's session id has
-    no such gap between what we can observe and what it records.
-
-    Returns None if the nonce never arrives within the ingest deadline. The
-    caller must NOT fall back to an unscoped read-back.
-    """
-    settings = get_settings()
-    deadline = time.monotonic() + CHAIN_INGEST_TIMEOUT_SECONDS
-    while True:
-        result = await get_es().search(
-            index=settings.es_index,
-            query={
-                "bool": {
-                    "filter": [
-                        {"term": {"honeypot.id": honeypot_id}},
-                        {"term": {"event.action": "cowrie.command.input"}},
-                        {"term": {"labels.seeded": False}},
-                        # Exact-match subfield: the analysed `text` field would
-                        # tokenise the nonce apart.
-                        {"wildcard": {"process.command_line.keyword": f"*{marker}*"}},
-                        {
-                            "range": {
-                                "@timestamp": {
-                                    "gte": _iso(start - timedelta(seconds=CHAIN_CLOCK_SKEW_SECONDS)),
-                                    "lte": _iso(end + timedelta(seconds=CHAIN_CLOCK_SKEW_SECONDS)),
-                                }
-                            }
-                        },
-                    ]
-                }
-            },
-            size=1,
-        )
-        for hit in result["hits"]["hits"]:
-            session_id = (hit["_source"].get("session") or {}).get("id")
-            if session_id:
-                return str(session_id)
-        if time.monotonic() >= deadline:
-            logger.warning(
-                "chain session nonce never reached the index; leaving every chain unverified"
-            )
-            return None
-        await asyncio.sleep(CHAIN_INGEST_POLL_SECONDS)
-
-
-async def _search_commands(
-    honeypot_id: str, start: datetime, end: datetime, session_id: str
-) -> list[dict]:
-    """Cowrie command events for ONE honeypot session inside ONE time window.
-
-    Every filter here is load-bearing:
-
-      * `honeypot.id` -- another sensor's traffic is not this run's.
-      * `labels.seeded: false` -- the demo corpus is indexed into the same
-        index and its synthetic timestamps must never verify a live chain.
-      * `session.id` -- Cowrie's own id for the shell WE opened, found via
-        the per-session nonce (see `_discover_cowrie_session_id`). This is the
-        only filter that separates us from a concurrent attacker: this is a
-        live sensor, and the time window and honeypot id are both things a
-        real session shares with us. Without it, a stranger's `cd /tmp` inside
-        our window completes the `dropper` chain and its event id is stored
-        and cited as our evidence.
-      * the `@timestamp` range -- this is what stops run B reading run A's
-        commands. Reset preserves cowrie.json by design, so the log is NOT
-        empty when a run starts, and a session id identifies one shell rather
-        than one run, so time still has to separate two of OUR OWN runs. Kept
-        as defence in depth alongside the session id.
-    """
-    settings = get_settings()
-    result = await get_es().search(
-        index=settings.es_index,
-        query={
-            "bool": {
-                "filter": [
-                    {"term": {"honeypot.id": honeypot_id}},
-                    {"term": {"event.action": "cowrie.command.input"}},
-                    {"term": {"labels.seeded": False}},
-                    {"term": {"session.id": session_id}},
-                    {
-                        "range": {
-                            "@timestamp": {
-                                "gte": _iso(start - timedelta(seconds=CHAIN_CLOCK_SKEW_SECONDS)),
-                                "lte": _iso(end + timedelta(seconds=CHAIN_CLOCK_SKEW_SECONDS)),
-                            }
-                        }
-                    },
-                ]
-            }
-        },
-        sort=[{"@timestamp": "asc"}],
-        size=1000,
-    )
-    return result["hits"]["hits"]
-
-
-async def _read_back_commands(
-    honeypot_id: str, start: datetime, end: datetime, wanted: set[str], session_id: str
-) -> dict[str, CompactedCommand]:
-    """Poll until every wanted command is indexed, or the deadline passes.
-
-    Filebeat tails cowrie.json asynchronously, so a command executed a moment
-    ago is not yet searchable. Polling rather than sleeping a fixed interval
-    keeps the common case fast and the slow case honest: on timeout the caller
-    reports TIMEOUT rather than treating the gap as a honeypot failure.
-    """
-    deadline = time.monotonic() + CHAIN_INGEST_TIMEOUT_SECONDS
-    found: dict[str, CompactedCommand] = {}
-    while True:
-        for hit in await _search_commands(honeypot_id, start, end, session_id):
-            source = hit["_source"]
-            # The same session scoping the query already applies, re-checked
-            # here on the document itself. The query filter is the efficient
-            # half; this one is the half that cannot be silently lost by a
-            # mapping or pipeline change (an unmapped field makes a term
-            # filter match nothing -- or, on a differently shaped index,
-            # everything). An event we cannot attribute to our own session is
-            # not ours.
-            if (source.get("session") or {}).get("id") != session_id:
-                continue
-            process = source.get("process") or {}
-            command = process.get("command_line")
-            # Only the chain's own declared steps. The window is deliberately
-            # widened for clock skew, and without this an unrelated command
-            # that happened to land inside it could credit the honeypot with a
-            # technique its chain never exercised.
-            if not command or command not in wanted or command in found:
-                continue
-            found[command] = CompactedCommand(
-                event_id=hit["_id"],
-                timestamp=source.get("@timestamp", ""),
-                command=command,
-                # NOTE: no live `cowrie.command.input` document carries
-                # `process.output` (the ingest pipeline maps no such field),
-                # so this is always None on the chain path. Harmless today --
-                # `chains.verify_chain` matches on command text -- but a
-                # future output-matching rule would silently never fire for
-                # chains. Fix it here, not in the rulebook.
-                output_excerpt=process.get("output"),
-            )
-        if len(found) >= len(wanted) or time.monotonic() >= deadline:
-            return found
-        await asyncio.sleep(CHAIN_INGEST_POLL_SECONDS)
-
-
-def _as_chain_run(returned: object) -> ChainRun:
-    if isinstance(returned, ChainRun):
-        return returned
-    return ChainRun(results=list(returned or []))
-
-
-def _iso(moment: datetime) -> str:
-    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _agent_model() -> str:
@@ -716,23 +377,6 @@ def _unknown_probe_observations() -> list[sanity.Observation]:
 # --- evidence packaging ------------------------------------------------
 
 
-def _probe_summary(row: EvaluationProbeResult) -> str:
-    return (
-        f"probe {row.probe_id} (module {row.module}) "
-        f"establishes {row.establishes or 'nothing declared'}; "
-        f"fact_status={row.fact_status}; output: {row.raw_output or '(no output)'}"
-    )
-
-
-def _chain_summary(row: EvaluationChainStep) -> str:
-    return (
-        f"chain {row.chain_id} step {row.step_index} expected "
-        f"{row.expected_technique_id}; fact_status={row.fact_status}; "
-        f"matched_rule={row.matched_rule_id or 'none'}; "
-        f"command: {row.command or '(no matching command)'}"
-    )
-
-
 def _bound_package(items: list[EvidenceItem]) -> list[EvidenceItem]:
     """Bound the WHOLE package, not just each item. See MAX_PACKAGE_CHARS.
 
@@ -784,45 +428,6 @@ def _build_packages(collected: _Collected) -> dict[str, list[EvidenceItem]]:
     return {
         characteristic: _bound_package(items) for characteristic, items in packages.items()
     }
-
-
-def _evidence_for(finding_id: uuid.UUID, cited: list[str]) -> list[EvaluationEvidence]:
-    rows: list[EvaluationEvidence] = []
-    for citation in cited:
-        prefix, _, raw = citation.partition(":")
-        try:
-            row_id = uuid.UUID(raw)
-        except ValueError:
-            # The truncation notice, or anything else that is not a row id.
-            continue
-        if prefix == "probe":
-            rows.append(
-                EvaluationEvidence(
-                    finding_id=finding_id, kind=EvidenceKind.PROBE, probe_result_id=row_id
-                )
-            )
-        elif prefix == "chain":
-            rows.append(
-                EvaluationEvidence(
-                    finding_id=finding_id, kind=EvidenceKind.CHAIN_STEP, chain_step_id=row_id
-                )
-            )
-    return rows
-
-
-def _severity_for(rating: float) -> str:
-    """`EvaluationFinding.severity` is NOT NULL, so a value is required.
-
-    This is a rendering of the evaluator's OWN rating into the severity
-    vocabulary the rest of the system uses, not a second independent
-    judgement. The bands are stated here so the mapping is auditable rather
-    than buried.
-    """
-    if rating < 0.34:
-        return "high"
-    if rating < 0.67:
-        return "medium"
-    return "low"
 
 
 def _aggregate_evaluator_status(statuses: list[str]) -> str:
@@ -943,184 +548,6 @@ async def _evaluate(
         collected.findings.append(PendingFinding(finding=finding, evidence=evidence))
 
     collected.evaluator_status = _aggregate_evaluator_status(statuses)
-
-
-_PROBE_SEVERITY = "medium"
-_CHAIN_SEVERITY = "high"
-
-
-def _fact_findings(run_id: uuid.UUID, collected: _Collected) -> None:
-    """Promote `not_observed` facts into findings.
-
-    No new analysis happens here. These facts were already collected, already
-    scored and already carry a row that grounds them -- they were simply never
-    expressed as findings, so a run on the normal no-BYOK configuration
-    produced nothing a lifecycle could track. The only judgement added is a
-    severity per source.
-
-    `observed` produces nothing: there is no defect. `unknown` produces
-    nothing either, and that is the rule the whole lifecycle rests on --
-    `unknown` means OUR probe failed, not that the honeypot lacks the thing.
-    A finding built from it would enter defect history as a regression on the
-    run it happened and as a fix on the next one, manufacturing both out of an
-    infrastructure failure. Same reason `unknown` is excluded from both sides
-    of the scoring fraction.
-
-    One finding per key. Two rows for one probe -- a retry, a duplicated
-    observation -- would violate the unique index on
-    `(run_id, finding_key)` at FLUSH, taking the whole run's persistence down
-    rather than merely duplicating a row.
-    """
-    seen: set[str] = set()
-
-    def _add(key: str, characteristic: str, severity: str, text: str, evidence) -> None:
-        if key in seen:
-            return
-        seen.add(key)
-        finding = EvaluationFinding(
-            run_id=run_id,
-            characteristic=characteristic,
-            severity=severity,
-            finding=truncate_text(text, MAX_ITEM_CHARS),
-            recommendation=None,
-            source="deterministic",
-            finding_key=key,
-        )
-        collected.findings.append(
-            PendingFinding(finding=finding, evidence=evidence(finding.id))
-        )
-
-    for row in collected.probe_rows:
-        if row.fact_status != FactStatus.NOT_OBSERVED:
-            continue
-        # nmap observations land in `probe_rows` alongside the agent's, so the
-        # module is what separates a missing service from a missing file.
-        is_service = row.module == "nmap"
-        key = (
-            finding_keys.service_key(row.establishes)
-            if is_service
-            else finding_keys.probe_key(row.probe_id, row.establishes)
-        )
-        text = (
-            f"expected service {row.establishes} was not found"
-            if is_service
-            else f"{row.probe_id} did not establish {row.establishes}"
-        )
-        _add(
-            key,
-            collected.characteristic_by_probe_row.get(row.id, Characteristic.CONTEXT.value),
-            _PROBE_SEVERITY,
-            text,
-            lambda finding_id, row=row: [
-                EvaluationEvidence(
-                    finding_id=finding_id,
-                    kind=EvidenceKind.PROBE,
-                    probe_result_id=row.id,
-                )
-            ],
-        )
-
-    for step in collected.chain_rows:
-        if step.fact_status != FactStatus.NOT_OBSERVED:
-            continue
-        _add(
-            finding_keys.chain_key(step.chain_id, step.expected_technique_id),
-            Characteristic.ATTACK_POSSIBILITIES.value,
-            # An attack that cannot be carried out is a larger tell than one
-            # absent file: it is the difference between a honeypot that looks
-            # slightly wrong and one that cannot be used for what an intruder
-            # came to do.
-            _CHAIN_SEVERITY,
-            f"chain {step.chain_id}: expected technique "
-            f"{step.expected_technique_id} was not observed",
-            lambda finding_id, step=step: [
-                EvaluationEvidence(
-                    finding_id=finding_id,
-                    kind=EvidenceKind.CHAIN_STEP,
-                    chain_step_id=step.id,
-                )
-            ],
-        )
-
-
-def _contradiction_findings(
-    run_id: uuid.UUID, collected: _Collected, observations: list[sanity.Observation]
-) -> None:
-    """Two completed probes that disagree about the same canonical fact.
-
-    Deterministic, evidence-grounded and directly attacker-visible: a shell
-    whose `hostname` and `/etc/hostname` disagree is a tell. Severity is
-    `high` for that reason -- it is not a judgement call about realism, it is
-    an internal inconsistency the honeypot itself exhibited.
-    """
-    by_probe_id: dict[str, EvaluationProbeResult] = {}
-    for row in collected.probe_rows:
-        by_probe_id.setdefault(row.probe_id, row)
-
-    for contradiction in sanity.find_contradictions(observations):
-        rows = [by_probe_id.get(probe_id) for probe_id in contradiction.probe_ids]
-        grounded = [row for row in rows if row is not None]
-        if not grounded:
-            continue
-        finding = EvaluationFinding(
-            run_id=run_id,
-            characteristic=Characteristic.SANITY.value,
-            severity="high",
-            finding=truncate_text(
-                f"{contradiction.probe_ids[0]} and {contradiction.probe_ids[1]} disagree about "
-                f"{contradiction.fact}: {contradiction.values[0]!r} vs "
-                f"{contradiction.values[1]!r}",
-                MAX_ITEM_CHARS,
-            ),
-            recommendation=None,
-            source="deterministic",
-            finding_key=finding_keys.sanity_key(
-                contradiction.fact, contradiction.probe_ids
-            ),
-        )
-        collected.findings.append(
-            PendingFinding(
-                finding=finding,
-                evidence=[
-                    EvaluationEvidence(
-                        finding_id=finding.id,
-                        kind=EvidenceKind.PROBE,
-                        probe_result_id=row.id,
-                    )
-                    for row in grounded
-                ],
-            )
-        )
-
-
-# --- persistence -------------------------------------------------------
-
-_PENDING_EVIDENCE = "evaluation_pending_evidence"
-
-
-def _stage_finding(db, pending: PendingFinding) -> None:
-    """Queue one finding plus its evidence on `db`. Nothing is written yet.
-
-    The evidence is parked in the session's own scratch space so it cannot
-    be forgotten between the finding's INSERT and the COMMIT the deferred
-    trigger checks at.
-    """
-    db.add(pending.finding)
-    db.info.setdefault(_PENDING_EVIDENCE, []).extend(pending.evidence)
-
-
-async def _flush_findings(db) -> None:
-    """Flush findings, then their evidence, inside the caller's transaction.
-
-    Findings first because `evaluation_evidence.finding_id` is an ordinary,
-    immediate foreign key -- only the "has at least one evidence row" check is
-    deferred. The caller commits; the trigger fires there.
-    """
-    await db.flush()
-    pending = db.info.pop(_PENDING_EVIDENCE, [])
-    for evidence in pending:
-        db.add(evidence)
-    await db.flush()
 
 
 def _established_anything(collected: _Collected) -> bool:
@@ -1249,7 +676,7 @@ async def _force_terminal(run_id: uuid.UUID) -> None:
             run.status = RunStatus.FAILED
             run.finished_at = datetime.now(timezone.utc)
             await db.commit()
-    except Exception:  # noqa: BLE001
+    except Exception:
         logger.exception("could not mark run %s terminal", run_id)
 
 
@@ -1269,7 +696,7 @@ def _stale_run_cutoff() -> datetime:
         settings.evaluation_capture_timeout_seconds
         + settings.evaluation_nmap_timeout_seconds
         + settings.evaluation_agent_max_seconds
-        + CHAIN_INGEST_TIMEOUT_SECONDS
+        + chain_runner.CHAIN_INGEST_TIMEOUT_SECONDS
         + _EVALUATOR_WORST_CASE_SECONDS
         + STALE_RUN_MARGIN_SECONDS
     )
@@ -1402,9 +829,19 @@ async def _execute_run(
     target: EvaluationTarget,
     budget: AgentBudget,
     collected: _Collected,
-    capture_interface: str | None = None,
+    interface: str,
+    capture_container: str | None,
 ) -> None:
     """Run every module, then score and evaluate what they established.
+
+    `interface` and `capture_container` are required and come from the
+    resolved target, never from settings. The interface used to default to
+    `settings.evaluation_capture_interface` for "callers that predate
+    per-honeypot targets" -- there are none, `start_run` is the only caller --
+    and the capture's CONTAINER was read from settings even further down, in
+    `tcpdump._spawn`, which is how a run against one honeypot came to count
+    another's packets. Both now travel the same path as everything else the
+    run says it measured.
 
     Two results are deliberately NOT allowed to depend on this frame finishing
     cleanly, because both are measurements the run really made:
@@ -1426,10 +863,6 @@ async def _execute_run(
     actually propagating and misreport the cause of the run's failure.
     """
     settings = get_settings()
-    # Falls back only for callers that predate per-honeypot targets; start_run
-    # always passes the interface the fingerprint recorded, so the capture
-    # cannot listen on a different one than the run claims.
-    interface = capture_interface or settings.evaluation_capture_interface
     by_probe_id = {probe.id: probe.characteristic for probe in probes.load_probes()}
     observations_by_characteristic: dict[str, list[sanity.Observation]] = {}
     all_observations: list[sanity.Observation] = []
@@ -1438,7 +871,7 @@ async def _execute_run(
     # Bound before the `async with` so `_finalize` is safe even when
     # `_capture.__aenter__` itself raises (`tcpdump.Capture.start` catches
     # only OSError; anything else propagates and `cap` is never assigned).
-    cap: _NoCapture | tcpdump.Capture = _NoCapture()
+    cap: tcpdump.Capture | None = None
 
     def record(outcome: ModuleOutcome, module_target: str, started: datetime) -> None:
         _record_outcome(
@@ -1461,13 +894,13 @@ async def _execute_run(
             # here rather than after the `async with` is what stops a
             # propagating exception from dropping it. Recording it before
             # scoring is also what lets it be scored at all.
-            if cap.outcome is not None:
+            if cap is not None and cap.outcome is not None:
                 record(
                     cap.outcome,
                     interface,
                     datetime.now(timezone.utc),
                 )
-        except Exception:  # noqa: BLE001 - see this function's contract
+        except Exception:
             logger.exception("could not record the capture outcome on run %s", run_id)
         try:
             collected.scores = _score(observations_by_characteristic, chain_results)
@@ -1475,7 +908,7 @@ async def _execute_run(
             # chains (`scoring.py` adds the key only `if chain_results:`).
             # Nothing reads it by name, so its absence stays an absence: no
             # KeyError, and never a 0.0 conjured to fill the gap.
-        except Exception:  # noqa: BLE001 - see this function's contract
+        except Exception:
             # Scoring is a pure function over observations, so a failure here
             # is entirely ours. The probe and chain rows it would have scored
             # are already collected and still persist, and `_run_status` reads
@@ -1485,8 +918,12 @@ async def _execute_run(
 
     await _emit(run_id, 0)
     try:
+        # `capture_container` may be None -- a generic target is a bare host
+        # or a VM and has no sidecar. `tcpdump.capture` handles that itself
+        # and yields an outcome of None, so there is one capture seam here
+        # rather than two and a ternary to choose between them.
         async with _capture(
-            interface, settings.evaluation_capture_timeout_seconds
+            interface, settings.evaluation_capture_timeout_seconds, capture_container
         ) as started_capture:
             cap = started_capture
             # nmap
@@ -1494,11 +931,15 @@ async def _execute_run(
             await _emit(run_id, 1)
             try:
                 record(
-                    await _run_nmap(target.host, settings.evaluation_nmap_timeout_seconds),
+                    await _run_nmap(
+                        target.host,
+                        settings.evaluation_nmap_timeout_seconds,
+                        target.port,
+                    ),
                     target.host,
                     started,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("nmap stage failed on run %s", run_id)
                 collected.modules.append(
                     _module_row(run_id, "nmap", ModuleStatus.ERROR, str(exc), started)
@@ -1509,7 +950,7 @@ async def _execute_run(
             await _emit(run_id, 2)
             try:
                 record(await _run_agent(target, budget), endpoint, started)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("agent stage failed on run %s", run_id)
                 record(
                     ModuleOutcome(
@@ -1526,14 +967,14 @@ async def _execute_run(
             started = datetime.now(timezone.utc)
             await _emit(run_id, 3, probes_executed=len(collected.probe_rows))
             try:
-                chain_run = _as_chain_run(await _run_chains(target, honeypot_id))
+                chain_run = chain_runner.as_chain_run(await _run_chains(target, honeypot_id))
                 chain_results = chain_run.results
                 collected.modules.append(
                     _module_row(
                         run_id, "chains", chain_run.module_status, chain_run.detail, started
                     )
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 logger.exception("chain stage failed on run %s", run_id)
                 collected.modules.append(
                     _module_row(run_id, "chains", ModuleStatus.ERROR, str(exc), started)
@@ -1583,7 +1024,7 @@ async def _assert_target_reachable(
             asyncio.open_connection(target.host, target.port),
             timeout=timeout_seconds,
         )
-    except (OSError, asyncio.TimeoutError) as exc:
+    except (TimeoutError, OSError) as exc:
         raise TargetUnreachableError(
             f"nothing accepted a connection at {target.host}:{target.port} "
             f"within {timeout_seconds}s ({exc}). "
@@ -1603,17 +1044,29 @@ async def _assert_target_reachable(
     writer.close()
     try:
         await asyncio.wait_for(writer.wait_closed(), timeout=timeout_seconds)
-    except (OSError, asyncio.TimeoutError):
+    except (TimeoutError, OSError):
         pass
 
 
-async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
+async def start_run(
+    honeypot_id: str,
+    run_id: uuid.UUID | None = None,
+    actor: Actor | None = None,
+) -> uuid.UUID:
     """Run one evaluation end to end and return its id.
 
     Raises before any row exists when the preconditions fail -- see the module
     docstring for why reset and the fingerprints abort rather than degrade.
     After the row exists, this never raises: every stage failure is recorded
     and the run always reaches a terminal status.
+
+    `actor` records WHO started this. A run resets a honeypot's container
+    and executes attack chains, so the record should be able to answer
+    that. Omitting it stores `unrecorded` -- the value the migration
+    reserves for runs from before the column existed -- which is correct
+    only for a caller that genuinely predates the audit trail. Every real
+    caller passes one, including the unauthenticated case, which has its
+    own distinct value rather than sharing this one. See `Actor`.
 
     `run_id` lets the CALLER allocate the id. `POST /api/evaluations`
     dispatches this to the background and must return the id immediately,
@@ -1633,6 +1086,7 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
         port=configured.ssh_port,
         username=configured.ssh_username,
         password=configured.ssh_password,
+        kind=configured.kind,
     )
     budget = AgentBudget(
         max_commands=settings.evaluation_agent_max_commands,
@@ -1665,12 +1119,35 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
             else ""
         ),
     )
-    await _reset_target(container)
+    if configured.kind == "cowrie":
+        await _reset_target(container)
+    else:
+        # Nothing to clear, rather than "we gave up on clearing".
+        #
+        # Reset exists because a previous run leaves residue -- downloaded
+        # files and tty recordings -- and run B must not observe run A's
+        # leftovers. Every one of those artefacts is created by a chain step,
+        # and `_run_chains` refuses to execute a destructive chain against a
+        # target that does not simulate commands. A run that writes nothing
+        # leaves nothing behind, so the precondition holds by construction
+        # here instead of by deletion.
+        #
+        # This is load-bearing on that refusal. If a destructive chain ever
+        # becomes runnable against a generic target, this branch is wrong and
+        # comparability across two such runs is gone, silently -- there is no
+        # `docker exec` into a bare host to clear anything with.
+        logger.info(
+            "run for honeypot %s targets kind=%s: skipping container reset, "
+            "which has nothing to clear because no chain with side effects runs there",
+            honeypot_id,
+            configured.kind,
+        )
     # The password is deliberately not carried across: it does not change
     # what the honeypot is, and this value is hashed into a digest that gets
     # stored and displayed. See `fingerprints.Target`.
     honeypot_fp = await _honeypot_fingerprint(
         fingerprints.Target(
+            kind=configured.kind,
             container_name=container,
             host=target.host,
             ssh_port=target.port,
@@ -1681,7 +1158,7 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
         budget,
         fingerprints.Apparatus(
             capture_interface=configured.capture_interface,
-            capture_image=settings.evaluation_capture_image,
+            capture_container=configured.capture_container,
             nmap_timeout_seconds=settings.evaluation_nmap_timeout_seconds,
             capture_timeout_seconds=settings.evaluation_capture_timeout_seconds,
         ),
@@ -1701,6 +1178,8 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
                 evaluator_status=EvaluatorStatus.UNAVAILABLE,
                 honeypot_fingerprint=honeypot_fp,
                 evaluation_config_fingerprint=config_fp,
+                started_by=(actor or Actor.unrecorded()).key,
+                started_by_label=(actor or Actor.unrecorded()).label,
             )
         )
         await db.commit()
@@ -1713,9 +1192,10 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
             target,
             budget,
             collected,
-            capture_interface=configured.capture_interface,
+            interface=configured.capture_interface,
+            capture_container=configured.capture_container,
         )
-    except Exception:  # noqa: BLE001
+    except Exception:
         # Everything already collected is still persisted below. A stage
         # exploding is our failure, not the honeypot's, so it never becomes a
         # score -- it becomes an absent or `unknown` fact.
@@ -1723,7 +1203,7 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
     finally:
         try:
             await _persist(run_id, collected)
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("could not persist evaluation run %s", run_id)
             await _force_terminal(run_id)
 
@@ -1731,453 +1211,6 @@ async def start_run(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.U
 
 
 # --- read side ----------------------------------------------------------
-
-
-def _to_out(
-    run: EvaluationRun,
-    scores: list[EvaluationCategoryScore],
-    modules: list[EvaluationModuleResult],
-    findings: list[EvaluationFinding],
-    evidence_by_finding: dict[uuid.UUID, list[EvaluationEvidence]],
-    chain_steps: list[EvaluationChainStep],
-    probe_rows: list[EvaluationProbeResult],
-) -> EvaluationRunOut:
-    return EvaluationRunOut(
-        id=str(run.id),
-        honeypot_id=run.honeypot_id,
-        status=run.status,
-        started_at=_iso(run.started_at),
-        finished_at=_iso(run.finished_at) if run.finished_at else None,
-        agent_model=run.agent_model,
-        evaluator_model=run.evaluator_model,
-        evaluator_status=run.evaluator_status,
-        honeypot_fingerprint=run.honeypot_fingerprint,
-        evaluation_config_fingerprint=run.evaluation_config_fingerprint,
-        category_scores=[
-            CategoryScoreOut(
-                characteristic=score.characteristic,
-                deterministic_score=score.deterministic_score,
-                evaluator_rating=score.evaluator_rating,
-            )
-            for score in scores
-        ],
-        modules=[
-            ModuleResultOut(
-                module=module.module, module_status=module.module_status, detail=module.detail
-            )
-            for module in modules
-        ],
-        findings=[
-            FindingOut(
-                id=str(finding.id),
-                characteristic=finding.characteristic,
-                severity=finding.severity,
-                finding=finding.finding,
-                recommendation=finding.recommendation,
-                source=finding.source,
-                finding_key=finding.finding_key,
-                evidence=[
-                    EvidenceOut(
-                        kind=item.kind,
-                        es_event_id=item.es_event_id,
-                        chain_step_id=str(item.chain_step_id) if item.chain_step_id else None,
-                        probe_result_id=(
-                            str(item.probe_result_id) if item.probe_result_id else None
-                        ),
-                    )
-                    for item in evidence_by_finding.get(finding.id, [])
-                ],
-            )
-            for finding in findings
-        ],
-        chain_steps=[
-            ChainStepOut(
-                id=str(step.id),
-                chain_id=step.chain_id,
-                step_index=step.step_index,
-                command=step.command,
-                cowrie_event_id=step.cowrie_event_id,
-                matched_rule_id=step.matched_rule_id,
-                expected_technique_id=step.expected_technique_id,
-                fact_status=step.fact_status,
-            )
-            for step in chain_steps
-        ],
-        probe_results=[
-            ProbeResultOut(
-                id=str(row.id),
-                module=row.module,
-                probe_id=row.probe_id,
-                target=row.target,
-                establishes=row.establishes,
-                value=row.value,
-                fact_status=row.fact_status,
-            )
-            for row in probe_rows
-        ],
-    )
-
-
-async def _hydrate(db, run: EvaluationRun) -> EvaluationRunOut:
-    # Every query carries an explicit ORDER BY: without one Postgres makes no
-    # ordering guarantee across repeated SELECTs of the same rows, which shows
-    # up as lists reshuffling between two reads of the same run. See the same
-    # note in `app.services.analyzer._hydrate`.
-    async def rows(model, order):
-        return (
-            (await db.execute(select(model).where(model.run_id == run.id).order_by(*order)))
-            .scalars()
-            .all()
-        )
-
-    scores = await rows(EvaluationCategoryScore, (EvaluationCategoryScore.characteristic,))
-    modules = await rows(
-        EvaluationModuleResult, (EvaluationModuleResult.started_at, EvaluationModuleResult.id)
-    )
-    findings = await rows(
-        EvaluationFinding, (EvaluationFinding.characteristic, EvaluationFinding.id)
-    )
-    chain_steps = await rows(
-        EvaluationChainStep,
-        (EvaluationChainStep.chain_id, EvaluationChainStep.step_index, EvaluationChainStep.id),
-    )
-    probe_rows = await rows(
-        EvaluationProbeResult, (EvaluationProbeResult.module, EvaluationProbeResult.probe_id)
-    )
-
-    evidence_by_finding: dict[uuid.UUID, list[EvaluationEvidence]] = {}
-    if findings:
-        evidence = (
-            (
-                await db.execute(
-                    select(EvaluationEvidence)
-                    .where(EvaluationEvidence.finding_id.in_([f.id for f in findings]))
-                    .order_by(EvaluationEvidence.id)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        for item in evidence:
-            evidence_by_finding.setdefault(item.finding_id, []).append(item)
-
-    return _to_out(
-        run, scores, modules, findings, evidence_by_finding, chain_steps, probe_rows
-    )
-
-
-async def load_run(run_id: uuid.UUID) -> EvaluationRunOut | None:
-    async with get_session_factory()() as db:
-        run = await db.get(EvaluationRun, run_id)
-        return await _hydrate(db, run) if run else None
-
-
-async def list_runs() -> list[EvaluationRunOut]:
-    async with get_session_factory()() as db:
-        runs = (
-            (
-                await db.execute(
-                    select(EvaluationRun).order_by(
-                        EvaluationRun.started_at.desc(), EvaluationRun.id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return [await _hydrate(db, run) for run in runs]
-
-
-def _to_summary(
-    run: EvaluationRun, scores: list[EvaluationCategoryScore]
-) -> EvaluationRunSummary:
-    return EvaluationRunSummary(
-        id=str(run.id),
-        honeypot_id=run.honeypot_id,
-        status=run.status,
-        started_at=_iso(run.started_at),
-        finished_at=_iso(run.finished_at) if run.finished_at else None,
-        agent_model=run.agent_model,
-        evaluator_model=run.evaluator_model,
-        evaluator_status=run.evaluator_status,
-        honeypot_fingerprint=run.honeypot_fingerprint,
-        evaluation_config_fingerprint=run.evaluation_config_fingerprint,
-        category_scores=[
-            CategoryScoreOut(
-                characteristic=score.characteristic,
-                # Carried as stored. None means "not established" and is
-                # never coerced to 0, and the two scores stay separate.
-                deterministic_score=score.deterministic_score,
-                evaluator_rating=score.evaluator_rating,
-            )
-            for score in scores
-        ],
-    )
-
-
-async def list_run_summaries(limit: int) -> list[EvaluationRunSummary]:
-    """History rows, bounded, without the per-run hydration.
-
-    `list_runs` calls `_hydrate` per run: every probe result, finding,
-    evidence row and chain step, at ~7 queries each. A history page needs
-    only what renders a row and a trend, so this is two queries in total
-    however many runs are returned, and `limit` bounds the number of rows.
-    Full hydration stays on `load_run` -- this is an addition, not a
-    replacement.
-    """
-    async with get_session_factory()() as db:
-        rows = (
-            (
-                await db.execute(
-                    select(EvaluationRun)
-                    .order_by(EvaluationRun.started_at.desc(), EvaluationRun.id)
-                    .limit(limit)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if not rows:
-            return []
-        # Explicit ORDER BY for the same reason `_hydrate` gives: without one
-        # Postgres makes no ordering guarantee, and the scores would reshuffle
-        # between two reads of the same run.
-        scores = (
-            (
-                await db.execute(
-                    select(EvaluationCategoryScore)
-                    .where(EvaluationCategoryScore.run_id.in_([row.id for row in rows]))
-                    .order_by(
-                        EvaluationCategoryScore.run_id, EvaluationCategoryScore.characteristic
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    by_run: dict[uuid.UUID, list[EvaluationCategoryScore]] = {}
-    for score in scores:
-        by_run.setdefault(score.run_id, []).append(score)
-    return [_to_summary(row, by_run.get(row.id, [])) for row in rows]
-
-
-async def is_running(honeypot_id: str) -> bool:
-    """One run at a time per honeypot (spec §6.2; Task 15 returns 409).
-
-    Concurrent runs interleave their traffic, which makes tcpdump attribution
-    and the chain read-back's time window meaningless.
-
-    This is a plain read and enforces nothing on its own. Two callers can both
-    see False and both insert, and there is no partial unique index on
-    `(honeypot_id) WHERE status = 'running'` to stop them -- closing that
-    TOCTOU is Task 15's job at the API layer, and it needs a migration this
-    task must not add. What IS guaranteed here is that a True answer can
-    always be cleared: `reconcile_stale_runs`, called on the way into
-    `start_run`, fails any row that can no longer be in progress, so a crashed
-    run cannot lock a honeypot out permanently.
-    """
-    async with get_session_factory()() as db:
-        found = (
-            await db.execute(
-                select(EvaluationRun.id).where(
-                    EvaluationRun.honeypot_id == honeypot_id,
-                    EvaluationRun.status == RunStatus.RUNNING,
-                )
-            )
-        ).first()
-        return found is not None
-
-
-_LIFECYCLE_HISTORY_LIMIT = 20
-
-
-def _run_facts(run: EvaluationRunOut) -> lifecycle.RunFacts:
-    """Reduce a loaded run to what lifecycle resolution needs.
-
-    `fact_status_by_key` is rebuilt with the SAME key functions `_fact_findings`
-    used to write the findings. Deriving it a second way here would let the two
-    drift, and a key that does not match its own finding reads as a defect that
-    is simultaneously present and never checked.
-
-    It is built for every probe and chain row regardless of fact status --
-    that is the point. A key with an `observed` fact is what proves the defect
-    is genuinely gone rather than merely unexamined.
-    """
-    by_key: dict[str, str] = {}
-    for probe in run.probe_results:
-        if probe.establishes is None:
-            continue
-        key = (
-            finding_keys.service_key(probe.establishes)
-            if probe.module == "nmap"
-            else finding_keys.probe_key(probe.probe_id, probe.establishes)
-        )
-        by_key[key] = probe.fact_status
-    for step in run.chain_steps:
-        by_key[finding_keys.chain_key(step.chain_id, step.expected_technique_id)] = (
-            step.fact_status
-        )
-
-    return lifecycle.RunFacts(
-        run_id=run.id,
-        status=run.status,
-        evaluator_status=run.evaluator_status,
-        finding_keys=frozenset(f.finding_key for f in run.findings),
-        fact_status_by_key=by_key,
-    )
-
-
-def _parsed_timestamp(value: str) -> datetime:
-    """`EvaluationRunOut.started_at` is ISO text with a `Z`, not a datetime.
-
-    Passing it straight into a query compares `timestamp with time zone` to
-    `character varying`, which Postgres refuses outright rather than coercing
-    -- the failure is loud, which is the only good thing about it.
-    """
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-async def _lifecycle_history(
-    honeypot_id: str, before: str, exclude: set[str]
-) -> list[lifecycle.RunFacts]:
-    """Earlier runs of the same honeypot, for the `regressed` test only.
-
-    Bounded: a defect that returns after twenty runs is indistinguishable from
-    a new one for any practical purpose, and an unbounded scan would grow with
-    the honeypot's whole history on every comparison.
-
-    `resolve` filters these to completed runs that actually established the
-    fact, so nothing here needs to pre-judge usability -- but the ordering
-    does matter: newest first, so the limit keeps the RECENT past rather than
-    an arbitrary slice of the distant one.
-    """
-    async with get_session_factory()() as db:
-        rows = (
-            (
-                await db.execute(
-                    select(EvaluationRun.id)
-                    .where(
-                        EvaluationRun.honeypot_id == honeypot_id,
-                        EvaluationRun.started_at < _parsed_timestamp(before),
-                    )
-                    .order_by(EvaluationRun.started_at.desc())
-                    .limit(_LIFECYCLE_HISTORY_LIMIT)
-                )
-            )
-            .scalars()
-            .all()
-        )
-
-    history: list[lifecycle.RunFacts] = []
-    for row_id in rows:
-        if str(row_id) in exclude:
-            continue
-        run = await load_run(row_id)
-        if run is not None:
-            history.append(_run_facts(run))
-    return history
-
-
-def _lifecycle_entries(
-    base: EvaluationRunOut,
-    head: EvaluationRunOut,
-    history: list[lifecycle.RunFacts],
-    attributable: bool,
-) -> list[FindingLifecycleOut]:
-    """Join resolution back onto the rows a client can actually render.
-
-    A `fixed` entry has no row in head by definition, so its text and evidence
-    are read from base. Without that it would be a bare key -- the caller
-    would be told something was repaired and have no way to see what.
-    """
-    rows = {
-        base.id: {f.finding_key: f for f in base.findings},
-        head.id: {f.finding_key: f for f in head.findings},
-    }
-
-    entries: list[FindingLifecycleOut] = []
-    for entry in lifecycle.resolve(_run_facts(base), _run_facts(head), history):
-        source_row = rows.get(entry.from_run, {}).get(entry.key)
-        entries.append(
-            FindingLifecycleOut(
-                key=entry.key,
-                status=entry.status,
-                attributable=attributable,
-                is_slot=entry.is_slot,
-                from_run_id=entry.from_run,
-                characteristic=source_row.characteristic if source_row else None,
-                severity=source_row.severity if source_row else None,
-                source=source_row.source if source_row else None,
-                finding=source_row.finding if source_row else None,
-                recommendation=source_row.recommendation if source_row else None,
-                evidence=source_row.evidence if source_row else [],
-            )
-        )
-    return entries
-
-
-async def compare_runs(base_id: uuid.UUID, head_id: uuid.UUID) -> RunComparison:
-    """Delta between two runs, with its attribution stated plainly.
-
-    Never refuses a comparison. `classification` is `same_configuration` only
-    when BOTH fingerprints match, and `configuration_changed` otherwise --
-    but the two fingerprints carry OPPOSITE implications, so `differences`
-    names exactly which moved:
-
-      * `honeypot_fingerprint` -- the honeypot changed. That is the POINT of
-        a comparison: the change is the improvement being measured, and the
-        delta is attributable to it.
-      * `evaluation_config_fingerprint` -- OUR probes, chains, rulebook or
-        budget changed. The two runs asked different questions, so the delta
-        is NOT attributable to the honeypot.
-
-    Both still classify as `configuration_changed` because that contract is
-    fixed downstream; `differences` is what makes the distinction usable.
-    """
-    base = await load_run(base_id)
-    head = await load_run(head_id)
-    if base is None:
-        raise RunNotFoundError(str(base_id))
-    if head is None:
-        raise RunNotFoundError(str(head_id))
-
-    differences: list[str] = []
-    if base.honeypot_fingerprint != head.honeypot_fingerprint:
-        differences.append("honeypot_fingerprint")
-    if base.evaluation_config_fingerprint != head.evaluation_config_fingerprint:
-        differences.append("evaluation_config_fingerprint")
-
-    base_scores = {s.characteristic: s.deterministic_score for s in base.category_scores}
-    head_scores = {s.characteristic: s.deterministic_score for s in head.category_scores}
-    deltas: dict[str, float | None] = {}
-    for characteristic in sorted(set(base_scores) | set(head_scores)):
-        before = base_scores.get(characteristic)
-        after = head_scores.get(characteristic)
-        # None on either side means "not established". A delta against that is
-        # not a delta, and inventing one would resurrect the 0.0 that None
-        # exists to prevent.
-        deltas[characteristic] = (
-            round(after - before, 3) if before is not None and after is not None else None
-        )
-
-    # A defect that vanished across a changed evaluation config may mean we
-    # stopped asking rather than that anyone fixed it -- a probe deleted from
-    # probes.yaml makes its finding disappear and look repaired. The honeypot
-    # fingerprint moving is the opposite: that is the change being measured.
-    attributable = "evaluation_config_fingerprint" not in differences
-    history = await _lifecycle_history(
-        head.honeypot_id, before=base.started_at, exclude={base.id, head.id}
-    )
-
-    return RunComparison(
-        base=base,
-        head=head,
-        classification="same_configuration" if not differences else "configuration_changed",
-        differences=differences,
-        deltas=deltas,
-        findings=_lifecycle_entries(base, head, history, attributable),
-    )
 
 
 async def delete_run(run_id: uuid.UUID) -> None:
@@ -2211,3 +1244,21 @@ async def delete_run(run_id: uuid.UUID) -> None:
         )
         await db.execute(delete(EvaluationRun).where(EvaluationRun.id == run_id))
         await db.commit()
+
+
+# --- read side and comparison, re-exported ------------------------------
+#
+# These moved to `read.py` and `comparison.py` -- see this module's docstring.
+# They are re-exported because `runs.load_run` and `runs.compare_runs` are the
+# names the routers and the test suite already use, and a rename would be
+# churn for no gain. Nothing here is a test seam: the suite patches only
+# orchestration-side names, which stayed put, so patching still reaches the
+# code that calls them.
+
+from app.services.evaluation.comparison import compare_runs
+from app.services.evaluation.read import (
+    is_running,
+    list_run_summaries,
+    list_runs,
+    load_run,
+)

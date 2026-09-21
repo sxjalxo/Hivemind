@@ -34,15 +34,14 @@ channel key nobody could ever use in time. The client flow is: POST, take the
 id, open the WebSocket, receive stages.
 """
 
-import hashlib
 import logging
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket
-from sqlalchemy import text
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.db.session import get_engine
+from app.auth import Actor, assert_admin_for, require_admin
+from app.db import locks
 from app.models.evaluation import (
     EVALUATION_FAILED_STAGE,
     EVALUATION_FAILED_STAGE_INDEX,
@@ -68,80 +67,30 @@ router = APIRouter()
 DEFAULT_RUN_LIMIT = 20
 MAX_RUN_LIMIT = 100
 
+# Keeps this key space disjoint from every other advisory lock the
+# application takes -- see `app.db.locks.lock_key`.
 _LOCK_NAMESPACE = b"hivemind.evaluation.run:"
-
-
-def _lock_key(honeypot_id: str) -> int:
-    """A stable signed 64-bit advisory-lock key for one honeypot.
-
-    `pg_try_advisory_lock` takes a bigint, and honeypot ids are strings, so
-    the id is hashed rather than mapped through a table. The namespace prefix
-    keeps this key space disjoint from any other advisory lock the
-    application might take later against the same database.
-    """
-    digest = hashlib.sha256(_LOCK_NAMESPACE + honeypot_id.encode()).digest()
-    return int.from_bytes(digest[:8], "big", signed=True)
 
 
 async def _acquire_run_lock(honeypot_id: str) -> AsyncConnection | None:
     """Take the honeypot's run lock, or return None if it is already held.
 
-    Why an advisory lock and not the `is_running` SELECT: that check is a
-    TOCTOU with nothing behind it. Two concurrent POSTs both read "not
-    running" -- and, because the run row is not inserted until after the
-    reset and both fingerprints, they stay both-false for seconds -- so both
-    dispatch, both reset the same directory (one then raises a spurious
-    FileNotFoundError) and both run chains into overlapping windows. A
-    partial unique index on `(honeypot_id) WHERE status = 'running'` would
-    also close it, but needs a migration AND still could not cover the gap
-    before the row exists.
+    Why a lock and not the `is_running` SELECT: that check is a TOCTOU with
+    nothing behind it. Two concurrent POSTs both read "not running" -- and,
+    because the run row is not inserted until after the reset and both
+    fingerprints, they stay both-false for seconds -- so both dispatch, both
+    reset the same directory (one then raises a spurious FileNotFoundError)
+    and both run chains into overlapping windows.
 
-    Session-scoped, not `pg_advisory_xact_lock`: the lock must be held from
-    admission until the run finishes, which spans many pooled sessions and
-    minutes of work, so it is pinned to one connection held for the run's
-    lifetime and released in `_release_run_lock`. Postgres drops a session
-    lock when its connection dies, so a killed process cannot leave the
-    honeypot locked out -- unlike a status column, which needs
-    `reconcile_stale_runs` to clear it.
-
-    `commit()` after acquiring so the connection sits idle rather than idle
-    in transaction for the whole run; a session-level advisory lock is not
-    released by a commit.
+    Acquired here and released in `_dispatch`, which is why this uses the
+    `acquire`/`release` primitives rather than `locks.held`: the lock outlives
+    the request that took it.
     """
-    connection = await get_engine().connect()
-    try:
-        held = (
-            await connection.execute(
-                text("SELECT pg_try_advisory_lock(:key)"), {"key": _lock_key(honeypot_id)}
-            )
-        ).scalar()
-        await connection.commit()
-    except BaseException:
-        await connection.close()
-        raise
-    if not held:
-        await connection.close()
-        return None
-    return connection
+    return await locks.acquire(_LOCK_NAMESPACE, honeypot_id)
 
 
 async def _release_run_lock(connection: AsyncConnection, honeypot_id: str) -> None:
-    """Release the lock explicitly, then return the connection to the pool.
-
-    Closing alone is NOT enough: the pool hands the same DBAPI connection out
-    again after a rollback, and a rollback does not release a session-level
-    advisory lock. Skipping the unlock would leak the lock onto an unrelated
-    later caller and 409 that honeypot until the process restarts.
-    """
-    try:
-        await connection.execute(
-            text("SELECT pg_advisory_unlock(:key)"), {"key": _lock_key(honeypot_id)}
-        )
-        await connection.commit()
-    except Exception:  # noqa: BLE001 - the run is over; never mask its outcome
-        logger.exception("could not release the evaluation lock for honeypot %s", honeypot_id)
-    finally:
-        await connection.close()
+    return await locks.release(connection, _LOCK_NAMESPACE, honeypot_id)
 
 
 async def _publish_start_failure(run_id: uuid.UUID, exc: BaseException) -> None:
@@ -168,7 +117,9 @@ async def _publish_start_failure(run_id: uuid.UUID, exc: BaseException) -> None:
         logger.exception("could not publish the start failure for run %s", run_id)
 
 
-async def _dispatch(run_id: uuid.UUID, honeypot_id: str, lock: AsyncConnection) -> None:
+async def _dispatch(
+    run_id: uuid.UUID, honeypot_id: str, lock: AsyncConnection, actor: Actor
+) -> None:
     """Run the evaluation, then release the honeypot's lock, always.
 
     `start_run` never raises once its run row exists, so an exception here
@@ -177,7 +128,7 @@ async def _dispatch(run_id: uuid.UUID, honeypot_id: str, lock: AsyncConnection) 
     nobody cancels cleanly would 409 the honeypot for the process's life.
     """
     try:
-        await runs.start_run(honeypot_id, run_id=run_id)
+        await runs.start_run(honeypot_id, run_id=run_id, actor=actor)
     except Exception as exc:  # noqa: BLE001 - reported, not swallowed
         logger.exception("evaluation run %s never started", run_id)
         await _publish_start_failure(run_id, exc)
@@ -185,8 +136,14 @@ async def _dispatch(run_id: uuid.UUID, honeypot_id: str, lock: AsyncConnection) 
         await _release_run_lock(lock, honeypot_id)
 
 
+# admin, and this is the one that matters most: a run RESETS the honeypot's
+# container and executes attack chains against it. See `analyze` for why
+# the dependency sits on the parameter.
 @router.post("/evaluations", response_model=StartEvaluationResponse, status_code=202)
-async def start_evaluation(request: StartEvaluationRequest) -> StartEvaluationResponse:
+async def start_evaluation(
+    request: StartEvaluationRequest,
+    claims: dict | None = Depends(require_admin),
+) -> StartEvaluationResponse:
     """Accept a run and dispatch it. 202, not 200: it has not happened yet.
 
     404 when the honeypot id is not in the registry -- the only thing the
@@ -205,6 +162,12 @@ async def start_evaluation(request: StartEvaluationRequest) -> StartEvaluationRe
     # equally good proof that the honeypot exists, and is just as server-side,
     # so either admits the id. Containment is unchanged: both sets are
     # operator-controlled, and neither comes from the request.
+    # The specific half of the gate. `require_admin` already refused a caller
+    # who is admin nowhere; this refuses one who is admin somewhere else.
+    # Before the registry lookup, so a viewer on this honeypot cannot use the
+    # 404 to learn which honeypot ids exist.
+    assert_admin_for(claims, request.honeypot_id)
+
     known = {honeypot.id for honeypot in await list_honeypots()}
     known |= set(get_settings().evaluation_targets)
     if request.honeypot_id not in known:
@@ -247,8 +210,12 @@ async def start_evaluation(request: StartEvaluationRequest) -> StartEvaluationRe
     # Allocated HERE, not inside `start_run`, so the client holds the channel
     # key before the run can publish on it.
     run_id = uuid.uuid4()
+    # The verified claims come from the dependency that already gated this
+    # route, so the recorded actor is the one the token proved -- never a
+    # value the caller supplied. A request body cannot name who it is.
     get_queue().enqueue(
-        evaluation_job_key(str(run_id)), _dispatch(run_id, request.honeypot_id, lock)
+        evaluation_job_key(str(run_id)),
+        _dispatch(run_id, request.honeypot_id, lock, Actor.from_claims(claims)),
     )
     return StartEvaluationResponse(run_id=str(run_id))
 

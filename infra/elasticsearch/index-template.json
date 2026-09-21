@@ -1,83 +1,168 @@
 {
-  "index_patterns": ["honeypot-events*"],
+  "index_patterns": [
+    "honeypot-events*"
+  ],
   "template": {
     "settings": {
       "number_of_shards": 1,
       "number_of_replicas": 0,
-      "index.default_pipeline": "cowrie-ecs"
+      "index.default_pipeline": "cowrie-ecs",
+      "index.lifecycle.name": "honeypot-events",
+      "index.lifecycle.rollover_alias": "honeypot-events"
     },
     "mappings": {
       "dynamic": "strict",
       "properties": {
-        "@timestamp": { "type": "date" },
+        "@timestamp": {
+          "type": "date"
+        },
         "source": {
           "properties": {
-            "ip": { "type": "ip" },
-            "port": { "type": "integer" },
-            "country": { "type": "keyword" }
+            "ip": {
+              "type": "ip"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "country": {
+              "type": "keyword"
+            }
           }
         },
         "destination": {
           "properties": {
-            "ip": { "type": "ip" },
-            "port": { "type": "integer" }
+            "ip": {
+              "type": "ip"
+            },
+            "port": {
+              "type": "integer"
+            }
           }
         },
         "event": {
           "properties": {
-            "action": { "type": "keyword" },
-            "category": { "type": "keyword" },
-            "outcome": { "type": "keyword" }
+            "action": {
+              "type": "keyword"
+            },
+            "category": {
+              "type": "keyword"
+            },
+            "outcome": {
+              "type": "keyword"
+            }
           }
         },
-        "network": { "properties": { "protocol": { "type": "keyword" } } },
-        "user": { "properties": { "name": { "type": "keyword" } } },
+        "network": {
+          "properties": {
+            "protocol": {
+              "type": "keyword"
+            }
+          }
+        },
+        "user": {
+          "properties": {
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
         "process": {
           "properties": {
             "command_line": {
               "type": "text",
-              "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } }
+              "fields": {
+                "keyword": {
+                  "type": "keyword",
+                  "ignore_above": 1024
+                }
+              }
             },
-            "output": { "type": "text", "index": false }
+            "output": {
+              "type": "text",
+              "index": false
+            }
           }
         },
         "honeypot": {
           "properties": {
-            "id": { "type": "keyword" },
-            "name": { "type": "keyword" }
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            }
           }
         },
-        "session": { "properties": { "id": { "type": "keyword" } } },
+        "session": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            }
+          }
+        },
         "risk": {
           "properties": {
-            "score": { "type": "integer" },
-            "level": { "type": "keyword" }
+            "score": {
+              "type": "integer"
+            },
+            "level": {
+              "type": "keyword"
+            }
           }
         },
         "mitre": {
           "properties": {
-            "technique_id": { "type": "keyword" },
-            "tactic": { "type": "keyword" }
+            "technique_id": {
+              "type": "keyword"
+            },
+            "tactic": {
+              "type": "keyword"
+            }
           }
         },
-        "ai_classification": { "type": "keyword" },
-        "labels": { "properties": { "seeded": { "type": "boolean" } } },
+        "ai_classification": {
+          "type": "keyword"
+        },
+        "labels": {
+          "properties": {
+            "seeded": {
+              "type": "boolean"
+            }
+          }
+        },
         "file": {
           "properties": {
-            "name": { "type": "keyword" },
-            "hash": { "properties": { "sha256": { "type": "keyword" } } },
-            "size": { "type": "long" },
-            "url": { "type": "keyword" }
+            "name": {
+              "type": "keyword"
+            },
+            "hash": {
+              "properties": {
+                "sha256": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "size": {
+              "type": "long"
+            },
+            "url": {
+              "type": "keyword"
+            }
           }
         },
         "credential": {
           "properties": {
-            "username": { "type": "keyword" },
-            "password": { "type": "keyword" }
+            "username": {
+              "type": "keyword"
+            },
+            "password": {
+              "type": "keyword"
+            }
           }
         }
       }
     }
   },
-  "priority": 200
+  "priority": 200,
+  "_comment": "index.lifecycle.* applies only to indices created AFTER this template is installed, so an existing concrete honeypot-events index is untouched by it -- see app.es.bootstrap._ensure_write_target, which refuses to migrate one automatically. rollover_alias must name the alias the write index sits behind; pointed at a concrete index that is not behind an alias, ILM parks the index in an error state rather than rolling it over."
 }

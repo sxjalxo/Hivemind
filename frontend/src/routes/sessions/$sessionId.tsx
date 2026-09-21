@@ -222,6 +222,7 @@ function SessionInvestigationPage() {
 
       <AiAnalysisPanel
         sessionId={sessionId}
+        honeypotId={session.data.honeypotId}
         existing={storedAnalysis}
         onTechniqueSelect={openTechnique}
       />

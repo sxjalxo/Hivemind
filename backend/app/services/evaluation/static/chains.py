@@ -13,6 +13,12 @@ _CHAINS_PATH = Path(__file__).resolve().parent / "chains.yaml"
 
 class Chain(BaseModel):
     id: str
+    # No default, deliberately. A new chain must state whether its steps have
+    # real side effects; defaulting to False would let one be added that
+    # quietly executes against a real host, and defaulting to True would let
+    # one be added that is needlessly refused. Neither is a decision this
+    # file should make on an author's behalf -- see chains.yaml.
+    destructive: bool
     steps: list[str]
     expected_technique_ids: list[str]
 

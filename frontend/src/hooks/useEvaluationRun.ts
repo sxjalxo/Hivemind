@@ -150,20 +150,41 @@ export function useEvaluationRun() {
   useEffect(() => {
     if (runId === null || settled || failureFrame !== null) return;
     if (!provider.subscribeEvaluationProgress) return;
-    return provider.subscribeEvaluationProgress(runId, (event: EvaluationProgressEvent) => {
-      // Narrow BEFORE touching stageIndex or metrics: the failure frame carries
-      // stageIndex -1 (not a position) and metrics null.
-      if (isEvaluationFailure(event)) {
-        setFailureFrame(event.error);
-        return;
-      }
-      setProgress((previous) => ({
-        ...previous,
-        stageIndex: event.stageIndex,
-        metrics: event.metrics ?? previous.metrics,
-        indeterminate: false,
-      }));
-    });
+
+    // Subscribing is async now: the provider fetches a Clerk session token
+    // before opening the socket. An effect cleanup cannot be a promise, so
+    // the unsubscribe is captured when it resolves -- and `cancelled` covers
+    // the case where the effect is torn down FIRST. Without it a run that
+    // settles while the token is in flight leaves the socket open with
+    // nothing left to close it, which is exactly the subscriber leak
+    // `stream_progress` was written to make unrepeatable.
+    let unsubscribe: (() => void) | null = null;
+    let cancelled = false;
+
+    void provider
+      .subscribeEvaluationProgress(runId, (event: EvaluationProgressEvent) => {
+        // Narrow BEFORE touching stageIndex or metrics: the failure frame carries
+        // stageIndex -1 (not a position) and metrics null.
+        if (isEvaluationFailure(event)) {
+          setFailureFrame(event.error);
+          return;
+        }
+        setProgress((previous) => ({
+          ...previous,
+          stageIndex: event.stageIndex,
+          metrics: event.metrics ?? previous.metrics,
+          indeterminate: false,
+        }));
+      })
+      .then((close) => {
+        if (cancelled) close();
+        else unsubscribe = close;
+      });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, [runId, settled, failureFrame]);
 
   useEffect(() => {

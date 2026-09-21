@@ -1,6 +1,10 @@
 @import "tailwindcss" source(none);
 @source "../src";
 @import "tw-animate-css";
+/* Clerk's shadcn theme, so its modals and UserButton inherit this app's
+   tokens instead of rendering in Clerk's own default palette. Paired with
+   `appearance={{ theme: shadcn }}` on ClerkProvider in routes/__root.tsx. */
+@import "@clerk/ui/themes/shadcn.css";
 
 @custom-variant dark (&:is(.dark *));
 

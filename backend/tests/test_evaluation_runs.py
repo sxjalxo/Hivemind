@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from tests.conftest import null_capture
 import pytest_asyncio
 import sqlalchemy.exc
 from sqlalchemy import select
@@ -19,7 +21,7 @@ from app.db.models import (
     EvidenceKind,
 )
 from app.db.session import get_session_factory
-from app.services.evaluation import runs
+from app.services.evaluation import chain_runner, runs
 
 # ModuleOutcome lives in `outcomes.py`, not in `static/nmap.py`. It is defined
 # once there and imported by nmap, tcpdump and agent alike; importing it from
@@ -75,7 +77,7 @@ async def test_a_failing_stage_is_recorded_and_the_run_still_finishes(
     monkeypatch, started
 ) -> None:
     # Named for what it checks. The capture is a separate guarantee with its
-    # own tests below -- this one installs `_null_capture`, which never
+    # own tests below -- this one installs `null_capture`, which never
     # produces an outcome, so it could not assert anything about one.
     _stub_modules(monkeypatch)
 
@@ -705,10 +707,10 @@ async def test_the_chain_read_back_query_is_scoped_to_our_own_ssh_session(
             captured.update(kwargs)
             return {"hits": {"hits": []}}
 
-    monkeypatch.setattr(runs, "get_es", lambda: _FakeEs())
+    monkeypatch.setattr(chain_runner, "get_es", lambda: _FakeEs())
 
     now = datetime.now(timezone.utc)
-    await runs._search_commands("cowrie-01", now, now, "sess-ours")
+    await chain_runner.search_commands("cowrie-01", now, now, "sess-ours")
 
     filters = captured["query"]["bool"]["filter"]
     assert {"term": {"session.id": "sess-ours"}} in filters
@@ -736,10 +738,10 @@ async def test_the_chain_read_back_ignores_a_command_from_another_session(
     async def _both(*args, **kwargs):
         return [theirs, ours]
 
-    monkeypatch.setattr(runs, "_search_commands", _both)
+    monkeypatch.setattr(chain_runner, "search_commands", _both)
 
     now = datetime.now(timezone.utc)
-    found = await runs._read_back_commands("cowrie-01", now, now, {"cd /tmp"}, "sess-ours")
+    found = await chain_runner.read_back_commands("cowrie-01", now, now, {"cd /tmp"}, "sess-ours")
     assert found["cd /tmp"].event_id == "ours"
 
     # And with only the foreign event present, the step is simply not found:
@@ -747,29 +749,30 @@ async def test_the_chain_read_back_ignores_a_command_from_another_session(
     async def _only_theirs(*args, **kwargs):
         return [theirs]
 
-    monkeypatch.setattr(runs, "_search_commands", _only_theirs)
-    monkeypatch.setattr(runs, "CHAIN_INGEST_TIMEOUT_SECONDS", 0.0)
-    assert await runs._read_back_commands("cowrie-01", now, now, {"cd /tmp"}, "sess-ours") == {}
+    monkeypatch.setattr(chain_runner, "search_commands", _only_theirs)
+    monkeypatch.setattr(chain_runner, "CHAIN_INGEST_TIMEOUT_SECONDS", 0.0)
+    assert await chain_runner.read_back_commands("cowrie-01", now, now, {"cd /tmp"}, "sess-ours") == {}
 
 
 @pytest.mark.asyncio
 async def test_an_undiscoverable_session_leaves_the_chains_unverified(monkeypatch) -> None:
     """If we cannot prove which events are ours, we claim none of them."""
-    monkeypatch.setattr(runs.agent_module, "_open_session", _stub_session)
-    monkeypatch.setattr(runs.agent_module, "_execute", _stub_execute)
+    monkeypatch.setattr(chain_runner.agent_module, "_open_session", _stub_session)
+    monkeypatch.setattr(chain_runner.agent_module, "_execute", _stub_execute)
 
     async def _not_found(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(runs, "_discover_cowrie_session_id", _not_found)
+    monkeypatch.setattr(chain_runner, "discover_cowrie_session_id", _not_found)
 
     async def _must_not_run(*args, **kwargs):  # pragma: no cover - asserts absence
         raise AssertionError("the read-back must not run unscoped")
 
-    monkeypatch.setattr(runs, "_search_commands", _must_not_run)
+    monkeypatch.setattr(chain_runner, "search_commands", _must_not_run)
 
     chain_run = await runs._run_chains(
-        runs.EvaluationTarget(host="h", port=2222, username="root", password="x"), "cowrie-01"
+        runs.EvaluationTarget(host="h", port=2222, username="root", password="x", kind="cowrie"),
+        "cowrie-01",
     )
     assert chain_run.results == []
     assert chain_run.module_status == "error"
@@ -1021,7 +1024,7 @@ def _tcpdump_outcome() -> ModuleOutcome:
 def _draining_capture(outcome: ModuleOutcome):
     """A capture that sets `.outcome` in its own finally, as the real one does.
 
-    `runs._null_capture` never produces an outcome, so no test using it can
+    `null_capture` never produces an outcome, so no test using it can
     say anything about the drained-capture path.
     """
 
@@ -1029,7 +1032,7 @@ def _draining_capture(outcome: ModuleOutcome):
         outcome = None
 
     @asynccontextmanager
-    async def _capture(interface: str, timeout_seconds: int):
+    async def _capture(interface: str, timeout_seconds: int, capture_container: str):
         cap = _Cap()
         try:
             yield cap
@@ -1111,7 +1114,7 @@ def _stub_modules(monkeypatch) -> None:
     # here wait out a connection that was never going to succeed.
     monkeypatch.setattr(runs, "_assert_target_reachable", _noop)
     monkeypatch.setattr(runs, "_honeypot_fingerprint", _fixed("sha256:BASE"))
-    monkeypatch.setattr(runs, "_capture", runs._null_capture)
+    monkeypatch.setattr(runs, "_capture", null_capture)
     monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
 
 
@@ -1526,3 +1529,51 @@ async def test_a_changed_evaluation_config_makes_every_status_unattributable(
     assert "evaluation_config_fingerprint" in comparison.differences
     assert comparison.findings
     assert all(entry.attributable is False for entry in comparison.findings)
+
+
+# --- A4 + B3: a target that is not Cowrie --------------------------------
+
+
+@pytest.mark.asyncio
+async def test_destructive_chains_are_refused_against_a_non_simulating_target(
+    monkeypatch,
+) -> None:
+    """B3. The chains are only safe because Cowrie emulates every command.
+
+    Against a real host `rm -rf /root/.ssh` deletes the host's SSH state and
+    the `echo` installs an attacker-controlled key. Containment stops a
+    CALLER choosing the address; it says nothing about what we do once an
+    operator has configured one, which is what this closes.
+    """
+
+    async def _must_not_open(*args, **kwargs):  # pragma: no cover - asserts absence
+        raise AssertionError("an SSH session was opened against a non-simulating target")
+
+    monkeypatch.setattr(chain_runner.agent_module, "_open_session", _must_not_open)
+
+    chain_run = await runs._run_chains(
+        runs.EvaluationTarget(
+            host="192.0.2.10", port=22, username="root", password="x", kind="generic"
+        ),
+        "vm-baseline",
+    )
+
+    assert chain_run.module_status == "skipped"
+    assert chain_run.results == []
+    # Every chain fact stays ABSENT rather than not_observed: `verify_chain`
+    # hardcodes not_observed on the grounds that the commands were executed,
+    # and here they deliberately were not.
+    assert "not executed" in chain_run.detail.lower()
+    for chain in chain_runner.chains_module.load_chains():
+        if chain.destructive:
+            assert chain.id in chain_run.detail
+
+
+@pytest.mark.asyncio
+async def test_an_evaluation_target_defaults_to_the_conservative_kind() -> None:
+    """A forgotten field must not be what decides whether we destroy a host."""
+    target = runs.EvaluationTarget(host="h", port=22, username="root", password="x")
+
+    assert target.kind == "generic"
+    assert target.simulates_commands is False
+    assert target.has_own_event_log is False

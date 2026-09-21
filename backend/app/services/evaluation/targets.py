@@ -25,12 +25,21 @@ def resolve(honeypot_id: str, settings: Settings) -> HoneypotTarget:
     """
     if not settings.evaluation_targets:
         return HoneypotTarget(
+            # The legacy path names the Cowrie service from this project's
+            # own docker-compose.yml, so it is the one target whose kind we
+            # know rather than have to be told. Every entry in
+            # EVALUATION_TARGETS names an address somebody typed, and
+            # defaults to `cowrie` only because that is what the field's
+            # default says -- see `HoneypotTarget.kind` for why a real host
+            # must be declared `generic`.
+            kind="cowrie",
             host=settings.evaluation_target_host,
             ssh_port=settings.evaluation_ssh_port,
             ssh_username=settings.evaluation_ssh_username,
             ssh_password=settings.evaluation_ssh_password,
             container_name=settings.evaluation_container_name,
             capture_interface=settings.evaluation_capture_interface,
+            capture_container=settings.evaluation_capture_container or None,
         )
 
     try:

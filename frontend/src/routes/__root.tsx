@@ -1,3 +1,11 @@
+import { ClerkProvider } from "@clerk/tanstack-react-start";
+import { shadcn } from "@clerk/ui/themes";
+import type { ComponentProps } from "react";
+
+/** The exact type ClerkProvider accepts for `appearance.theme`. */
+type ClerkBaseTheme = NonNullable<
+  NonNullable<ComponentProps<typeof ClerkProvider>["appearance"]>["theme"]
+>;
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   Outlet,
@@ -118,8 +126,21 @@ function RootShell({ children }: { children: ReactNode }) {
         <HeadContent />
       </head>
       <body>
-        {children}
-        <Scripts />
+        {/* This app is dark-first with its own token set; without a theme
+            Clerk's modals render in their default palette and read as a
+            third-party overlay dropped on top of the console. */}
+        {/* The cast is a library type mismatch, not a lie about the value.
+            This project sets `exactOptionalPropertyTypes: true`, and Clerk's
+            `BaseTheme` declares `cssLayerName?: string` while the shipped
+            `shadcn` theme types it `string | undefined` -- which that flag
+            treats as incompatible with an optional property. The object is
+            exactly what ClerkProvider expects at runtime; loosening the
+            tsconfig for one import would cost the whole codebase its
+            strictness. */}
+        <ClerkProvider appearance={{ theme: shadcn as ClerkBaseTheme }}>
+          {children}
+          <Scripts />
+        </ClerkProvider>
       </body>
     </html>
   );

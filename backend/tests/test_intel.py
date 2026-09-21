@@ -589,3 +589,156 @@ async def test_an_llm_sourced_mapping_is_never_marked_observed() -> None:
             if row is not None:
                 await db.delete(row)
                 await db.commit()
+
+
+# --- A6: two analyses at once ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_correlation_of_a_shared_value_does_not_raise() -> None:
+    """Every session records its attacker's IP, so any two analyses of
+    sessions from the same attacker collide on that indicator.
+
+    The old SELECT-then-INSERT had both reads return "not there" and both
+    inserts fire; the loser violated uq_indicator_type_value, rolling back a
+    whole analysis that had already done its work and surfacing as a 500.
+    """
+    import asyncio
+
+    value = f"198.51.100.{uuid.uuid4().int % 250}"
+    extracted = [(
+        {"type": "ip", "value": value},
+        [EvidenceCitation(event_id="e-1", artifact=f"connection from {value}")],
+    )]
+    session_a = f"test-race-a-{uuid.uuid4().hex[:8]}"
+    session_b = f"test-race-b-{uuid.uuid4().hex[:8]}"
+    try:
+        counts = await asyncio.gather(
+            correlate(session_a, extracted), correlate(session_b, extracted)
+        )
+
+        # Exactly one call created the value; the other found it.
+        assert sorted(counts) == [0, 1], counts
+
+        indicators = await list_indicators(type_="ip", q=value)
+        assert len(indicators) == 1, "the value was inserted twice"
+        assert sorted(indicators[0].session_ids) == sorted([session_a, session_b])
+    finally:
+        await _delete_indicators_for_session(session_a)
+        await _delete_indicators_for_session(session_b)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_correlation_still_reports_the_value_as_correlated() -> None:
+    """The quieter half of the same bug.
+
+    `source` is CORRELATED only when the value was genuinely seen in more
+    than one session, counted after the link is written. Run two analyses at
+    once and neither could see the other's uncommitted link, so both counted
+    one and both wrote OBSERVED -- a value in two sessions reported as being
+    in one, permanently. The row lock ON CONFLICT DO UPDATE takes is what
+    makes the second call count both.
+    """
+    import asyncio
+
+    value = f"198.51.100.{uuid.uuid4().int % 250}-{uuid.uuid4().hex[:6]}"
+    extracted = [(
+        {"type": "url", "value": f"http://{value}/x.sh"},
+        [EvidenceCitation(event_id="e-1", artifact="wget")],
+    )]
+    session_a = f"test-flip-a-{uuid.uuid4().hex[:8]}"
+    session_b = f"test-flip-b-{uuid.uuid4().hex[:8]}"
+    try:
+        await asyncio.gather(
+            correlate(session_a, extracted), correlate(session_b, extracted)
+        )
+
+        indicators = await list_indicators(type_="url", q=value)
+        assert len(indicators) == 1
+        assert indicators[0].source == "CORRELATED", (
+            "two distinct sessions link this value but it reports as seen in one"
+        )
+    finally:
+        await _delete_indicators_for_session(session_a)
+        await _delete_indicators_for_session(session_b)
+
+
+# --- A9: the filter must actually filter ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_wildcard_in_the_search_term_does_not_widen_the_filter() -> None:
+    """`%` and `_` are LIKE wildcards.
+
+    Moving `q` from a Python substring check into SQL is where this becomes
+    reachable: unescaped, a `%` matches every row while still returning a
+    plausible-looking list. Same shape of answer, silently wider -- the
+    failure this project keeps finding. The assertion is that the filtered
+    result DIFFERS from the unfiltered one; equal counts would prove nothing.
+    """
+    marker = uuid.uuid4().hex[:8]
+    present = f"cmd-{marker}-alpha"
+    decoy = f"cmd-{marker}-beta"
+    session_id = f"test-like-{uuid.uuid4().hex[:8]}"
+    extracted = [
+        ({"type": "command", "value": present}, [EvidenceCitation(event_id="e-1", artifact="x")]),
+        ({"type": "command", "value": decoy}, [EvidenceCitation(event_id="e-2", artifact="y")]),
+    ]
+    try:
+        await correlate(session_id, extracted)
+
+        both = await list_indicators(type_="command", q=marker)
+        assert {i.value for i in both} == {present, decoy}
+
+        # A term containing a wildcard must match it LITERALLY. Nothing in
+        # the corpus contains a literal '%', so this must come back empty --
+        # and crucially, not with the two rows above.
+        widened = await list_indicators(type_="command", q=f"{marker}%alpha")
+        assert widened == [], f"the % was treated as a wildcard: {[i.value for i in widened]}"
+
+        underscore = await list_indicators(type_="command", q=f"cmd_{marker}")
+        assert underscore == [], "the _ was treated as a single-character wildcard"
+    finally:
+        await _delete_indicators_for_session(session_id)
+
+
+@pytest.mark.asyncio
+async def test_listing_indicators_does_not_query_once_per_row() -> None:
+    """Two queries, whatever the row count -- it was one per indicator.
+
+    `create_report` calls this unfiltered and keeps one session's worth, so
+    the N+1 was paid in full on every report.
+    """
+    session_id = f"test-n1-{uuid.uuid4().hex[:8]}"
+    marker = uuid.uuid4().hex[:8]
+    extracted = [
+        (
+            {"type": "command", "value": f"n1-{marker}-{n}"},
+            [EvidenceCitation(event_id=f"e-{n}", artifact="x")],
+        )
+        for n in range(6)
+    ]
+    try:
+        await correlate(session_id, extracted)
+
+        statements: list[str] = []
+        factory = get_session_factory()
+        async with factory() as probe:
+            conn = await probe.connection()
+
+            from sqlalchemy import event as sa_event
+
+            def _record(conn_, cursor, statement, parameters, context, executemany):
+                statements.append(statement)
+
+            sa_event.listen(conn.sync_engine, "before_cursor_execute", _record)
+            try:
+                results = await list_indicators(type_="command", q=marker)
+            finally:
+                sa_event.remove(conn.sync_engine, "before_cursor_execute", _record)
+
+        assert len(results) == 6
+        selects = [s for s in statements if s.lstrip().upper().startswith("SELECT")]
+        assert len(selects) == 2, f"expected 2 queries, got {len(selects)}:\n" + "\n".join(selects)
+    finally:
+        await _delete_indicators_for_session(session_id)

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { FlaskConical, GitCompareArrows } from "lucide-react";
 import { ScorePill } from "@/components/evaluation/AssessmentPair";
 import { EvaluatorStatusChip, RunStatusChip } from "@/components/evaluation/EvaluationStatusChips";
+import { RunActor } from "@/components/evaluation/RunActor";
 import { RunEvaluationPanel } from "@/components/evaluation/RunEvaluationPanel";
 import {
   DemoDataBadge,
@@ -100,12 +101,13 @@ function EvaluationHistoryPage() {
 function HistoryTable({ runs }: { runs: EvaluationRunSummary[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1180px] border-collapse text-sm">
+      <table className="w-full min-w-[1320px] border-collapse text-sm">
         <thead>
           <tr className="border-b border-border">
             {[
               "Run",
               "Started",
+              "Started by",
               "Finished",
               "Honeypot",
               "Status",
@@ -143,6 +145,9 @@ function HistoryTable({ runs }: { runs: EvaluationRunSummary[] }) {
                 <Mono tone="muted" className="text-[11px]">
                   {formatDateTime(run.startedAt)}
                 </Mono>
+              </td>
+              <td className="whitespace-nowrap px-3 py-2">
+                <RunActor startedBy={run.startedBy} startedByLabel={run.startedByLabel} />
               </td>
               <td className="whitespace-nowrap px-3 py-2">
                 {run.finishedAt ? (

@@ -39,14 +39,46 @@ function buildUrl(path: string, query?: RequestOptions["query"]): string {
   return url.toString();
 }
 
+/**
+ * The current Clerk session token, or null when there is no session.
+ *
+ * Read off `window.Clerk` rather than a React hook because this module is the
+ * plain transport layer -- it is called from query functions and mutations
+ * that are not components and have no hook context. clerk-js sets the global
+ * as soon as ClerkProvider loads.
+ *
+ * Returns null rather than throwing when Clerk is absent, which is the
+ * ordinary case in demo mode and against a backend with `CLERK_ISSUER` unset.
+ * The request then goes out unauthenticated and the backend decides: open
+ * deployments serve it, configured ones answer 401. Failing here instead
+ * would break demo mode, which has no Clerk at all.
+ */
+export async function sessionToken(): Promise<string | null> {
+  const clerk = (globalThis as { Clerk?: { session?: { getToken(): Promise<string | null> } } })
+    .Clerk;
+  if (!clerk?.session) return null;
+  try {
+    return await clerk.session.getToken();
+  } catch {
+    // A refresh failure must not take the request down with it -- let the
+    // backend answer 401 and the UI surface that, rather than throwing a
+    // transport error the caller cannot interpret.
+    return null;
+  }
+}
+
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { method = "GET", body, query, signal } = options;
   const init: RequestInit = { method };
   if (signal) init.signal = signal;
+  const headers: Record<string, string> = {};
   if (body !== undefined) {
-    init.headers = { "content-type": "application/json" };
+    headers["content-type"] = "application/json";
     init.body = JSON.stringify(body);
   }
+  const token = await sessionToken();
+  if (token) headers["authorization"] = `Bearer ${token}`;
+  if (Object.keys(headers).length > 0) init.headers = headers;
   const response = await fetch(buildUrl(path, query), init);
 
   if (!response.ok) {
@@ -60,6 +92,24 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   }
 
   return (await response.json()) as T;
+}
+
+/**
+ * Subprotocols carrying the Clerk token onto a WebSocket handshake.
+ *
+ * A browser cannot set an Authorization header on `new WebSocket`, and the
+ * token must NOT go in the query string: URLs reach access logs, proxy logs
+ * and browser history, and a session token is a bearer credential. The
+ * subprotocol header is the one channel a browser will send on a handshake.
+ *
+ * Two values are offered because the server must echo exactly one offered
+ * protocol or the browser fails the connection -- it echoes the bare marker
+ * and reads the token from the other. Returns [] when there is no session, so
+ * demo mode and an open backend still connect.
+ */
+export async function wsProtocols(): Promise<string[]> {
+  const token = await sessionToken();
+  return token ? ["clerk", `clerk-token.${token}`] : [];
 }
 
 /** Endpoint map kept in one place so the backend contract is reviewable. */

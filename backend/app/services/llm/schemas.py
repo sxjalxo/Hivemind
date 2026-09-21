@@ -17,8 +17,35 @@ class EvidenceCitation(BaseModel):
     artifact: str
 
 
+# Bounds on the free text the model returns, in the spirit of `rating`'s
+# range on `EvaluatorVerdict`: a field whose value is stored, re-rendered
+# into a later prompt, or indexed has to have a size the caller decided.
+#
+# `classification` is the one that earns this. The prompt asks for a short
+# label ("Automated botnet dropper"), but the model wrote it after reading
+# attacker-chosen commands, and the value is then interpolated into the
+# recommend prompt, stored, shown, used as a report title, and indexed into
+# Elasticsearch as `ai_classification` -- a `keyword` with no `ignore_above`,
+# so past Lucene's ~32KB term limit the enrichment write fails and the
+# session stays silently un-enriched forever.
+#
+# Generous enough that a reasonable answer never trips it: over the bound is
+# an LLMValidationError, which `_classify_one` degrades to the labelled
+# "Unclassified" fallback. Failing to the visible fallback is the right
+# direction; quietly storing an unbounded string is not.
+#
+# `behavior_summary` is deliberately NOT bounded here. `_merge_classifications`
+# concatenates one summary per chunk into a new ClassificationResult, so any
+# per-call bound would be breached by the merge itself -- as a ValidationError
+# in our own code, not an LLMValidationError from a model, so it would abort
+# a completed analysis rather than degrade it. It is also never re-rendered
+# into another prompt and never indexed as a keyword, which is what makes
+# `classification` the field that needs the bound.
+_MAX_LABEL_CHARS = 200
+
+
 class ClassificationResult(BaseModel):
-    classification: str
+    classification: str = Field(max_length=_MAX_LABEL_CHARS)
     confidence: float = Field(ge=0.0, le=1.0)
     risk_score: int = Field(ge=0, le=100)
     risk: RiskLevel

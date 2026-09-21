@@ -25,6 +25,7 @@ import asyncio
 import contextlib
 from pathlib import PurePosixPath
 
+from app.services.evaluation import container as container_module
 from app.services.evaluation.container import CONTAINER_NAME as _CONTAINER_NAME
 from app.services.evaluation.container import CONTAINER_PYTHON, error_detail
 
@@ -271,9 +272,17 @@ if residue:
 
 
 async def _spawn(argv: list[str]):
-    """Start `docker exec`. Replaced in tests."""
-    return await asyncio.create_subprocess_exec(
-        *argv,
+    """Start `docker exec`, through the audited seam. Replaced in tests.
+
+    Delegates to `container.spawn_checked` rather than calling
+    `create_subprocess_exec` itself. This module keeps its own exec flow --
+    it carries an in-container deadline only a deletion needs -- but the VERB
+    still has to pass the allowlist, or this would be a second, unaudited
+    route to the Docker daemon sitting next to the one that is audited. The
+    allowlist is worth nothing if a caller can go around it.
+    """
+    return await container_module.spawn_checked(
+        argv,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

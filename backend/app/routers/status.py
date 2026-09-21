@@ -49,6 +49,20 @@ async def get_status() -> list[ServiceStatus]:
             detail=settings.byok_model if evaluator_configured else "no API key configured",
         ),
         ServiceStatus(
+            id="authentication",
+            name="Authentication (Clerk)",
+            # `disconnected` rather than a cheerier state when it is off: an
+            # open API is a real condition an operator should see on the
+            # dashboard, not an absence to gloss over. Same convention the
+            # evaluator row uses for a missing BYOK key.
+            state="connected" if settings.auth_enabled else "disconnected",
+            detail=(
+                settings.clerk_issuer
+                if settings.auth_enabled
+                else "OPEN — every route answers any caller; set CLERK_ISSUER"
+            ),
+        ),
+        ServiceStatus(
             id="seed-corpus",
             name="Seeded corpus",
             state="running" if seeded else "unknown",

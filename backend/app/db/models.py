@@ -42,6 +42,14 @@ class Analysis(SQLModel, table=True):
     prompt_version: str
     rejected_claims: int = 0
 
+    # Who ran this analysis. Same three-valued scheme and the same reasoning
+    # as `EvaluationRun.started_by` -- `user:<clerk_id>`, `unauthenticated`,
+    # or `unrecorded` for rows predating the column. An analysis costs a full
+    # LLM pipeline on the one GPU and writes claims that the UI presents as
+    # findings, so "who asked for this" is worth being able to answer.
+    started_by: str = Field(default="unrecorded", index=True)
+    started_by_label: str | None = None
+
 
 class TechniqueMapping(SQLModel, table=True):
     __tablename__ = "technique_mappings"
@@ -205,6 +213,35 @@ class EvaluationRun(SQLModel, table=True):
     evaluator_status: str
     honeypot_fingerprint: str
     evaluation_config_fingerprint: str
+
+    # Who started this run. A run resets a honeypot's container and executes
+    # attack chains against it, so "who did this" is a question the record
+    # should be able to answer.
+    #
+    # PREFIXED, and never a bare id, because three different situations would
+    # otherwise all be a null and become indistinguishable:
+    #
+    #   user:<clerk_id>   an authenticated caller; the id is stable forever
+    #   unauthenticated   CLERK_ISSUER was unset, so no identity existed to
+    #                     record -- the run happened, nobody can say by whom
+    #   unrecorded        the run predates this column (backfilled by the
+    #                     migration); we did not fail to identify the actor,
+    #                     we never asked
+    #
+    # The distinction is the same one `undetermined` draws for findings: "we
+    # looked and there was nobody" and "we never looked" are different facts,
+    # and collapsing them lets a gap in the audit trail read as an anonymous
+    # action. The `unrecorded` spelling follows the `legacy:` convention
+    # `finding_key` already uses for rows that predate a feature.
+    #
+    # NOT NULL, so a row cannot exist without SOME answer.
+    started_by: str = Field(default="unrecorded", index=True)
+    # The actor's email as the token asserted it AT THE TIME, for a human
+    # reading the history. Deliberately a separate column from `started_by`:
+    # an email can be changed or reassigned, a Clerk user id cannot, so the
+    # id is the identity and this is only a label. Null whenever there was no
+    # authenticated actor, or when the token carried no email claim.
+    started_by_label: str | None = None
 
 
 class EvaluationModuleResult(SQLModel, table=True):

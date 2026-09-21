@@ -6,6 +6,7 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app.auth import Actor
 from app.db.models import (
     Analysis,
     EvidenceRef,
@@ -27,9 +28,10 @@ from app.models.analysis import (
     SeverityEvidence,
     TechniqueMappingOut,
 )
+from app.services.chunking import flatten
 from app.services.compaction import CompactedSession, chunk_session, compact, render_untrusted_block
 from app.services.enrichment import write_back_enrichment
-from app.services.llm import get_evaluator_client, get_local_client
+from app.services.llm import get_local_client, get_recommendation_client
 from app.services.llm.base import LLMClient, LLMValidationError
 from app.services.llm.schemas import (
     BehaviorAnalysis,
@@ -70,8 +72,13 @@ async def _emit(session_id: str, stage_index: int, **metrics: int) -> None:
     )
 
 
-async def run_analysis(session_id: str) -> uuid.UUID:
+async def run_analysis(session_id: str, actor: Actor | None = None) -> uuid.UUID:
     """Run the seven-stage pipeline for one session.
+
+    `actor` records who asked for it -- one LLM pipeline on the one GPU,
+    writing claims the interface presents as findings. Omitting it stores
+    `unrecorded`, the value reserved for rows that predate the audit trail,
+    so every real caller passes one. See `app.auth.Actor`.
 
     Each LLM stage gets its own context and its own prompt -- the paper
     found that merging categories into a single prompt produces shallower
@@ -98,7 +105,9 @@ async def run_analysis(session_id: str) -> uuid.UUID:
     )
 
     local = get_local_client()
-    evaluator, tier = get_evaluator_client()
+    # The recommendation stage's client, NOT the realism evaluator -- see
+    # `llm.get_recommendation_client` for why the distinction has teeth.
+    recommender, tier = get_recommendation_client()
     claims: list[Claim] = []
     rejected = 0
 
@@ -149,8 +158,8 @@ async def run_analysis(session_id: str) -> uuid.UUID:
         iocs_extracted=len(extracted),
     )
 
-    # Stage 6 — recommendations (own context per chunk, cloud evaluator when configured)
-    actions = await _recommend(evaluator, chunks, classification, mapping)
+    # Stage 6 — recommendations (own context per chunk, cloud model when configured)
+    actions = await _recommend(recommender, chunks, classification, mapping)
     await _emit(session_id, 6, techniques_detected=len(mapping.techniques))
 
     analysis = Analysis(
@@ -167,8 +176,13 @@ async def run_analysis(session_id: str) -> uuid.UUID:
         risk=classification.risk,
         behavior_summary=classification.behavior_summary,
         model_tier=tier,
-        evaluator_model=evaluator.model_name if tier == "cloud" else None,
+        # The COLUMN is named evaluator_model; it records which cloud model
+        # produced this analysis's recommendations. Renaming the column is a
+        # migration, and the stored values are correct either way.
+        evaluator_model=recommender.model_name if tier == "cloud" else None,
         prompt_version=PROMPT_VERSION,
+        started_by=(actor or Actor.unrecorded()).key,
+        started_by_label=(actor or Actor.unrecorded()).label,
     )
 
     await persist_analysis(
@@ -332,11 +346,23 @@ async def _behaviors(
 async def _recommend_one(
     client: LLMClient, block: str, classification: str, technique_list: str
 ) -> list[dict]:
+    # `{untrusted_block}` is substituted LAST, and the order is load-bearing.
+    #
+    # Substituted first, a command containing the literal string
+    # `{classification}` or `{techniques}` was expanded by the passes that
+    # followed -- attacker text choosing what else gets spliced into the
+    # prompt. `evaluator._render` records the same rule for the same reason.
+    #
+    # `classification` is flattened as well, and it is the subtler half:
+    # unlike the block it lands OUTSIDE the fence, in the prompt's trusted
+    # region, and it is not our text -- the local model wrote it after
+    # reading this attacker's commands. A newline in it would open a line of
+    # its own next to our instructions.
     prompt = (
         _prompt("recommend.md")
-        .replace("{untrusted_block}", block)
-        .replace("{classification}", classification)
+        .replace("{classification}", flatten(classification))
         .replace("{techniques}", technique_list)
+        .replace("{untrusted_block}", block)
     )
     try:
         result = await client.complete_json(prompt, Recommendations)
@@ -489,6 +515,8 @@ async def _hydrate(db, analysis: Analysis) -> SessionAnalysis:
         risk_score=analysis.risk_score,
         risk=analysis.risk,
         behavior_summary=analysis.behavior_summary,
+        started_by=analysis.started_by,
+        started_by_label=analysis.started_by_label,
         observed_behavior=[
             LabelledEvidence(
                 label=b.label,

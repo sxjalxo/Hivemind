@@ -1,10 +1,11 @@
+import uuid
 from datetime import datetime
 
 import pytest
 
 from app.config import get_settings
 from app.es.client import get_es
-from app.seed.seeder import seed
+from app.seed.seeder import load_corpus, seed
 from app.services.dashboard import _trend, build_dashboard, list_honeypots, range_to_bounds
 
 
@@ -91,12 +92,52 @@ async def test_dashboard_returns_every_panel_the_ui_expects() -> None:
 
 
 @pytest.mark.asyncio
-async def test_top_commands_counts_seeded_commands() -> None:
-    await seed(reset=True)
-    data = await build_dashboard("30d")
+async def test_top_commands_counts_seeded_commands(monkeypatch) -> None:
+    """Every command on the panel must be one the corpus really recorded.
 
-    commands = {c.command for c in data.top_commands}
-    assert "uname -a" in commands
+    This asserted `uname -a`, which the corpus contains exactly once. So does
+    every other seeded command, and the aggregation takes the top 10 of 25 --
+    ties broken by term ascending, where `uname -a` sorts last and can never
+    appear. The assertion only ever passed because live honeypot traffic was
+    in the same index and the evaluation agent's own probes run `uname -a`
+    thousands of times. It was testing the agent, not the corpus.
+
+    So: a command the corpus does contain and the tie-break does reach, plus
+    the property that actually matters -- nothing on this panel came from
+    somewhere else.
+
+    Runs against its OWN index. Asserting exact counts over the shared index
+    makes this a test of the machine's state: one real Cowrie session lands a
+    `uname -a` next to the seeded one and the count becomes 2. That is not a
+    dashboard defect, and a test that fails on it is measuring live traffic
+    again -- the exact confusion this test was rewritten to end. The name
+    matches the `honeypot-events*` template pattern so the index gets the real
+    mappings; with dynamic ones `process.command_line.keyword` would not
+    exist and the aggregation would return nothing.
+    """
+    es = get_es()
+    index = f"honeypot-events-dash-{uuid.uuid4().hex[:8]}"
+    get_settings.cache_clear()
+    monkeypatch.setenv("ES_INDEX", index)
+    try:
+        await seed(reset=True)
+        data = await build_dashboard("30d")
+
+        seeded = {
+            e["input"] for e in load_corpus() if e["eventid"] == "cowrie.command.input"
+        }
+        commands = {c.command for c in data.top_commands}
+
+        assert commands, "the top-commands panel is empty"
+        assert "cd /tmp" in commands
+        assert commands <= seeded, f"not from the corpus: {sorted(commands - seeded)}"
+        # Each seeded command appears once, so a count above one means the
+        # panel is counting something the corpus did not put there.
+        assert all(c.count == 1 for c in data.top_commands)
+    finally:
+        for name in await es.indices.get_alias(name=index):
+            await es.indices.delete(index=name)
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio

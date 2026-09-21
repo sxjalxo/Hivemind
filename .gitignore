@@ -68,4 +68,12 @@ docs/
 # Subagent-driven-development scratch workspace (task briefs, reports, ledger).
 .superpowers/
 
+# The demo walkthrough. Same reasoning as docs/: it is a working document for
+# whoever is running the stack on a particular machine -- ports, container
+# names, the current test count -- and it goes stale the moment it is shared.
 DEMO.md
+
+# Per-project Claude Code launch config. It records the dev-server command for
+# ONE machine, so it belongs to whoever is sitting at that machine. The rest of
+# .claude/ is deliberately left trackable in case shared config ever lands there.
+.claude/launch.json

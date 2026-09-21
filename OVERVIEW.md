@@ -233,6 +233,50 @@ defaulted: evaluating one honeypot under another's label would file every score,
 and fingerprint against the wrong decoy. Containment is unchanged — the map is
 server-side settings, and a caller still names an id, never an address.
 
+**Targets that are not Cowrie.** An entry may declare `"kind": "generic"` — a real Linux
+VM, a bare host, another team's decoy — which is what makes the discrimination experiment
+possible at all. Three things only work against this Cowrie image and are skipped for a
+generic target: the container reset, the `cowrie.cfg` digest in the honeypot fingerprint,
+and chain verification, which reads commands back out of Cowrie's own log. What the
+generic target gets instead is an honest absence: its fingerprint covers where it is and
+not what it contains, and `attack_possibilities` is left unestablished rather than
+scored from chains that never ran.
+
+That last one is also a safety boundary. Cowrie emulates every command, which is the only
+reason the attack chains are safe to execute: `rm -rf /root/.ssh` and
+`bash malicious_script.sh` touch nothing there and do exactly what they say on a real
+host. Chains declare `destructive` in `chains.yaml`, and a destructive chain is refused
+against a target that does not simulate commands. Containment kept a *caller* from
+choosing an address; this keeps the system from attacking a machine an operator
+configured.
+
+**Authentication, and roles scoped to a honeypot.** Unset, the API is open — which is
+what it always was, and defensible only bound to localhost. It is never quiet about it:
+a warning on every start and a row on the status dashboard reading *"OPEN — every route
+answers any caller"*. Configured, every route and both WebSocket channels require a
+verified Clerk session token, checked locally against the published JWKS so a request
+costs a signature check and nothing on the network.
+
+Roles are per honeypot and gate three actions: running an analysis, generating a report,
+and starting an evaluation — the last of which resets a container and executes attack
+chains. An explicit per-honeypot role beats the global one *including when it is lower*,
+because a map that could only ever widen access would not be an access-control list. A
+token carrying no role reads as `viewer`, not as a rejection: the role is a Clerk claim,
+so anything that stopped it propagating would otherwise lock out every account at once,
+and read-only cannot grant anything.
+
+**An audit trail that distinguishes three kinds of silence.** Every evaluation run and
+every analysis records who started it, as `user:<id>`, `unauthenticated` (no identity
+existed to record) or `unrecorded` (predates the trail). The three stay distinct because
+"nobody was authenticated" and "we never asked" are different claims, and a single null
+would let a gap in the history read as an anonymous action — the same reasoning that
+keeps `undetermined` out of `fixed`.
+
+**Bounded growth, nothing deleted.** Captured telemetry rolls over at 5 GB or 30 days
+and the lifecycle policy has no delete phase, deliberately: this is the research output,
+and a delete phase runs on a timer against data nobody is watching. Old indices become
+individually droppable by hand instead.
+
 **A provenance-tagged dashboard** — nineteen HTTP endpoints, two WebSocket progress
 channels, fourteen routes, every AI conclusion expandable into its source event.
 
@@ -283,6 +327,29 @@ not assert is worse than no test**, because it manufactures confidence. Several 
 were found only by adversarial probing — feeding inputs the original author had not
 imagined — rather than by the test suite.
 
+A later review pass found the same pattern again, twice over, and both instances are
+worth recording because they generalise.
+
+**A dashboard test asserted `uname -a` appeared in the top commands.** It passed for
+months. The corpus contains that command exactly once, as it does all 25 of its
+commands, and the aggregation takes the top ten with ties broken alphabetically — so it
+could *never* have passed on corpus data. It passed because live honeypot traffic shared
+the index and the evaluation agent's own probes run `uname -a` thousands of times. The
+test was measuring the agent. The same review found the seed corpus had been pinned to a
+fixed calendar date and had silently aged out of every dashboard window, which the three
+sibling tests had been hiding for the same reason.
+
+**A dependency broke both WebSocket channels and no test noticed.** The auth dependency
+attached to the router declared `Request`, which FastAPI cannot satisfy on a WebSocket
+scope, so it was called with no arguments and the handshake died — with authentication
+on *or* off. Eighteen unit tests of the checker passed throughout, because they called
+it directly. Only driving the route through the ASGI stack showed it.
+
+The generalisation: **a test that exercises a component in isolation says nothing about
+whether its caller uses it.** Several mutation checks in that pass initially "passed"
+against deliberately broken code for exactly this reason, and the fix each time was to
+drive the real path rather than the seam.
+
 Phase 2 repeated the pattern with a twist: the silent defects were increasingly *in the
 plan*, not in its execution. The Cowrie container is distroless, so a step that shelled out
 to `rm` — and, in a later task, to `cat` — failed with exit 127. Because both call sites
@@ -311,8 +378,11 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
 
 - **Single-worker deployment.** The job queue and WebSocket fan-out are in-process; running
   multiple uvicorn workers would require Redis pub/sub.
-- **The pinned corpus sits in the past**, so short dashboard ranges show nothing until live
-  traffic arrives. This is a property of a fixed fixture set, not a fault.
+- **Read paths are not access-scoped.** Roles are per honeypot and gate *writing*:
+  who may run an analysis, generate a report or start an evaluation. Any signed-in
+  account reads everything. It is an authorisation boundary, not a confidentiality one,
+  and threat intelligence correlates IOCs across honeypots by design — scoping that
+  would break the feature rather than secure it.
 - **Similarity normalises only the literals that vary between runs of one campaign** — IPv4
   addresses and file hashes become placeholders, so two runs of a dropper pointed at different
   C2 hosts match. Arguments are deliberately not stripped further: `cat /etc/passwd` and
@@ -335,12 +405,17 @@ port `0` where the honeypot had recorded none — both since fixed.
 
 **Evaluation half.**
 
-- **The packet capture runs as a Docker sidecar** in the honeypot's own network
-  namespace, because a capture anywhere else does not see a containerised honeypot's
-  traffic. Measured on this machine: a WSL distro saw 0 packets for the same SSH session
-  the container's namespace counted 30. A capture that cannot see the traffic would
-  report `not_observed` -- a confident "no traffic occurred" -- so where it cannot run,
-  reporting `unknown` is the only honest answer.
+- **The packet capture runs in a long-lived sidecar** declared in docker-compose with
+  `network_mode: service:cowrie`, because a capture anywhere else does not see a
+  containerised honeypot's traffic. Measured on this machine: a WSL distro saw 0 packets
+  for the same SSH session the container's namespace counted 30. A capture that cannot
+  see the traffic would report `not_observed` — a confident "no traffic occurred" — so
+  where it cannot run, reporting nothing at all is the only honest answer.
+
+  The sidecar is also why the backend never calls `docker run`. Creating a container is
+  the one Docker operation unconditionally equivalent to root on the host, and the
+  capture was the only thing that needed one; every remaining docker call passes an
+  allowlist of `exec`, `inspect` and `kill`.
 - **The scoring and compaction *algorithms* are not fingerprinted.** `scoring.py` holds
   no constants to hash — it is pure functions — so two runs spanning a change to how a
   fraction is computed fingerprint identically, and git revision is the extra key when
@@ -354,7 +429,7 @@ port `0` where the honeypot had recorded none — both since fixed.
 - **The target and the measurement apparatus ARE fingerprinted now**, and each sits in
   the fingerprint that means it. The target — host, port, SSH user, container — is part of
   `honeypot_fingerprint`, because it names the thing under test. The capture interface,
-  capture image and module timeouts are part of `evaluation_config_fingerprint`, because
+  capture sidecar and module timeouts are part of `evaluation_config_fingerprint`, because
   they change what a run can *find* without changing the honeypot. The SSH password is in
   neither: it does not change what the honeypot is, and fingerprints are stored and
   displayed.

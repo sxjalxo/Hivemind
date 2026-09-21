@@ -495,3 +495,73 @@ async def test_a_closed_analysis_progress_socket_leaves_no_subscriber_behind() -
         await asyncio.wait_for(session.task, timeout=5)
 
     assert key not in queue._subscribers
+
+
+# --- A5: one analysis per session at a time -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_second_analysis_of_the_same_session_is_refused() -> None:
+    """Two at once is not merely wasteful.
+
+    Both publish to the SAME progress channel (`analysis_job_key(session_id)`),
+    so a client watching sees two runs' stage indices interleaved and jumping
+    backwards with no way to tell which run a frame belongs to. Both also run
+    the full LLM pipeline on one GPU and both stamp enrichment onto the same
+    Elasticsearch documents.
+
+    The lock is held for the request, so the refusal is asserted from inside
+    a held lock rather than by racing two real analyses -- which would take
+    minutes and make the assertion depend on the model's speed.
+    """
+    import httpx
+
+    from app.db import locks
+    from app.main import app
+    from app.routers.analyze import _LOCK_NAMESPACE
+
+    session_id = "seed-recon-01"
+    transport = httpx.ASGITransport(app=app)
+
+    async with locks.held(_LOCK_NAMESPACE, session_id) as acquired:
+        assert acquired, "the lock should be free at the start of this test"
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(f"/api/analyze/{session_id}")
+
+    assert response.status_code == 409
+    assert session_id in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_lock_is_released_for_the_next_caller() -> None:
+    """A lock that outlives its request refuses that session forever.
+
+    Closing the connection is not enough on its own: the pool hands the same
+    DBAPI connection out again after a rollback, and a rollback does not
+    release a session-level advisory lock.
+    """
+    from app.db import locks
+    from app.routers.analyze import _LOCK_NAMESPACE
+
+    session_id = "seed-recon-01"
+
+    async with locks.held(_LOCK_NAMESPACE, session_id) as first:
+        assert first
+    async with locks.held(_LOCK_NAMESPACE, session_id) as second:
+        assert second, "the lock was not released and this session is now blocked"
+
+
+@pytest.mark.asyncio
+async def test_the_analysis_and_evaluation_lock_namespaces_are_disjoint() -> None:
+    """An id can name a session and a honeypot at once; they must not block."""
+    from app.db import locks
+    from app.routers.analyze import _LOCK_NAMESPACE as ANALYSIS_NS
+    from app.routers.evaluation import _LOCK_NAMESPACE as EVALUATION_NS
+
+    name = "cowrie-01"
+    assert locks.lock_key(ANALYSIS_NS, name) != locks.lock_key(EVALUATION_NS, name)
+
+    async with locks.held(ANALYSIS_NS, name) as a:
+        assert a
+        async with locks.held(EVALUATION_NS, name) as b:
+            assert b, "the two namespaces collided"

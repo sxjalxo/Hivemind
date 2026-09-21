@@ -34,6 +34,7 @@ from app.main import app
 from app.models.evaluation import EvaluationProgressEvent
 from app.models.honeypot import Honeypot
 from app.routers import evaluation
+from app.auth import Actor
 from app.services.evaluation import runs
 from app.services.evaluation.reset import ResetError
 from app.workers.queue import evaluation_job_key, get_queue
@@ -190,7 +191,7 @@ async def test_a_successful_post_returns_202_without_waiting_for_the_run(
     _register(monkeypatch)
     finished = asyncio.Event()
 
-    async def _slow(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
+    async def _slow(honeypot_id: str, run_id: uuid.UUID | None = None, actor: Actor | None = None) -> uuid.UUID:
         await gate.wait()
         finished.set()
         return run_id
@@ -217,7 +218,7 @@ async def test_the_progress_channel_uses_an_id_the_client_already_has(
     """
     _register(monkeypatch)
 
-    async def _emit_once(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
+    async def _emit_once(honeypot_id: str, run_id: uuid.UUID | None = None, actor: Actor | None = None) -> uuid.UUID:
         await gate.wait()
         await runs._emit(run_id, 1)
         return run_id
@@ -233,10 +234,18 @@ async def test_the_progress_channel_uses_an_id_the_client_already_has(
     class _Socket:
         def __init__(self) -> None:
             self.accepted = False
+            # The handshake headers, where a Clerk token would arrive as a
+            # subprotocol. Empty is an unauthenticated client, which is what
+            # this test wants: `CLERK_ISSUER` is unset here, so the handler
+            # accepts it exactly as a real one would.
+            self.headers: dict[str, str] = {}
             self._incoming: asyncio.Queue = asyncio.Queue()
 
-        async def accept(self) -> None:
+        async def accept(self, subprotocol: str | None = None) -> None:
             self.accepted = True
+
+        async def close(self, code: int = 1000) -> None:
+            self.closed_with = code
 
         async def receive(self) -> dict:
             # A connected client that sends nothing. The handler now watches
@@ -285,7 +294,7 @@ async def test_a_start_failure_before_any_row_exists_is_visible(monkeypatch, cap
 
     monkeypatch.setattr(queue, "publish", _record)
 
-    async def _boom(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
+    async def _boom(honeypot_id: str, run_id: uuid.UUID | None = None, actor: Actor | None = None) -> uuid.UUID:
         raise ResetError("cowrie container is not running")
 
     monkeypatch.setattr(runs, "start_run", _boom)
@@ -311,7 +320,7 @@ async def test_a_start_failure_before_any_row_exists_is_visible(monkeypatch, cap
 async def test_a_second_run_for_the_same_honeypot_is_refused(monkeypatch, drain, gate) -> None:
     _register(monkeypatch)
 
-    async def _slow(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
+    async def _slow(honeypot_id: str, run_id: uuid.UUID | None = None, actor: Actor | None = None) -> uuid.UUID:
         await gate.wait()
         return run_id
 
@@ -336,7 +345,7 @@ async def test_the_one_run_guard_holds_under_two_concurrent_requests(
     """
     _register(monkeypatch)
 
-    async def _slow(honeypot_id: str, run_id: uuid.UUID | None = None) -> uuid.UUID:
+    async def _slow(honeypot_id: str, run_id: uuid.UUID | None = None, actor: Actor | None = None) -> uuid.UUID:
         await gate.wait()
         return run_id
 
@@ -416,6 +425,11 @@ async def test_the_list_endpoint_is_bounded_and_not_fully_hydrated(created) -> N
         "honeypotFingerprint",
         "evaluationConfigFingerprint",
         "categoryScores",
+        # Who started the run. Cheap scalars, so they belong on the summary
+        # rather than only on the fully hydrated detail: a history row that
+        # cannot say who ran something is most of what an audit trail is for.
+        "startedBy",
+        "startedByLabel",
     }
     assert row["categoryScores"][0]["deterministicScore"] == 0.5
     # None means "not established" and is carried, never coerced to 0.

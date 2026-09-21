@@ -23,6 +23,8 @@ import { Route as EvaluationRunIdRouteImport } from './routes/evaluation/$runId'
 import { Route as EvaluationCompareRouteImport } from './routes/evaluation/compare'
 import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
+import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
+import { Route as SignUpSplatRouteImport } from './routes/sign-up.$'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -94,6 +96,16 @@ const SessionsSessionIdRoute = SessionsSessionIdRouteImport.update({
   path: '/sessions/$sessionId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SignInSplatRoute = SignInSplatRouteImport.update({
+  id: '/sign-in/$',
+  path: '/sign-in/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignUpSplatRoute = SignUpSplatRouteImport.update({
+  id: '/sign-up/$',
+  path: '/sign-up/$',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -108,6 +120,8 @@ export interface FileRoutesByFullPath {
   '/evaluation/$runId': typeof EvaluationRunIdRoute
   '/evaluation/compare': typeof EvaluationCompareRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/sign-in/$': typeof SignInSplatRoute
+  '/sign-up/$': typeof SignUpSplatRoute
   '/evaluation/': typeof EvaluationIndexRoute
   '/sessions/': typeof SessionsIndexRoute
 }
@@ -124,6 +138,8 @@ export interface FileRoutesByTo {
   '/evaluation/$runId': typeof EvaluationRunIdRoute
   '/evaluation/compare': typeof EvaluationCompareRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/sign-in/$': typeof SignInSplatRoute
+  '/sign-up/$': typeof SignUpSplatRoute
   '/evaluation': typeof EvaluationIndexRoute
   '/sessions': typeof SessionsIndexRoute
 }
@@ -141,6 +157,8 @@ export interface FileRoutesById {
   '/evaluation/$runId': typeof EvaluationRunIdRoute
   '/evaluation/compare': typeof EvaluationCompareRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
+  '/sign-in/$': typeof SignInSplatRoute
+  '/sign-up/$': typeof SignUpSplatRoute
   '/evaluation/': typeof EvaluationIndexRoute
   '/sessions/': typeof SessionsIndexRoute
 }
@@ -159,6 +177,8 @@ export interface FileRouteTypes {
     | '/evaluation/$runId'
     | '/evaluation/compare'
     | '/sessions/$sessionId'
+    | '/sign-in/$'
+    | '/sign-up/$'
     | '/evaluation/'
     | '/sessions/'
   fileRoutesByTo: FileRoutesByTo
@@ -175,6 +195,8 @@ export interface FileRouteTypes {
     | '/evaluation/$runId'
     | '/evaluation/compare'
     | '/sessions/$sessionId'
+    | '/sign-in/$'
+    | '/sign-up/$'
     | '/evaluation'
     | '/sessions'
   id:
@@ -191,6 +213,8 @@ export interface FileRouteTypes {
     | '/evaluation/$runId'
     | '/evaluation/compare'
     | '/sessions/$sessionId'
+    | '/sign-in/$'
+    | '/sign-up/$'
     | '/evaluation/'
     | '/sessions/'
   fileRoutesById: FileRoutesById
@@ -208,6 +232,8 @@ export interface RootRouteChildren {
   EvaluationRunIdRoute: typeof EvaluationRunIdRoute
   EvaluationCompareRoute: typeof EvaluationCompareRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRoute
+  SignInSplatRoute: typeof SignInSplatRoute
+  SignUpSplatRoute: typeof SignUpSplatRoute
   EvaluationIndexRoute: typeof EvaluationIndexRoute
   SessionsIndexRoute: typeof SessionsIndexRoute
 }
@@ -312,6 +338,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SessionsSessionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/sign-in/$': {
+      id: '/sign-in/$'
+      path: '/sign-in/$'
+      fullPath: '/sign-in/$'
+      preLoaderRoute: typeof SignInSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sign-up/$': {
+      id: '/sign-up/$'
+      path: '/sign-up/$'
+      fullPath: '/sign-up/$'
+      preLoaderRoute: typeof SignUpSplatRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -328,6 +368,8 @@ const rootRouteChildren: RootRouteChildren = {
   EvaluationRunIdRoute: EvaluationRunIdRoute,
   EvaluationCompareRoute: EvaluationCompareRoute,
   SessionsSessionIdRoute: SessionsSessionIdRoute,
+  SignInSplatRoute: SignInSplatRoute,
+  SignUpSplatRoute: SignUpSplatRoute,
   EvaluationIndexRoute: EvaluationIndexRoute,
   SessionsIndexRoute: SessionsIndexRoute,
 }

@@ -22,6 +22,7 @@ context per stage" -- each call is a complete, independent context, not a
 shared one), and merge the results afterward.
 """
 
+import re
 from collections.abc import Callable
 from typing import TypeVar
 
@@ -60,6 +61,54 @@ SESSION_TOKEN_BUDGET = NUM_CTX - RESPONSE_RESERVE_TOKENS - TEMPLATE_OVERHEAD_TOK
 MAX_ITEM_CHARS = (SESSION_TOKEN_BUDGET * CHARS_PER_TOKEN) // 2
 
 T = TypeVar("T")
+
+# A run of three or more of the same rule-drawing character is how this
+# project (and almost every other) draws a delimiter line. Neutralising the
+# run rather than the literal fence strings means the defence does not have
+# to be revisited if a prompt's markers are ever reworded or redrawn.
+_FENCE_RUN = re.compile(r"([-=_*~#])\1{2,}")
+_FENCE_MARKER = "[fence-like delimiter run neutralised]"
+
+# Visible, counted-in-spirit marker in the style of `truncate_text`: the
+# reader of the rendered prompt can see that a line break was there.
+# Silently deleting the break would hide from a human auditor that the
+# attacker's text was multi-line at all.
+_LINE_BREAK_MARKER = " [line break] "
+
+
+def flatten(text: str) -> str:
+    """Reduce attacker-controlled text to a single structurally inert line.
+
+    Every prompt in this system fences untrusted text and tells the model the
+    fence contains data. A fence only contains what cannot get out of it, and
+    all of these prompts are LINE-ORIENTED -- the delimiters are whole lines,
+    and so is each rendered command, evidence item or citation. So text that
+    may contain a line break can close the fence from the inside
+    (`----- END UNTRUSTED DATA -----` on a line of its own puts everything
+    after it in the prompt's TRUSTED region) or forge an extra structured
+    entry under an id that really was offered, which an id-validity check
+    cannot catch.
+
+    After this, the text cannot start a line: every character it contributes
+    sits on a line the caller already opened. That argument does not depend
+    on what the delimiter string is, which is why it stays correct if the
+    markers are reworded later.
+
+    `str.splitlines()` is used deliberately over `text.split("\\n")`: it is
+    the stdlib's own definition of a line break and covers `\\r`, `\\v`,
+    `\\f`, `\\x1c`-`\\x1e`, `\\x85`, `\\u2028` and `\\u2029` as well, any one
+    of which a renderer or a model may treat as ending a line.
+
+    Runs of rule-drawing characters are neutralised first as a second layer,
+    for a model that pattern-matches a delimiter mid-line rather than strictly
+    per line. Nothing is silently dropped -- both substitutions leave a
+    visible marker, the same honesty rule `truncate_text` follows.
+
+    Pair it with `truncate_text`, in that order: truncation inserts its own
+    omission marker on its own lines, so flattening has to come second or
+    those newlines survive into the prompt.
+    """
+    return _LINE_BREAK_MARKER.join(_FENCE_RUN.sub(_FENCE_MARKER, text).splitlines())
 
 
 def estimate_tokens(text: str) -> int:

