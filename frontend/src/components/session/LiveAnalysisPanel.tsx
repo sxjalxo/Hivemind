@@ -2,10 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import { Radio } from "lucide-react";
 import { AnalysisProgress } from "./AnalysisProgress";
 import { DemoDataBadge, InlineNotice, StatusRow } from "@/components/common";
-import { systemStatusQuery } from "@/services/honeypots";
 import { isDemoMode } from "@/services";
 import { formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
+import { systemStatusQuery } from "@/services/queries";
 
 export interface LiveMetrics {
   progressPct: number;

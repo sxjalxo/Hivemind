@@ -267,7 +267,7 @@ class Settings(BaseSettings):
     # because they name the thing under test rather than the question we asked
     # of it. `evaluation_ssh_password` deliberately is not.
     #
-    # `evaluation_capture_interface`, `evaluation_capture_image` and the
+    # `evaluation_capture_interface`, `evaluation_capture_container` and the
     # nmap/capture timeouts ARE covered, via `fingerprints.Apparatus`. They
     # are measurement apparatus -- they change what a run can FIND without
     # changing the honeypot -- so they sit in the config fingerprint, with the

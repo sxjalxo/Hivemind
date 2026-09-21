@@ -26,11 +26,11 @@ import {
   TableSkeleton,
 } from "@/components/common";
 import { Input } from "@/components/ui/input";
-import { threatIntelQueries } from "@/services/threatIntel";
 import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Indicator, IndicatorType } from "@/types";
+import { threatIntelQueries } from "@/services/queries";
 
 interface IntelSearch {
   q?: string | undefined;

@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useRole } from "./useRole";
-import { sessionQueries } from "@/services/sessions";
+import { sessionQueries } from "@/services/queries";
 
 /**
  * Whether an action is offered, and why not when it is not.

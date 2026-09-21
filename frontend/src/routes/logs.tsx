@@ -24,12 +24,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { honeypotQueries } from "@/services/honeypots";
-import { logQueries } from "@/services/logs";
 import { isDemoMode } from "@/services";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { HoneypotEvent, LogQuery, RiskLevel } from "@/types";
+import { honeypotQueries, logQueries } from "@/services/queries";
 
 interface LogSearch {
   q?: string | undefined;

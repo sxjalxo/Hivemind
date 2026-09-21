@@ -22,11 +22,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { mitreQueries } from "@/services/mitre";
-import { sessionQueries } from "@/services/sessions";
 import { isDemoMode } from "@/services";
 import { formatPct } from "@/utils/format";
 import type { MitreTechnique } from "@/types";
+import { mitreQueries, sessionQueries } from "@/services/queries";
 
 interface MitreSearch {
   session?: string | undefined;

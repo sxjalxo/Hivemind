@@ -13,11 +13,11 @@ import {
   StatusDot,
 } from "@/components/common";
 import { Skeleton } from "@/components/ui/skeleton";
-import { honeypotQueries } from "@/services/honeypots";
 import { isDemoMode } from "@/services";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Honeypot, HoneypotStatus } from "@/types";
+import { honeypotQueries } from "@/services/queries";
 
 export const Route = createFileRoute("/honeypots")({
   component: HoneypotsPage,

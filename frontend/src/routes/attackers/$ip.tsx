@@ -17,9 +17,9 @@ import {
   RiskBadge,
   RiskScoreMeter,
 } from "@/components/common";
-import { sessionQueries } from "@/services/sessions";
 import { isDemoMode } from "@/services";
 import { formatBytes, formatDateTime } from "@/utils/format";
+import { sessionQueries } from "@/services/queries";
 
 export const Route = createFileRoute("/attackers/$ip")({
   component: AttackerProfilePage,

@@ -10,8 +10,8 @@ import {
   StatusRow,
 } from "@/components/common";
 import { Skeleton } from "@/components/ui/skeleton";
-import { systemStatusQuery } from "@/services/honeypots";
 import { API_BASE_URL, isDemoMode } from "@/services";
+import { systemStatusQuery } from "@/services/queries";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,

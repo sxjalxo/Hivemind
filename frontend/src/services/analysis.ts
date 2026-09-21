@@ -1,13 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
-import { provider } from "./index";
 import type { AnalysisProgress, AnalysisStage } from "@/types";
-
-export const analysisQueries = {
-  history: () =>
-    queryOptions({ queryKey: ["analysis-history"], queryFn: () => provider.getAnalysisHistory() }),
-  detail: (id: string) =>
-    queryOptions({ queryKey: ["analysis", id], queryFn: () => provider.getAnalysis(id) }),
-};
 
 export const ANALYSIS_STAGES: { stage: AnalysisStage; label: string }[] = [
   { stage: "parsing_logs", label: "Parsing logs" },
@@ -25,6 +16,3 @@ export function stageList(activeIndex: number): AnalysisProgress[] {
     state: index < activeIndex ? "done" : index === activeIndex ? "active" : "pending",
   }));
 }
-
-export const dashboardQuery = (range: string) =>
-  queryOptions({ queryKey: ["dashboard", range], queryFn: () => provider.getDashboard(range) });

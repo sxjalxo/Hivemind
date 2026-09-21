@@ -27,10 +27,9 @@ import { TimeRangeTabs } from "@/components/layout/TimeRangeSelector";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTimeRange } from "@/hooks/useTimeRange";
-import { dashboardQuery } from "@/services/analysis";
-import { sessionQueries } from "@/services/sessions";
 import { isDemoMode } from "@/services";
 import { formatDuration } from "@/utils/format";
+import { dashboardQuery, sessionQueries } from "@/services/queries";
 
 export const Route = createFileRoute("/")({
   component: DashboardPage,

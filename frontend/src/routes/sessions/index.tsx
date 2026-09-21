@@ -24,11 +24,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { sessionQueries } from "@/services/sessions";
 import { isDemoMode } from "@/services";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatDuration } from "@/utils/format";
 import type { AttackSession, RiskLevel } from "@/types";
+import { sessionQueries } from "@/services/queries";
 
 interface SessionSearch {
   risk?: string | undefined;

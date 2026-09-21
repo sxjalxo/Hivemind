@@ -26,11 +26,10 @@ import {
 } from "@/components/ui/select";
 import { useAnalysisRun } from "@/hooks/useAnalysisRun";
 import { useAdminForSession } from "@/hooks/useAdminFor";
-import { analysisQueries } from "@/services/analysis";
-import { sessionQueries } from "@/services/sessions";
 import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import type { AnalysisState, SessionAnalysis } from "@/types";
+import { analysisQueries, sessionQueries } from "@/services/queries";
 
 export const Route = createFileRoute("/analysis")({
   component: AnalysisPage,

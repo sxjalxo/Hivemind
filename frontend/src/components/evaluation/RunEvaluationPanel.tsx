@@ -14,9 +14,9 @@ import {
 } from "@/components/ui/select";
 import { useEvaluationRun } from "@/hooks/useEvaluationRun";
 import { useAdminForHoneypot } from "@/hooks/useAdminFor";
-import { honeypotQueries } from "@/services/honeypots";
 import { EVALUATION_STAGE_COUNT, RUN_STATUS_LABELS } from "@/services/evaluation";
 import { cn } from "@/lib/utils";
+import { honeypotQueries } from "@/services/queries";
 
 /**
  * Dispatches a run and follows it.

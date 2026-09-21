@@ -25,12 +25,10 @@ import {
 } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { analysisQueries } from "@/services/analysis";
-import { mitreQueries } from "@/services/mitre";
-import { sessionQueries } from "@/services/sessions";
 import { isDemoMode } from "@/services";
 import { formatDateTime, formatDuration, formatPct } from "@/utils/format";
 import type { MitreTechnique } from "@/types";
+import { analysisQueries, mitreQueries, sessionQueries } from "@/services/queries";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
   component: SessionInvestigationPage,

@@ -5,8 +5,8 @@ import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TimeRangeSelector } from "./TimeRangeSelector";
 import { StatusDot } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import { systemStatusQuery } from "@/services/honeypots";
 import type { ServiceStatus } from "@/types";
+import { systemStatusQuery } from "@/services/queries";
 
 const UNKNOWN_AI: ServiceStatus = {
   id: "ai",

@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { systemStatusQuery } from "@/services/honeypots";
 import { StatusRow } from "@/components/common";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { systemStatusQuery } from "@/services/queries";
 
 /**
  * System health block. States come from GET /api/status via the active

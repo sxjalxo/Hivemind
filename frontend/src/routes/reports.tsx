@@ -25,12 +25,11 @@ import {
 } from "@/components/ui/select";
 import { useAdminForSession } from "@/hooks/useAdminFor";
 import { provider, isDemoMode } from "@/services";
-import { reportQueries } from "@/services/reports";
-import { sessionQueries } from "@/services/sessions";
 import { formatDateTime } from "@/utils/format";
 import { copyToClipboard } from "@/utils/format";
 import { reportToMarkdown } from "@/utils/reportExport";
 import type { ThreatReport } from "@/types";
+import { reportQueries, sessionQueries } from "@/services/queries";
 
 interface ReportSearch {
   session?: string | undefined;
