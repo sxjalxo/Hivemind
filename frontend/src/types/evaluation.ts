@@ -162,6 +162,16 @@ export type EvaluationRunStatus = "queued" | "running" | "completed" | "failed";
 export type EvaluatorStatus = "completed" | "unavailable" | "evaluator_failed";
 
 /**
+ * A single characteristic's own evaluator outcome.
+ *
+ * `"unrecorded"` means the run predates the per-characteristic column — a gap
+ * in the record, never a claim that nothing happened. It is deliberately not a
+ * member of `EvaluatorStatus`: the evaluator can never return it, and it must
+ * never appear on a run's own status.
+ */
+export type CategoryEvaluatorStatus = EvaluatorStatus | "unrecorded";
+
+/**
  * Distinct from a fact's own status: a module that timed out leaves its facts
  * unknown, and those must not be read as negative evidence.
  */
@@ -214,6 +224,10 @@ export interface EvaluationCategoryScore {
   deterministicScore: number | null;
   /** 0..1, or null when the evaluator did not run. Never render null as 0. */
   evaluatorRating: number | null;
+  /** Why `evaluatorRating` is what it is, for THIS characteristic. */
+  evaluatorStatus: CategoryEvaluatorStatus;
+  /** The stored reason. Null means no reason was recorded, not that there was none. */
+  evaluatorDetail: string | null;
 }
 
 export interface EvaluationModuleResult {

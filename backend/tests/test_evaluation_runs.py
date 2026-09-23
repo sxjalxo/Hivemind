@@ -18,6 +18,7 @@ from app.db.models import (
     EvaluationFinding,
     EvaluationProbeResult,
     EvaluationRun,
+    EvaluatorStatus,
     EvidenceKind,
 )
 from app.db.session import get_session_factory
@@ -27,7 +28,11 @@ from app.services.evaluation import chain_runner, runs
 # once there and imported by nmap, tcpdump and agent alike; importing it from
 # a module that merely re-uses it is how two definitions of the same type get
 # created.
-from app.services.evaluation.evaluator import EvidenceItem
+from app.services.evaluation.evaluator import (
+    EvaluatorOutcome,
+    EvaluatorVerdict,
+    EvidenceItem,
+)
 from app.services.evaluation.outcomes import ModuleOutcome
 from app.services.evaluation.sanity import Observation
 from app.services.evaluation.static.chains import ChainStepResult
@@ -1577,3 +1582,168 @@ async def test_an_evaluation_target_defaults_to_the_conservative_kind() -> None:
     assert target.kind == "generic"
     assert target.simulates_commands is False
     assert target.has_own_event_log is False
+
+
+# ---------------------------------------------------------------------------
+# The per-characteristic evaluator status, through the REAL comparison path.
+#
+# `lifecycle.state` is unit-tested against hand-built `RunFacts` in
+# test_evaluation_lifecycle.py. That pins the RULE and proves nothing about
+# the WIRING: `comparison._run_facts` is the only production caller that
+# builds the map, and dropping its `evaluator_status_by_characteristic=`
+# keyword leaves every one of those unit tests green. These drive an
+# `evaluator:` key through `compare_runs` -- real runs, real database, real
+# `_run_facts` -- so the connection itself is load bearing.
+# ---------------------------------------------------------------------------
+
+_EVAL_CHARACTERISTIC = "basic_commands"
+_EVAL_KEY = f"evaluator:{_EVAL_CHARACTERISTIC}"
+
+
+def _agent_covering_two_characteristics():
+    """Evidence for `basic_commands` AND `file_system`.
+
+    `_stub_modules` establishes one fact, under `basic_commands`, so that is
+    the only package a run gets and the only characteristic the evaluator is
+    asked about. A run with ONE characteristic cannot be mixed: mark it
+    unavailable and the aggregate is `unavailable`, which the old rule already
+    resolved `undetermined`. The bug needs a second characteristic that
+    genuinely completed, so the aggregate reads `completed` while the first
+    went unassessed.
+    """
+
+    async def _agent(*args, **kwargs):
+        return ModuleOutcome(
+            module="agent",
+            module_status="completed",
+            observations=[
+                Observation(
+                    probe_id="uname",
+                    establishes="os.identity",
+                    value="Linux",
+                    fact_status="observed",
+                ),
+                Observation(
+                    probe_id="passwd_present",
+                    establishes="fs.etc_passwd",
+                    value="root:x:0:0",
+                    fact_status="observed",
+                ),
+            ],
+        )
+
+    return _agent
+
+
+def _evaluator_outcomes(*, unavailable_for: tuple[str, ...] = ()):
+    """Stand in for `evaluate_characteristic`, with per-characteristic control.
+
+    Patched at `runs.evaluate_characteristic` rather than behind the client,
+    because the point is a MIXED run: one characteristic COMPLETED and another
+    UNAVAILABLE, with no EVALUATOR_FAILED anywhere. That is the only
+    combination whose aggregate is `completed` while a characteristic went
+    unassessed -- the exact shape that used to resolve as `fixed`.
+    """
+
+    async def _evaluate(client, characteristic, package):
+        if characteristic in unavailable_for:
+            return EvaluatorOutcome(
+                status=EvaluatorStatus.UNAVAILABLE,
+                detail="no evidence gathered for this characteristic",
+            )
+        return EvaluatorOutcome(
+            status=EvaluatorStatus.COMPLETED,
+            verdict=EvaluatorVerdict(
+                rating=0.4,
+                critique=f"{characteristic} reads thin",
+                recommendation=None,
+                # A real offered row, or the finding is dropped for having no
+                # resolvable evidence and there is nothing to compare.
+                cited_evidence_ids=[package[0].id],
+            ),
+        )
+
+    return _evaluate
+
+
+class _StubbedOutClient:
+    """`_evaluate` needs a non-None client; the stub above answers instead."""
+
+    model_name = "test-evaluator"
+
+    async def complete_json(self, prompt, schema):  # pragma: no cover
+        raise AssertionError("evaluate_characteristic is stubbed")
+
+
+def _evaluating(monkeypatch, *, unavailable_for: tuple[str, ...] = ()) -> None:
+    _stub_modules(monkeypatch)
+    monkeypatch.setattr(runs, "_run_agent", _agent_covering_two_characteristics())
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: _StubbedOutClient())
+    monkeypatch.setattr(
+        runs, "evaluate_characteristic", _evaluator_outcomes(unavailable_for=unavailable_for)
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_unassessed_characteristic_does_not_compare_as_fixed(
+    monkeypatch, started
+) -> None:
+    """The bug, end to end, through the path production actually uses.
+
+    Base rates the characteristic, so `evaluator:basic_commands` is present.
+    Head assesses it not at all while rating `file_system` -- so the run
+    aggregates to `completed`, and reading that aggregate said "the evaluator
+    had nothing to say", turning a characteristic nobody looked at into a
+    repair.
+    """
+    _evaluating(monkeypatch)
+    base = await started()
+
+    _evaluating(monkeypatch, unavailable_for=(_EVAL_CHARACTERISTIC,))
+    head = await started()
+
+    # The preconditions ARE the test; assumed rather than asserted, this
+    # passes for the wrong reason the moment a stub drifts.
+    base_run = await runs.load_run(base)
+    head_run = await runs.load_run(head)
+    assert _EVAL_KEY in {f.finding_key for f in base_run.findings}
+    assert _EVAL_KEY not in {f.finding_key for f in head_run.findings}
+    # The lossy aggregate: `file_system` completed, so the run reads
+    # `completed` even though this characteristic was never assessed.
+    assert head_run.evaluator_status == "completed"
+    row = next(
+        s for s in head_run.category_scores if s.characteristic == _EVAL_CHARACTERISTIC
+    )
+    assert row.evaluator_status == "unavailable"
+
+    entry = _entry(await runs.compare_runs(base, head), _EVAL_KEY)
+
+    assert entry is not None
+    assert entry.status == "undetermined"
+    assert entry.is_slot is True
+
+
+@pytest.mark.asyncio
+async def test_an_assessed_characteristic_is_still_reported_normally(
+    monkeypatch, started
+) -> None:
+    """The precision cuts both ways, or it is a blanket refusal.
+
+    Same path, same stubs, with the characteristic actually assessed in both
+    runs. It must still resolve on its own merits rather than being swept into
+    `undetermined` along with the unassessed case.
+    """
+    _evaluating(monkeypatch)
+    base = await started()
+    head = await started()
+
+    head_run = await runs.load_run(head)
+    row = next(
+        s for s in head_run.category_scores if s.characteristic == _EVAL_CHARACTERISTIC
+    )
+    assert row.evaluator_status == "completed"
+
+    entry = _entry(await runs.compare_runs(base, head), _EVAL_KEY)
+
+    assert entry is not None
+    assert entry.status == "persisting"

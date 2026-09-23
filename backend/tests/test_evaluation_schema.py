@@ -1,11 +1,13 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timezone
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy import text as sa_text
 
 from app.db.models import (
     Characteristic,
+    EvaluationCategoryScore,
     EvaluationRun,
     FactStatus,
     ModuleStatus,
@@ -212,3 +214,80 @@ async def test_the_same_key_in_two_different_runs_is_allowed() -> None:
 
         for run_id in run_ids:
             await delete_run(run_id)
+
+
+async def test_category_score_records_why_a_rating_is_missing() -> None:
+    """A null rating must carry its own reason, per characteristic.
+
+    The run-level `evaluator_status` is an aggregate across all six
+    characteristics and cannot answer "why is THIS one blank".
+    """
+    run_id = uuid.uuid4()
+    async with get_session_factory()() as db:
+        db.add(
+            EvaluationRun(
+                id=run_id,
+                honeypot_id="cowrie-01",
+                status="completed",
+                started_at=datetime.now(timezone.utc),
+                agent_model="none",
+                evaluator_status="completed",
+                honeypot_fingerprint="sha256:test",
+                evaluation_config_fingerprint="sha256:test",
+                started_by="unauthenticated",
+            )
+        )
+        # Flush the run before its child: these tables carry no ORM
+        # relationship, so SQLAlchemy cannot infer the insert order from the
+        # foreign key and may write the category score first (see the same
+        # note on EvaluationProbeResult above).
+        await db.flush()
+        db.add(
+            EvaluationCategoryScore(
+                run_id=run_id,
+                characteristic="os_identity",
+                deterministic_score=0.5,
+                evaluator_rating=None,
+                evaluator_status="unavailable",
+                evaluator_detail="no evidence gathered for this characteristic",
+            )
+        )
+        await db.commit()
+
+    async with get_session_factory()() as db:
+        row = (
+            await db.execute(
+                select(EvaluationCategoryScore).where(
+                    EvaluationCategoryScore.run_id == run_id
+                )
+            )
+        ).scalar_one()
+        assert row.evaluator_status == "unavailable"
+        assert row.evaluator_detail == "no evidence gathered for this characteristic"
+
+    async with get_session_factory()() as db:
+        await db.execute(
+            delete(EvaluationCategoryScore).where(EvaluationCategoryScore.run_id == run_id)
+        )
+        await db.execute(delete(EvaluationRun).where(EvaluationRun.id == run_id))
+        await db.commit()
+
+
+async def test_evaluator_status_has_no_server_default() -> None:
+    """A forgotten column must fail loudly, not file itself as `unrecorded`.
+
+    `unrecorded` means "this row predates the column". A server default would
+    let a NEW row that forgot the column claim the same thing, which is a gap
+    in the record disguised as a recorded fact.
+    """
+    async with get_session_factory()() as db:
+        default = (
+            await db.execute(
+                sa_text(
+                    "SELECT column_default FROM information_schema.columns "
+                    "WHERE table_name = 'evaluation_category_scores' "
+                    "AND column_name = 'evaluator_status'"
+                )
+            )
+        ).scalar_one()
+        assert default is None

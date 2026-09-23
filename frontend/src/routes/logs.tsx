@@ -28,7 +28,7 @@ import { isDemoMode } from "@/services";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { HoneypotEvent, LogQuery, RiskLevel } from "@/types";
-import { honeypotQueries, logQueries } from "@/services/queries";
+import { honeypotsQuery, logSearchQuery } from "@/services/queries";
 
 interface LogSearch {
   q?: string | undefined;
@@ -82,7 +82,7 @@ function LogExplorerPage() {
   const [view, setView] = useState<"table" | "json">("table");
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const honeypots = useQuery(honeypotQueries.list());
+  const honeypots = useQuery(honeypotsQuery());
 
   const query: LogQuery = {
     ...(search.q ? { q: search.q } : {}),
@@ -94,7 +94,7 @@ function LogExplorerPage() {
     page: search.page ?? 1,
     pageSize: PAGE_SIZE,
   };
-  const { data, isPending, isError, error, refetch } = useQuery(logQueries.search(query));
+  const { data, isPending, isError, error, refetch } = useQuery(logSearchQuery(query));
 
   const patch = (next: Partial<LogSearch>) =>
     void navigate({ search: (prev) => ({ ...prev, ...next, page: undefined }) });

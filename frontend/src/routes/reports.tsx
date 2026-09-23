@@ -29,7 +29,7 @@ import { formatDateTime } from "@/utils/format";
 import { copyToClipboard } from "@/utils/format";
 import { reportToMarkdown } from "@/utils/reportExport";
 import type { ThreatReport } from "@/types";
-import { reportQueries, sessionQueries } from "@/services/queries";
+import { reportsQuery, sessionQueries } from "@/services/queries";
 
 interface ReportSearch {
   session?: string | undefined;
@@ -49,7 +49,7 @@ function ReportsPage() {
   const navigate = useNavigate({ from: "/reports" });
   const queryClient = useQueryClient();
 
-  const reports = useQuery(reportQueries.list());
+  const reports = useQuery(reportsQuery());
   const sessions = useQuery(sessionQueries.list());
   const [generated, setGenerated] = useState<ThreatReport | null>(null);
   const [target, setTarget] = useState(search.session ?? "");

@@ -16,7 +16,7 @@ import { useEvaluationRun } from "@/hooks/useEvaluationRun";
 import { useAdminForHoneypot } from "@/hooks/useAdminFor";
 import { EVALUATION_STAGE_COUNT, RUN_STATUS_LABELS } from "@/services/evaluation";
 import { cn } from "@/lib/utils";
-import { honeypotQueries } from "@/services/queries";
+import { honeypotsQuery } from "@/services/queries";
 
 /**
  * Dispatches a run and follows it.
@@ -31,7 +31,7 @@ import { honeypotQueries } from "@/services/queries";
  * the registry the backend resolves ids through.
  */
 export function RunEvaluationPanel() {
-  const honeypots = useQuery(honeypotQueries.list());
+  const honeypots = useQuery(honeypotsQuery());
   const [target, setTarget] = useState<string>("");
   const { runId, phase, progress, run, dispatchError, startFailure, isBusy, start, reset } =
     useEvaluationRun();

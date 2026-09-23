@@ -147,6 +147,11 @@ __all__ = [
 # already bounded upstream; an arbitrary exception's str() is not.
 DETAIL_LIMIT = 500
 
+# The two detail strings this module owns. `evaluator.py` builds its own for
+# the causes it can see; these cover the two it cannot.
+NO_EVIDENCE_DETAIL = "no evidence gathered for this characteristic"
+REJECTED_CITATIONS_DETAIL = "verdict rejected: no cited evidence resolved"
+
 # The observation `value` kept as the readable fact. The full text goes to
 # `raw_output`, itself bounded -- command output is attacker-sized and an
 # unbounded column turns one `base64 /dev/urandom` into a multi-megabyte row.
@@ -448,13 +453,14 @@ def _aggregate_evaluator_status(statuses: list[str]) -> str:
     characteristic genuinely received a verdict, and the per-category
     `evaluator_rating IS NULL` already shows which did not.
 
-    What this loses: which characteristics failed, and why. There is no
-    `detail` column anywhere in the evaluation schema, so `evaluator_rating
-    IS NULL` collapses four distinct outcomes -- no BYOK key, no evidence
-    gathered for that characteristic, a provider error, and a verdict
-    rejected for citing evidence that was not in its package -- into one
-    blank. Each is logged at WARNING with its characteristic and detail; the
-    database cannot currently tell them apart.
+    What this column loses, and where to find it: which characteristics failed,
+    and why. Both now live on `EvaluationCategoryScore.evaluator_status` and
+    `.evaluator_detail`, one row per characteristic. This column stays a
+    header summary -- a consumer must be able to see "something broke" from
+    the run without walking every category -- but it is no longer the only
+    record, and `lifecycle.state` reads the per-characteristic column instead
+    of this one precisely because this one cannot tell a never-assessed
+    characteristic from an assessed one.
     """
     if EvaluatorStatus.EVALUATOR_FAILED in statuses:
         return EvaluatorStatus.EVALUATOR_FAILED
@@ -480,6 +486,12 @@ async def _evaluate(
     than assumed: UNAVAILABLE (both reasons) and EVALUATOR_FAILED all return
     `verdict is None`.
     """
+    # Recorded FIRST, before anything here can fail. `_resolved_evaluator_outcome`
+    # reads it to tell "the evaluator ran and never saw this characteristic"
+    # from "the evaluator never ran at all" -- the stages before this one are
+    # all caught, so `_persist` is reachable without this function having been
+    # entered, and only one of those two supports the NO_EVIDENCE_DETAIL claim.
+    collected.evaluator_ran = True
     try:
         client = _evaluator_client()
     except ValueError as exc:
@@ -493,14 +505,23 @@ async def _evaluate(
         logger.error("BYOK evaluator is misconfigured on run %s: %s", run_id, exc)
         collected.evaluator_model = None
         collected.evaluator_status = EvaluatorStatus.EVALUATOR_FAILED
+        # Every characteristic we HAD evidence for would have been assessed
+        # and was not. One with no package was never going to be assessed
+        # regardless of the key, and `_resolved_evaluator_outcome` reports
+        # that separately and correctly.
+        for characteristic in packages:
+            collected.evaluator_outcomes[characteristic] = (
+                EvaluatorStatus.EVALUATOR_FAILED,
+                # Bounded like every other stored detail: `exc` carries a
+                # settings-derived string into a text column.
+                _bounded(f"BYOK evaluator misconfigured: {exc}", DETAIL_LIMIT),
+            )
         return
 
     collected.evaluator_model = client.model_name if client is not None else None
 
-    statuses: list[str] = []
     for characteristic, package in packages.items():
         outcome = await evaluate_characteristic(client, characteristic, package)
-        statuses.append(outcome.status)
         if outcome.verdict is None:
             logger.info(
                 "evaluator produced no verdict for %s on run %s: %s (%s)",
@@ -508,6 +529,10 @@ async def _evaluate(
                 run_id,
                 outcome.status,
                 outcome.detail,
+            )
+            collected.evaluator_outcomes[characteristic] = (
+                outcome.status,
+                _bounded(outcome.detail, DETAIL_LIMIT),
             )
             continue
 
@@ -543,11 +568,25 @@ async def _evaluate(
                 characteristic,
                 run_id,
             )
+            collected.evaluator_outcomes[characteristic] = (
+                EvaluatorStatus.EVALUATOR_FAILED,
+                REJECTED_CITATIONS_DETAIL,
+            )
             continue
         collected.ratings[characteristic] = verdict.rating
+        collected.evaluator_outcomes[characteristic] = (EvaluatorStatus.COMPLETED, None)
         collected.findings.append(PendingFinding(finding=finding, evidence=evidence))
 
-    collected.evaluator_status = _aggregate_evaluator_status(statuses)
+    # Derived from what was RECORDED per characteristic, never from a parallel
+    # list of what `evaluate_characteristic` returned. Those two disagree on
+    # the rejected-citations path: the evaluator returns COMPLETED there, and
+    # then the verdict is dropped and the row records EVALUATOR_FAILED. A run
+    # header reading "Evaluator completed" over six blank ratings is the same
+    # unsupported positive claim the per-characteristic columns exist to stop,
+    # so the header is computed from the rows it summarises.
+    collected.evaluator_status = _aggregate_evaluator_status(
+        [status for status, _ in collected.evaluator_outcomes.values()]
+    )
 
 
 def _established_anything(collected: _Collected) -> bool:
@@ -603,6 +642,40 @@ def _run_status(collected: _Collected) -> str:
     return RunStatus.FAILED
 
 
+def _resolved_evaluator_outcome(
+    collected: _Collected, characteristic: str
+) -> tuple[str, str | None]:
+    """The status and detail to store for one characteristic's score row.
+
+    A characteristic with no recorded outcome was never sent to the evaluator,
+    and there are two ways that happens:
+
+    `_evaluate` RAN and never saw it. `_build_packages` creates an entry only
+    for a characteristic with at least one probe or chain row, so one with
+    neither is never passed to `evaluate_characteristic`. That is the same
+    situation the empty-package branch reports, so it gets the same answer --
+    `NO_EVIDENCE_DETAIL` -- rather than `unrecorded`, which means "this row
+    predates the column" and would be a lie here.
+
+    `_evaluate` NEVER RAN. `_finalize`, `_fact_findings`,
+    `_contradiction_findings` and an unguarded `_emit` all execute before it
+    and `start_run` catches whatever they raise, so `_persist` still writes
+    the scores it collected. Saying "no evidence gathered for this
+    characteristic" then states a reason that is false -- evidence WAS
+    gathered, and the evaluator simply never got to it. The status stays
+    `unavailable`, which is true either way, and the detail is NULL: the
+    schema's documented "no reason was recorded", which is not the same as
+    "there was no reason" and is exactly what happened.
+    """
+    recorded = collected.evaluator_outcomes.get(characteristic)
+    if recorded is not None:
+        return recorded
+    return (
+        EvaluatorStatus.UNAVAILABLE,
+        NO_EVIDENCE_DETAIL if collected.evaluator_ran else None,
+    )
+
+
 async def _persist(run_id: uuid.UUID, collected: _Collected) -> None:
     """Write everything the run collected, in ONE transaction.
 
@@ -630,6 +703,7 @@ async def _persist(run_id: uuid.UUID, collected: _Collected) -> None:
         for row in collected.chain_rows:
             db.add(row)
         for characteristic, score in collected.scores.items():
+            status, detail = _resolved_evaluator_outcome(collected, characteristic)
             db.add(
                 EvaluationCategoryScore(
                     run_id=run_id,
@@ -637,18 +711,23 @@ async def _persist(run_id: uuid.UUID, collected: _Collected) -> None:
                     deterministic_score=score,
                     # None, never 0.0, when the evaluator produced no verdict.
                     evaluator_rating=collected.ratings.get(characteristic),
+                    evaluator_status=status,
+                    evaluator_detail=detail,
                 )
             )
         # A characteristic the evaluator rated but scoring did not reach still
         # deserves its row -- with deterministic_score None, not 0.0.
         for characteristic, rating in collected.ratings.items():
             if characteristic not in collected.scores:
+                status, detail = _resolved_evaluator_outcome(collected, characteristic)
                 db.add(
                     EvaluationCategoryScore(
                         run_id=run_id,
                         characteristic=characteristic,
                         deterministic_score=None,
                         evaluator_rating=rating,
+                        evaluator_status=status,
+                        evaluator_detail=detail,
                     )
                 )
         await db.flush()

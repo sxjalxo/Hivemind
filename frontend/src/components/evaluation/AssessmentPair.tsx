@@ -1,11 +1,11 @@
 import { ConfidenceBar } from "@/components/common";
 import {
+  CATEGORY_ABSENCE_TEXT,
   CHARACTERISTIC_LABELS,
-  EVALUATOR_ABSENCE_TEXT,
   NOT_ESTABLISHED,
 } from "@/services/evaluation";
 import { cn } from "@/lib/utils";
-import type { EvaluationCategoryScore, EvaluatorStatus } from "@/types";
+import type { EvaluationCategoryScore } from "@/types";
 
 /**
  * The two assessments of one characteristic, side by side and NEVER combined.
@@ -21,16 +21,18 @@ import type { EvaluationCategoryScore, EvaluatorStatus } from "@/types";
  */
 export function AssessmentPair({
   score,
-  evaluatorStatus,
   className,
 }: {
   score: EvaluationCategoryScore;
-  /** Explains an absent evaluator rating in the evaluator's own terms. */
-  evaluatorStatus: EvaluatorStatus;
   className?: string;
 }) {
+  // The category's own status, not the run's. The run-level column is an
+  // aggregate across all six characteristics and cannot say why THIS one is
+  // blank — a `completed` run may contain one the evaluator never assessed.
   const evaluatorAbsence =
-    evaluatorStatus === "completed" ? null : EVALUATOR_ABSENCE_TEXT[evaluatorStatus];
+    score.evaluatorStatus === "completed"
+      ? null
+      : (score.evaluatorDetail ?? CATEGORY_ABSENCE_TEXT[score.evaluatorStatus]);
 
   return (
     <div className={cn("rounded-lg border border-border bg-background/40 p-3.5", className)}>

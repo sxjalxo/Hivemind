@@ -67,6 +67,8 @@ def _to_out(
                 characteristic=score.characteristic,
                 deterministic_score=score.deterministic_score,
                 evaluator_rating=score.evaluator_rating,
+                evaluator_status=score.evaluator_status,
+                evaluator_detail=score.evaluator_detail,
             )
             for score in scores
         ],
@@ -220,6 +222,8 @@ def _to_summary(
                 # never coerced to 0, and the two scores stay separate.
                 deterministic_score=score.deterministic_score,
                 evaluator_rating=score.evaluator_rating,
+                evaluator_status=score.evaluator_status,
+                evaluator_detail=score.evaluator_detail,
             )
             for score in scores
         ],

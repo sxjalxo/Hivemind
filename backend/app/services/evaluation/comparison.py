@@ -64,6 +64,9 @@ def _run_facts(run: EvaluationRunOut) -> lifecycle.RunFacts:
         evaluator_status=run.evaluator_status,
         finding_keys=frozenset(f.finding_key for f in run.findings),
         fact_status_by_key=by_key,
+        evaluator_status_by_characteristic={
+            score.characteristic: score.evaluator_status for score in run.category_scores
+        },
     )
 
 

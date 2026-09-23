@@ -21,7 +21,7 @@ import {
   CommandSeparator,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
-import { sessionQueries, threatIntelQueries } from "@/services/queries";
+import { sessionQueries, indicatorsQuery } from "@/services/queries";
 
 const IPV4 = /^\d{1,3}(\.\d{1,3}){3}$/;
 const CVE = /^CVE-\d{4}-\d{4,7}$/i;
@@ -105,7 +105,7 @@ function GlobalSearchDialog({
 
   const { data: sessions = [] } = useQuery({ ...sessionQueries.list(), enabled: open });
   const { data: indicators = [] } = useQuery({
-    ...threatIntelQueries.indicators(),
+    ...indicatorsQuery(),
     enabled: open,
   });
 

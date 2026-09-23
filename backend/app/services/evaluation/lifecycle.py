@@ -58,6 +58,13 @@ class RunFacts:
     evaluator_status: str
     finding_keys: frozenset[str] = field(default_factory=frozenset)
     fact_status_by_key: dict[str, str] = field(default_factory=dict)
+    # characteristic -> that characteristic's own evaluator status.
+    #
+    # `evaluator_status` above is the run's aggregate and is lossy in the
+    # dangerous direction: a COMPLETED run may contain a characteristic the
+    # evaluator never assessed. Empty, or a value of "unrecorded", means the
+    # run predates the per-characteristic column and `state()` falls back.
+    evaluator_status_by_characteristic: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -88,9 +95,37 @@ def state(facts: RunFacts, key: str) -> State:
         return "present"
 
     if is_evaluator_key(key):
-        # No probe or chain row exists to join, so the evaluator's own status
-        # is the only thing that can distinguish "it had nothing to say" from
-        # "it never ran".
+        # No probe or chain row exists to join, so an evaluator status is the
+        # only thing that can distinguish "it had nothing to say" from "it
+        # never ran".
+        #
+        # Prefer THIS characteristic's status. The run-level column is an
+        # aggregate (`any FAILED -> FAILED; else any COMPLETED -> COMPLETED`),
+        # so a mixed run reports COMPLETED while containing a characteristic
+        # the evaluator never assessed -- and resolving that one against the
+        # aggregate returns `absent`, which turns into `fixed`. That is the
+        # "absence is not evidence of absence" rule breaking on our own data.
+        characteristic = key[len(_EVALUATOR_PREFIX) :]
+        own = facts.evaluator_status_by_characteristic.get(characteristic)
+        if own is not None and own != "unrecorded":
+            return "undetermined" if own in _EVALUATOR_SILENT else "absent"
+        if own is None and facts.evaluator_status_by_characteristic:
+            # A NO ROW AT ALL, in a run that produced per-characteristic rows
+            # for other characteristics. The map is built from
+            # `category_scores`, and a row is written only for a
+            # characteristic that was scored or rated -- `scoring` omits
+            # `attack_possibilities` outright when no chain ran, so a run
+            # whose target refuses every destructive chain has no row for it.
+            #
+            # Never scored and never rated is never ESTABLISHED, which is the
+            # same "we did not look" the tri-state fact model keeps apart from
+            # "we looked and found nothing". Falling through to the aggregate
+            # here would resolve it `absent` and manufacture a `fixed` -- the
+            # bug above in a narrower shape.
+            return "undetermined"
+        # Unrecorded, or a run predating the column entirely (an empty map).
+        # Fall back to the old rule: no worse than before, and the
+        # information to do better was never written.
         return "undetermined" if facts.evaluator_status in _EVALUATOR_SILENT else "absent"
 
     fact = facts.fact_status_by_key.get(key)

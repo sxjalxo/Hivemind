@@ -86,6 +86,12 @@ class CategoryScoreOut(CamelModel):
     # answer different questions and are never combined.
     deterministic_score: float | None = None
     evaluator_rating: float | None = None
+    # Why `evaluator_rating` is what it is, for THIS characteristic. The run's
+    # own `evaluator_status` is an aggregate and cannot answer it. Defaults
+    # to "unrecorded" so a row written before the column reads as a gap in
+    # the record rather than as a claim.
+    evaluator_status: str = "unrecorded"
+    evaluator_detail: str | None = None
 
 
 class ModuleResultOut(CamelModel):

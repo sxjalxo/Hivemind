@@ -5,12 +5,11 @@ import type { LogQuery } from "@/types";
 /**
  * Every `queryOptions` factory in the app except the evaluation ones, which
  * live in `./evaluation` alongside the socket subscription they are paired
- * with. Each of these was previously its own six-to-twenty-line module.
+ * with.
  */
 
-export const honeypotQueries = {
-  list: () => queryOptions({ queryKey: ["honeypots"], queryFn: () => provider.getHoneypots() }),
-};
+export const honeypotsQuery = () =>
+  queryOptions({ queryKey: ["honeypots"], queryFn: () => provider.getHoneypots() });
 
 export const systemStatusQuery = () =>
   queryOptions({
@@ -51,27 +50,20 @@ export const analysisQueries = {
 export const dashboardQuery = (range: string) =>
   queryOptions({ queryKey: ["dashboard", range], queryFn: () => provider.getDashboard(range) });
 
-export const logQueries = {
-  search: (query: LogQuery) =>
-    queryOptions({ queryKey: ["logs", query], queryFn: () => provider.queryLogs(query) }),
-};
+export const logSearchQuery = (query: LogQuery) =>
+  queryOptions({ queryKey: ["logs", query], queryFn: () => provider.queryLogs(query) });
 
-export const mitreQueries = {
-  coverage: (sessionId?: string) =>
-    queryOptions({
-      queryKey: ["mitre", sessionId ?? "all"],
-      queryFn: () => provider.getMitreCoverage(sessionId ? { sessionId } : undefined),
-    }),
-};
+export const mitreCoverageQuery = (sessionId?: string) =>
+  queryOptions({
+    queryKey: ["mitre", sessionId ?? "all"],
+    queryFn: () => provider.getMitreCoverage(sessionId ? { sessionId } : undefined),
+  });
 
-export const threatIntelQueries = {
-  indicators: (params?: { type?: string; q?: string }) =>
-    queryOptions({
-      queryKey: ["indicators", params ?? {}],
-      queryFn: () => provider.getIndicators(params),
-    }),
-};
+export const indicatorsQuery = (params?: { type?: string; q?: string }) =>
+  queryOptions({
+    queryKey: ["indicators", params ?? {}],
+    queryFn: () => provider.getIndicators(params),
+  });
 
-export const reportQueries = {
-  list: () => queryOptions({ queryKey: ["reports"], queryFn: () => provider.getReports() }),
-};
+export const reportsQuery = () =>
+  queryOptions({ queryKey: ["reports"], queryFn: () => provider.getReports() });

@@ -3,6 +3,7 @@ import { provider } from "./index";
 import { ApiError } from "./api";
 import {
   EVALUATION_STAGES,
+  type CategoryEvaluatorStatus,
   type EvaluationCategoryScore,
   type EvaluationCharacteristic,
   type EvaluationFindingSeverity,
@@ -110,8 +111,35 @@ export const EVALUATOR_STATUS_LABELS: Record<EvaluatorStatus, string> = {
  * evaluator is a gap in what we could measure, not a verdict.
  */
 export const EVALUATOR_ABSENCE_TEXT: Record<Exclude<EvaluatorStatus, "completed">, string> = {
-  unavailable: "Evaluator assessment unavailable — no cloud model configured",
+  // NOT "no cloud model configured": `unavailable` also covers "no evidence
+  // was gathered for this characteristic", and naming one of two causes
+  // asserts something the data does not support.
+  unavailable: "Evaluator did not assess this characteristic",
   evaluator_failed: "Evaluator assessment failed — the cloud model returned no usable rating",
+};
+
+/**
+ * The same two causes stated at RUN scope. `EVALUATOR_ABSENCE_TEXT` says "this
+ * characteristic", which is false as a run-level banner: the run-level status
+ * is an aggregate over all six, and rendering the per-characteristic sentence
+ * above "Every evaluator rating on this run is therefore absent" reads as a
+ * claim about one unnamed characteristic. Two scopes, two sentences.
+ */
+export const RUN_EVALUATOR_ABSENCE_TEXT: Record<Exclude<EvaluatorStatus, "completed">, string> = {
+  unavailable: "No evaluator assessment ran for this run",
+  evaluator_failed: "Evaluator assessment failed — the cloud model returned no usable rating",
+};
+
+/**
+ * Fallback sentence for one characteristic's blank, used when the backend
+ * recorded no `evaluatorDetail`. A stored detail always wins over these.
+ */
+export const CATEGORY_ABSENCE_TEXT: Record<
+  Exclude<CategoryEvaluatorStatus, "completed">,
+  string
+> = {
+  ...EVALUATOR_ABSENCE_TEXT,
+  unrecorded: "No reason recorded for this run",
 };
 
 export const MODULE_STATUS_LABELS: Record<EvaluationModuleStatus, string> = {

@@ -28,7 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { isDemoMode } from "@/services";
 import { formatDateTime, formatDuration, formatPct } from "@/utils/format";
 import type { MitreTechnique } from "@/types";
-import { analysisQueries, mitreQueries, sessionQueries } from "@/services/queries";
+import { analysisQueries, mitreCoverageQuery, sessionQueries } from "@/services/queries";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
   component: SessionInvestigationPage,
@@ -41,7 +41,7 @@ function SessionInvestigationPage() {
   const session = useQuery(sessionQueries.detail(sessionId));
   const timeline = useQuery(sessionQueries.timeline(sessionId));
   const events = useQuery(sessionQueries.events(sessionId));
-  const mitre = useQuery(mitreQueries.coverage(sessionId));
+  const mitre = useQuery(mitreCoverageQuery(sessionId));
   const history = useQuery(analysisQueries.history());
 
   const storedAnalysis =

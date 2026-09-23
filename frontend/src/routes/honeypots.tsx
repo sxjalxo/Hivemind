@@ -17,7 +17,7 @@ import { isDemoMode } from "@/services";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Honeypot, HoneypotStatus } from "@/types";
-import { honeypotQueries } from "@/services/queries";
+import { honeypotsQuery } from "@/services/queries";
 
 export const Route = createFileRoute("/honeypots")({
   component: HoneypotsPage,
@@ -36,7 +36,7 @@ const STATUS_TEXT: Record<HoneypotStatus, string> = {
 };
 
 function HoneypotsPage() {
-  const { data, isPending, isError, error, refetch } = useQuery(honeypotQueries.list());
+  const { data, isPending, isError, error, refetch } = useQuery(honeypotsQuery());
 
   const online = (data ?? []).filter((item) => item.status === "online").length;
 

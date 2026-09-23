@@ -25,7 +25,7 @@ import {
 import { isDemoMode } from "@/services";
 import { formatPct } from "@/utils/format";
 import type { MitreTechnique } from "@/types";
-import { mitreQueries, sessionQueries } from "@/services/queries";
+import { mitreCoverageQuery, sessionQueries } from "@/services/queries";
 
 interface MitreSearch {
   session?: string | undefined;
@@ -46,7 +46,7 @@ function MitrePage() {
   const [selected, setSelected] = useState<MitreTechnique | null>(null);
 
   const sessions = useQuery(sessionQueries.list());
-  const coverage = useQuery(mitreQueries.coverage(search.session));
+  const coverage = useQuery(mitreCoverageQuery(search.session));
 
   // Deep links such as /mitre?technique=T1059 open straight into the drawer.
   useEffect(() => {

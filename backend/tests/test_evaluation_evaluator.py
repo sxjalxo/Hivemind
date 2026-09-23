@@ -1,7 +1,13 @@
+import re
+import uuid
+from pathlib import Path
+
 import httpx
 import pytest
 from pydantic import ValidationError
 
+from app.db.models import EvaluatorStatus
+from app.services.evaluation import runs, state
 from app.services.evaluation.evaluator import (
     EvaluatorVerdict,
     EvidenceItem,
@@ -356,3 +362,225 @@ async def test_repeated_citations_are_deduped_in_order() -> None:
 
     assert outcome.status == "completed"
     assert outcome.verdict.cited_evidence_ids == ["a", "b"]
+
+
+def test_persist_fills_a_characteristic_with_no_recorded_outcome() -> None:
+    """A characteristic scored but never sent to the evaluator says why.
+
+    `_build_packages` only creates an entry for a characteristic that has at
+    least one probe or chain row, so one with none is never passed to
+    `evaluate_characteristic` at all. Its category row still exists, and a
+    blank rating there means exactly what the empty-package branch means.
+
+    `evaluator_ran` is the precondition for that reading: only a run whose
+    evaluator actually ran can say the characteristic had no evidence. See
+    the test below for the other case.
+    """
+    collected = state.Collected()
+    collected.scores = {"os_identity": 0.5}
+    collected.evaluator_ran = True
+    resolved = runs._resolved_evaluator_outcome(collected, "os_identity")
+    assert resolved == (EvaluatorStatus.UNAVAILABLE, runs.NO_EVIDENCE_DETAIL)
+
+
+def test_a_run_that_never_reached_the_evaluator_records_no_reason() -> None:
+    """The detail must not name a cause that did not happen.
+
+    `_finalize`, `_fact_findings`, `_contradiction_findings` and an unguarded
+    `_emit` all run before `_evaluate`, and `start_run` catches whatever they
+    raise and persists the scores anyway. Evidence WAS gathered in that run --
+    the probe rows are right there -- so storing "no evidence gathered for
+    this characteristic" is a fabricated reason, the same defect the frontend
+    half of this work removed, relocated into the database.
+
+    `unavailable` is true either way and stays. The detail is NULL, which the
+    schema documents as "no reason was recorded" and which the UI renders
+    through `CATEGORY_ABSENCE_TEXT` rather than as a specific cause.
+    """
+    collected = state.Collected()
+    collected.scores = {"os_identity": 0.5}
+    assert collected.evaluator_ran is False
+
+    status, detail = runs._resolved_evaluator_outcome(collected, "os_identity")
+
+    assert status == EvaluatorStatus.UNAVAILABLE
+    assert detail is None
+    # `unrecorded` means "this row predates the column" and must never be
+    # written by live code.
+    assert status != "unrecorded"
+
+
+async def test_evaluate_marks_itself_as_having_run_before_anything_can_fail(monkeypatch) -> None:
+    """The flag is set at the top, not on the way out.
+
+    A misconfigured BYOK provider returns early, and every characteristic
+    reached after that point still needs "the evaluator ran" to be true.
+    """
+    collected = state.Collected()
+
+    def _boom():
+        raise ValueError("unsupported BYOK_PROVIDER 'gemini'")
+
+    monkeypatch.setattr(runs, "_evaluator_client", _boom)
+    await runs._evaluate(uuid.uuid4(), collected, {})
+
+    assert collected.evaluator_ran is True
+
+
+async def test_the_byok_misconfiguration_detail_is_bounded(monkeypatch) -> None:
+    """Every stored detail goes through `_bounded`; this one used to not.
+
+    The provider name comes from settings and lands in a text column.
+    """
+    collected = state.Collected()
+
+    def _boom():
+        raise ValueError("x" * (runs.DETAIL_LIMIT * 3))
+
+    monkeypatch.setattr(runs, "_evaluator_client", _boom)
+    await runs._evaluate(uuid.uuid4(), collected, {"os_identity": []})
+
+    _, detail = collected.evaluator_outcomes["os_identity"]
+    assert detail is not None
+    # `truncate_text` keeps a head and a tail plus a counted omission marker,
+    # so the bound is DETAIL_LIMIT of payload, not of total string length.
+    assert detail.count("x") <= runs.DETAIL_LIMIT
+    assert "characters omitted" in detail
+
+
+def test_a_recorded_outcome_wins_over_the_fallback() -> None:
+    collected = state.Collected()
+    collected.scores = {"os_identity": 0.5}
+    collected.evaluator_outcomes["os_identity"] = (
+        EvaluatorStatus.EVALUATOR_FAILED,
+        "provider returned 429",
+    )
+    resolved = runs._resolved_evaluator_outcome(collected, "os_identity")
+    assert resolved == (EvaluatorStatus.EVALUATOR_FAILED, "provider returned 429")
+
+
+async def test_rejected_citations_report_a_failure_not_a_completion(monkeypatch) -> None:
+    """The one path that currently reports COMPLETED with a null rating.
+
+    A verdict whose every citation resolved to nothing is dropped. That is our
+    failure, not the honeypot's, and a run that says COMPLETED while the
+    rating is blank is the shape that let `fixed` be reported for a
+    characteristic nobody assessed.
+
+    `TRUNCATION_NOTICE_ID` is the documented way into this branch: it is a
+    legitimate member of the offered set, so `evaluate_characteristic`
+    accepts a verdict that cites only it, but it does not parse as a row id,
+    so `_evidence_for` resolves nothing and `_evaluate` must drop the rating
+    and record why.
+    """
+    assert runs.REJECTED_CITATIONS_DETAIL == "verdict rejected: no cited evidence resolved"
+
+    package = [EvidenceItem(id=runs.TRUNCATION_NOTICE_ID, summary="12 more items omitted")]
+    client = _StubClient(
+        EvaluatorVerdict(
+            rating=0.9,
+            critique="looks plausible enough",
+            recommendation=None,
+            cited_evidence_ids=[runs.TRUNCATION_NOTICE_ID],
+        )
+    )
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: client)
+
+    collected = state.Collected()
+    await runs._evaluate(uuid.uuid4(), collected, {"os_identity": package})
+
+    assert collected.evaluator_outcomes["os_identity"] == (
+        EvaluatorStatus.EVALUATOR_FAILED,
+        runs.REJECTED_CITATIONS_DETAIL,
+    )
+    # The rating must not outlive the finding it was attached to.
+    assert "os_identity" not in collected.ratings
+
+
+async def test_the_run_aggregate_agrees_with_what_the_rows_recorded(monkeypatch) -> None:
+    """A rejected verdict must not leave the run header saying `completed`.
+
+    `evaluate_characteristic` returns COMPLETED on this path -- it produced a
+    verdict -- and the verdict is then dropped because every citation resolved
+    to nothing, which the category row records as EVALUATOR_FAILED. Feeding
+    the run aggregate the evaluator's return value instead of what was
+    recorded gives a run header reading "Evaluator completed" above a blank
+    rating and a row saying it failed: a positive claim with no evidence
+    behind it, and the header disagreeing with its own rows.
+
+    The aggregate's worst-case rule is unchanged; what it is fed is.
+    """
+    package = [EvidenceItem(id=runs.TRUNCATION_NOTICE_ID, summary="12 more items omitted")]
+    client = _StubClient(
+        EvaluatorVerdict(
+            rating=0.9,
+            critique="looks plausible enough",
+            recommendation=None,
+            cited_evidence_ids=[runs.TRUNCATION_NOTICE_ID],
+        )
+    )
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: client)
+
+    collected = state.Collected()
+    await runs._evaluate(uuid.uuid4(), collected, {"os_identity": package})
+
+    assert collected.evaluator_outcomes["os_identity"][0] == EvaluatorStatus.EVALUATOR_FAILED
+    assert collected.evaluator_status == EvaluatorStatus.EVALUATOR_FAILED
+    assert collected.evaluator_status != EvaluatorStatus.COMPLETED
+    # Whatever the aggregate says, it says it about the statuses actually
+    # stored on the category rows.
+    assert collected.evaluator_status == runs._aggregate_evaluator_status(
+        [status for status, _ in collected.evaluator_outcomes.values()]
+    )
+
+
+# --- the same distinction, on the frontend ------------------------------
+#
+# There is no test runner in `frontend/`, and adding one to guard two
+# sentences would be a larger change than the bug. These read the sources
+# directly: crude, but they fail when the fix is reverted, which is the
+# property being asked for.
+
+_FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
+
+
+def test_the_run_banner_does_not_reuse_the_per_characteristic_sentence() -> None:
+    """Two scopes, two sentences.
+
+    `EVALUATOR_ABSENCE_TEXT.unavailable` was reworded to "Evaluator did not
+    assess this characteristic" for the per-characteristic blank. Rendered as
+    the RUN-level banner it names one unnamed characteristic and then says
+    "Every evaluator rating on this run is therefore absent" underneath --
+    a sentence about a characteristic standing in for a claim about a run.
+    """
+    service = (_FRONTEND / "services" / "evaluation.ts").read_text(encoding="utf-8")
+    route = (_FRONTEND / "routes" / "evaluation" / "$runId.tsx").read_text(encoding="utf-8")
+
+    # The run-level banner reads the run-scope map, not the category one.
+    assert "RUN_EVALUATOR_ABSENCE_TEXT[run.evaluatorStatus]" in route
+
+    # And NO file does the reverse. Checking only `$runId.tsx` would pass a
+    # second run-scope banner added to `compare.tsx` tomorrow, which is the
+    # invariant this test is actually for -- the defect was one sentence
+    # rendered at the wrong scope, not one file.
+    #
+    # The lookbehind is what keeps `RUN_EVALUATOR_ABSENCE_TEXT[run.` from
+    # matching: it ends in the same characters as the thing being banned.
+    category_map_at_run_scope = re.compile(r"(?<!RUN_)EVALUATOR_ABSENCE_TEXT\[run\.")
+    offenders = [
+        path.relative_to(_FRONTEND).as_posix()
+        for path in sorted(_FRONTEND.rglob("*"))
+        if path.suffix in {".ts", ".tsx"}
+        and category_map_at_run_scope.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], (
+        f"{offenders} render the per-characteristic sentence at run scope; "
+        f"use RUN_EVALUATOR_ABSENCE_TEXT there"
+    )
+
+    # And it says something true at run scope.
+    assert 'unavailable: "No evaluator assessment ran for this run"' in service
+    # The per-characteristic wording is unchanged; `CATEGORY_ABSENCE_TEXT`
+    # still spreads it.
+    assert 'unavailable: "Evaluator did not assess this characteristic"' in service
+    assert "...EVALUATOR_ABSENCE_TEXT," in service

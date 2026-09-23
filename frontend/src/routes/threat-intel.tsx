@@ -30,7 +30,7 @@ import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Indicator, IndicatorType } from "@/types";
-import { threatIntelQueries } from "@/services/queries";
+import { indicatorsQuery } from "@/services/queries";
 
 interface IntelSearch {
   q?: string | undefined;
@@ -75,12 +75,10 @@ function ThreatIntelPage() {
     ...(activeType ? { type: activeType } : {}),
     ...(query.trim() ? { q: query.trim() } : {}),
   };
-  const { data, isPending, isError, error, refetch } = useQuery(
-    threatIntelQueries.indicators(params),
-  );
+  const { data, isPending, isError, error, refetch } = useQuery(indicatorsQuery(params));
 
   // Counts come from the unfiltered set so the type rail never collapses to zero.
-  const all = useQuery(threatIntelQueries.indicators());
+  const all = useQuery(indicatorsQuery());
   const counts = useMemo(() => {
     const tally = Object.fromEntries(TYPE_ORDER.map((type) => [type, 0])) as Record<
       IndicatorType,

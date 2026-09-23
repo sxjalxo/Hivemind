@@ -296,6 +296,36 @@ class EvaluationCategoryScore(SQLModel, table=True):
     # NULL means "not established" and must never render as 0.
     deterministic_score: float | None = None
     evaluator_rating: float | None = None
+    # Why `evaluator_rating` is what it is, for THIS characteristic.
+    #
+    # `EvaluationRun.evaluator_status` is one column for the whole run and is
+    # lossy by construction: `any FAILED -> FAILED; else any COMPLETED ->
+    # COMPLETED`, so a COMPLETED run may contain a characteristic the
+    # evaluator never assessed. Reading that aggregate per characteristic is
+    # what let a never-established finding resolve as `fixed`.
+    #
+    # Values are the three `EvaluatorStatus` members plus the literal
+    # "unrecorded", for rows written before this column existed. `unrecorded`
+    # is deliberately NOT an `EvaluatorStatus` member: that enum types
+    # `EvaluatorOutcome.status`, and the evaluator can never return it. Same
+    # reasoning, and same spelling, as `EvaluationRun.started_by`.
+    #
+    # No `server_default` in the migration, so raw SQL that forgets this
+    # column fails loudly rather than silently filing itself as `unrecorded`.
+    #
+    # That guard covers the SQL path ONLY. The Python default below means an
+    # ORM-constructed row that omits the keyword gets `unrecorded` silently --
+    # a gap in the record dressed as a recorded fact, which is the one thing
+    # this column exists to prevent. Both `_persist` write sites pass an
+    # explicit value (see `runs._resolved_evaluator_outcome`), so the hole is
+    # unreachable today; it is documented rather than closed because dropping
+    # the default would diverge from `EvaluationRun.started_by`, which is the
+    # same pattern with the same latent weakness. Close both together or
+    # neither.
+    evaluator_status: str = Field(default="unrecorded", index=True)
+    # Free text, bounded on write, never parsed. NULL means "no reason was
+    # recorded", which is not the same as "there was no reason".
+    evaluator_detail: str | None = None
 
 
 class EvaluationFinding(SQLModel, table=True):

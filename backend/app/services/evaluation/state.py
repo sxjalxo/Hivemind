@@ -77,6 +77,19 @@ class Collected:
     # probe row id -> the characteristic it belongs to, so evidence packages
     # can be assembled per characteristic without a second pass over probes.
     characteristic_by_probe_row: dict[uuid.UUID, str] = field(default_factory=dict)
+    # characteristic -> (evaluator_status, evaluator_detail). Written for
+    # every characteristic the evaluator was asked about, including the ones
+    # it could not answer -- that is the whole point. `_persist` fills any
+    # characteristic that has a score row but no entry here.
+    evaluator_outcomes: dict[str, tuple[str, str | None]] = field(default_factory=dict)
+    # Did `_evaluate` actually run? Set at its top, before anything in it can
+    # fail. `_finalize`, the findings passes and an `_emit` all execute before
+    # it and are all caught, so `_persist` can be reached with the evaluator
+    # never having been entered. A characteristic with no recorded outcome
+    # then means "the evaluator never ran", NOT "no evidence was gathered for
+    # it", and `_resolved_evaluator_outcome` must not state the latter as the
+    # reason. A gap in the record is not a positive claim.
+    evaluator_ran: bool = False
 
 
 def iso(moment: datetime) -> str:

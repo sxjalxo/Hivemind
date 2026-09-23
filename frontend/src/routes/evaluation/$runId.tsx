@@ -28,8 +28,8 @@ import {
   EVALUATION_CHARACTERISTICS,
   EVALUATION_POLL_MS,
   EVALUATION_RECORD_GRACE_MS,
-  EVALUATOR_ABSENCE_TEXT,
   NO_COMPOSITE_NOTE,
+  RUN_EVALUATOR_ABSENCE_TEXT,
   SCORE_SCALE_NOTE,
   evaluationQueries,
   findScore,
@@ -114,7 +114,7 @@ function EvaluationRunPage() {
 
 function RunDetail({ run }: { run: EvaluationRun }) {
   const evaluatorAbsence =
-    run.evaluatorStatus === "completed" ? null : EVALUATOR_ABSENCE_TEXT[run.evaluatorStatus];
+    run.evaluatorStatus === "completed" ? null : RUN_EVALUATOR_ABSENCE_TEXT[run.evaluatorStatus];
   const everyModuleCompleted =
     run.modules.length > 0 && run.modules.every((module) => module.moduleStatus === "completed");
   const measured = new Set(run.categoryScores.map((score) => score.characteristic));
@@ -222,11 +222,7 @@ function RunDetail({ run }: { run: EvaluationRun }) {
         ) : (
           <div className="grid gap-3 lg:grid-cols-2">
             {run.categoryScores.map((score) => (
-              <AssessmentPair
-                key={score.characteristic}
-                score={score}
-                evaluatorStatus={run.evaluatorStatus}
-              />
+              <AssessmentPair key={score.characteristic} score={score} />
             ))}
           </div>
         )}

@@ -28,6 +28,7 @@ def _facts(
     evaluator_status="unavailable",
     findings=(),
     facts=None,
+    evaluator_by_characteristic=None,
 ):
     return lifecycle.RunFacts(
         run_id=run_id,
@@ -35,6 +36,7 @@ def _facts(
         evaluator_status=evaluator_status,
         finding_keys=frozenset(findings),
         fact_status_by_key=dict(facts or {}),
+        evaluator_status_by_characteristic=dict(evaluator_by_characteristic or {}),
     )
 
 
@@ -252,3 +254,91 @@ def test_a_malformed_key_is_not_treated_as_an_evaluator_slot(bad) -> None:
     entry = lifecycle.resolve(base, head, history=[])[0]
 
     assert entry.is_slot is False
+
+
+# --- the per-characteristic evaluator status, and the hole it closes -------
+
+MIXED_KEY = "evaluator:attack_possibilities"
+
+
+def test_a_mixed_run_does_not_report_an_unassessed_characteristic_as_fixed() -> None:
+    """The hole this column was added to close.
+
+    `_aggregate_evaluator_status` is `any FAILED -> FAILED; else any
+    COMPLETED -> COMPLETED`. So a run where one characteristic got a verdict
+    and another gathered no evidence aggregates to COMPLETED. Resolving the
+    unassessed one against that aggregate says `absent` -- "the evaluator had
+    nothing to say" -- and base=present + head=absent resolves to `fixed`.
+
+    Nothing was fixed. The characteristic was never looked at.
+    """
+    head = _facts(
+        run_id="head",
+        evaluator_status="completed",  # the lossy aggregate
+        evaluator_by_characteristic={
+            "os_identity": "completed",
+            "attack_possibilities": "unavailable",  # the truth for this one
+        },
+    )
+    assert lifecycle.state(head, MIXED_KEY) == "undetermined"
+
+
+def test_a_mixed_run_still_reports_an_assessed_characteristic_as_absent() -> None:
+    """The precision must cut both ways, or it is just a blanket refusal."""
+    head = _facts(
+        run_id="head",
+        evaluator_status="completed",
+        evaluator_by_characteristic={
+            "os_identity": "completed",
+            "attack_possibilities": "completed",
+        },
+    )
+    assert lifecycle.state(head, MIXED_KEY) == "absent"
+
+
+def test_an_unrecorded_characteristic_falls_back_to_the_run_level_rule() -> None:
+    """Rows predating the column keep today's behaviour, no worse and no better."""
+    head = _facts(
+        run_id="head",
+        evaluator_status="completed",
+        evaluator_by_characteristic={"attack_possibilities": "unrecorded"},
+    )
+    assert lifecycle.state(head, MIXED_KEY) == "absent"
+
+    silent = _facts(
+        run_id="head",
+        evaluator_status="evaluator_failed",
+        evaluator_by_characteristic={"attack_possibilities": "unrecorded"},
+    )
+    assert lifecycle.state(silent, MIXED_KEY) == "undetermined"
+
+
+def test_a_characteristic_with_no_row_at_all_is_undetermined() -> None:
+    """Never scored and never rated is never established.
+
+    `scoring` omits `attack_possibilities` entirely when no chain ran, so a
+    run against a target that refuses every destructive chain writes NO
+    category row for it -- not a row saying `unavailable`, no row. Falling
+    through to the aggregate resolves that `absent`, and `absent` is the one
+    value that becomes `fixed`. Same bug, narrower shape.
+    """
+    head = _facts(
+        run_id="head",
+        evaluator_status="completed",
+        evaluator_by_characteristic={"os_identity": "completed"},
+    )
+    assert lifecycle.state(head, MIXED_KEY) == "undetermined"
+
+
+def test_an_empty_map_still_falls_back_to_the_run_level_rule() -> None:
+    """No per-characteristic data at all is a different claim from a gap.
+
+    An empty map means the run has no category rows, or predates the column.
+    That is exactly the case the fallback exists for -- treating it as "never
+    established" would turn every historic `fixed` into `undetermined`.
+    """
+    head = _facts(run_id="head", evaluator_status="completed")
+    assert lifecycle.state(head, MIXED_KEY) == "absent"
+
+    silent = _facts(run_id="head", evaluator_status="unavailable")
+    assert lifecycle.state(silent, MIXED_KEY) == "undetermined"

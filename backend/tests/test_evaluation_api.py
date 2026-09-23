@@ -578,3 +578,56 @@ async def test_an_id_that_is_not_a_run_id_at_all_is_refused_a_channel() -> None:
         assert session.opening["type"] == "websocket.close"
 
     assert set(queue._subscribers) == before
+
+
+async def test_category_scores_carry_their_own_evaluator_status() -> None:
+    """The run header cannot say which characteristic was blank; the row can."""
+    from sqlalchemy import delete
+
+    run_id = uuid.uuid4()
+    async with get_session_factory()() as db:
+        db.add(
+            EvaluationRun(
+                id=run_id,
+                honeypot_id="cowrie-01",
+                status="completed",
+                started_at=datetime.now(timezone.utc),
+                agent_model="none",
+                evaluator_status="completed",
+                honeypot_fingerprint="sha256:test",
+                evaluation_config_fingerprint="sha256:test",
+                started_by="unauthenticated",
+            )
+        )
+        await db.flush()
+        db.add(
+            EvaluationCategoryScore(
+                run_id=run_id,
+                characteristic="os_identity",
+                deterministic_score=0.5,
+                evaluator_rating=None,
+                evaluator_status="evaluator_failed",
+                evaluator_detail="verdict rejected: no cited evidence resolved",
+            )
+        )
+        await db.commit()
+
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/evaluations/{run_id}")
+
+    assert response.status_code == 200
+    scores = response.json()["categoryScores"]
+    row = next(s for s in scores if s["characteristic"] == "os_identity")
+    # The run says `completed`; this characteristic did not. That difference
+    # is the whole point of the column.
+    assert response.json()["evaluatorStatus"] == "completed"
+    assert row["evaluatorStatus"] == "evaluator_failed"
+    assert row["evaluatorDetail"] == "verdict rejected: no cited evidence resolved"
+
+    async with get_session_factory()() as db:
+        await db.execute(
+            delete(EvaluationCategoryScore).where(EvaluationCategoryScore.run_id == run_id)
+        )
+        await db.execute(delete(EvaluationRun).where(EvaluationRun.id == run_id))
+        await db.commit()

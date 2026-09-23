@@ -1180,12 +1180,42 @@ const evaluationRunA: EvaluationRun = {
     "sha256:9de2ea3012e212895723505d80abf17ee1b4e8847ae41230c2d4f7ca1628c0c0",
   // `attack_possibilities` is absent, not null: this run replayed no chains.
   categoryScores: [
-    { characteristic: "basic_commands", deterministicScore: 0.86, evaluatorRating: 0.72 },
-    { characteristic: "file_system", deterministicScore: 0.64, evaluatorRating: 0.55 },
-    { characteristic: "services", deterministicScore: 0.41, evaluatorRating: 0.38 },
-    { characteristic: "sanity", deterministicScore: 0.78, evaluatorRating: 0.81 },
+    {
+      characteristic: "basic_commands",
+      deterministicScore: 0.86,
+      evaluatorRating: 0.72,
+      evaluatorStatus: "completed",
+      evaluatorDetail: null,
+    },
+    {
+      characteristic: "file_system",
+      deterministicScore: 0.64,
+      evaluatorRating: 0.55,
+      evaluatorStatus: "completed",
+      evaluatorDetail: null,
+    },
+    {
+      characteristic: "services",
+      deterministicScore: 0.41,
+      evaluatorRating: 0.38,
+      evaluatorStatus: "completed",
+      evaluatorDetail: null,
+    },
+    {
+      characteristic: "sanity",
+      deterministicScore: 0.78,
+      evaluatorRating: 0.81,
+      evaluatorStatus: "completed",
+      evaluatorDetail: null,
+    },
     // Nothing was established for `context`: null, never 0.
-    { characteristic: "context", deterministicScore: null, evaluatorRating: 0.44 },
+    {
+      characteristic: "context",
+      deterministicScore: null,
+      evaluatorRating: 0.44,
+      evaluatorStatus: "completed",
+      evaluatorDetail: null,
+    },
   ],
   modules: [
     { module: "static_nmap", moduleStatus: "completed", detail: null },
@@ -1286,13 +1316,54 @@ const evaluationRunB: EvaluationRun = {
   honeypotFingerprint: "sha256:7f1c93aa20e6b845d3097fe1c4b28d6a5e0f83719cd2a6b40e8f57193ac4b2de",
   evaluationConfigFingerprint:
     "sha256:9de2ea3012e212895723505d80abf17ee1b4e8847ae41230c2d4f7ca1628c0c0",
+  // Category-level statuses deliberately diverge from the run-level
+  // "unavailable" aggregate, to exercise reading each blank's own reason
+  // rather than the run's worst-case status: a stored detail (file_system,
+  // sanity), a pre-column gap (services), and the plain fallback text
+  // (basic_commands, attack_possibilities, context).
   categoryScores: [
-    { characteristic: "basic_commands", deterministicScore: 0.91, evaluatorRating: null },
-    { characteristic: "file_system", deterministicScore: 0.7, evaluatorRating: null },
-    { characteristic: "services", deterministicScore: 0.52, evaluatorRating: null },
-    { characteristic: "attack_possibilities", deterministicScore: 0.33, evaluatorRating: null },
-    { characteristic: "sanity", deterministicScore: 0.8, evaluatorRating: null },
-    { characteristic: "context", deterministicScore: null, evaluatorRating: null },
+    {
+      characteristic: "basic_commands",
+      deterministicScore: 0.91,
+      evaluatorRating: null,
+      evaluatorStatus: "unavailable",
+      evaluatorDetail: null,
+    },
+    {
+      characteristic: "file_system",
+      deterministicScore: 0.7,
+      evaluatorRating: null,
+      evaluatorStatus: "unavailable",
+      evaluatorDetail: "No cloud model was configured when this characteristic was scored.",
+    },
+    {
+      characteristic: "services",
+      deterministicScore: 0.52,
+      evaluatorRating: null,
+      evaluatorStatus: "unrecorded",
+      evaluatorDetail: null,
+    },
+    {
+      characteristic: "attack_possibilities",
+      deterministicScore: 0.33,
+      evaluatorRating: null,
+      evaluatorStatus: "unavailable",
+      evaluatorDetail: null,
+    },
+    {
+      characteristic: "sanity",
+      deterministicScore: 0.8,
+      evaluatorRating: null,
+      evaluatorStatus: "evaluator_failed",
+      evaluatorDetail: "The cloud model returned an empty response after 3 retries.",
+    },
+    {
+      characteristic: "context",
+      deterministicScore: null,
+      evaluatorRating: null,
+      evaluatorStatus: "unavailable",
+      evaluatorDetail: null,
+    },
   ],
   modules: [
     { module: "static_nmap", moduleStatus: "completed", detail: null },
@@ -1381,8 +1452,20 @@ const evaluationRunC: EvaluationRun = {
   evaluationConfigFingerprint:
     "sha256:9de2ea3012e212895723505d80abf17ee1b4e8847ae41230c2d4f7ca1628c0c0",
   categoryScores: [
-    { characteristic: "basic_commands", deterministicScore: 0.88, evaluatorRating: null },
-    { characteristic: "services", deterministicScore: 0.49, evaluatorRating: null },
+    {
+      characteristic: "basic_commands",
+      deterministicScore: 0.88,
+      evaluatorRating: null,
+      evaluatorStatus: "evaluator_failed",
+      evaluatorDetail: null,
+    },
+    {
+      characteristic: "services",
+      deterministicScore: 0.49,
+      evaluatorRating: null,
+      evaluatorStatus: "evaluator_failed",
+      evaluatorDetail: "Rate limited by the cloud provider after 2 attempts.",
+    },
   ],
   modules: [
     { module: "static_nmap", moduleStatus: "completed", detail: null },
