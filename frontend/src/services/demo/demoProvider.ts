@@ -430,6 +430,21 @@ export const DemoProvider: DataProvider = {
     return { runId: demo.evaluationRuns[0]!.id };
   },
 
+  /**
+   * Remediation for one run's findings.
+   *
+   * An unknown id throws rather than returning [], for the same reason
+   * getEvaluation does: an empty list is a real answer meaning "this run has
+   * no findings to fix", and handing it back for a run that does not exist
+   * would report a missing run as a clean one.
+   */
+  async getEvaluationRemediation(runId) {
+    await delay(180);
+    const items = demo.evaluationRemediation[runId];
+    if (!items) throw new Error(`Evaluation run ${runId} not found in demo dataset`);
+    return items;
+  },
+
   async compareEvaluations(base, head) {
     await delay(260);
     const from = demo.evaluationRuns.find((r) => r.id === base);

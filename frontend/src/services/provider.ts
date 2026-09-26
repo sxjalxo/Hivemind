@@ -3,6 +3,7 @@ import type {
   AttackSession,
   AttackerProfile,
   EvaluationProgressEvent,
+  EvaluationRemediation,
   EvaluationRun,
   EvaluationRunSummary,
   Honeypot,
@@ -132,6 +133,18 @@ export interface DataProvider {
    * in `classification` and `differences` rather than hidden by a refusal.
    */
   compareEvaluations(base: string, head: string): Promise<RunComparison>;
+
+  /**
+   * How to fix what a run found, one entry per finding.
+   *
+   * A read: computing a patch touches nothing, and applying one is the
+   * operator's own act. Entries are returned for findings with no mechanical
+   * fix too, carrying `unsupportedReason` and no patch — so the UI must pair
+   * these with findings by `findingKey` and render the refusals, not filter
+   * them out. A reader who applied everything shown must not be able to
+   * believe they had addressed the whole run.
+   */
+  getEvaluationRemediation(runId: string): Promise<EvaluationRemediation[]>;
 
   /**
    * Optional live stage channel for a running evaluation.

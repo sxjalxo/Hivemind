@@ -1,6 +1,6 @@
 import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/tanstack-react-start";
 import { useQuery } from "@tanstack/react-query";
-import { Bell, Menu } from "lucide-react";
+import { Menu } from "lucide-react";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { TimeRangeSelector } from "./TimeRangeSelector";
 import { StatusDot } from "@/components/common";
@@ -36,13 +36,18 @@ function AiEngineIndicator() {
   );
 }
 
-export function TopBar({
-  onOpenNav,
-  alertCount = 6,
-}: {
-  onOpenNav: () => void;
-  alertCount?: number;
-}) {
+/**
+ * There is deliberately no notifications bell here.
+ *
+ * The original UI build shipped one whose badge read a hardcoded `alertCount =
+ * 6` — no caller ever passed the prop — above a button that did nothing. It sat
+ * in the top-right of every screen asserting six critical alerts that no
+ * telemetry supported, which is the one thing this project claims it never
+ * does. Same reasoning that retired the mock account menu below.
+ *
+ * Re-add it only with a real notables feed behind it.
+ */
+export function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   return (
     <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 md:px-5">
       <Button
@@ -60,21 +65,6 @@ export function TopBar({
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <TimeRangeSelector className="hidden sm:flex" />
         <AiEngineIndicator />
-
-        <Button
-          variant="ghost"
-          size="icon"
-          className="relative size-8"
-          aria-label={`Notifications: ${alertCount} critical alerts`}
-        >
-          <Bell className="size-4" />
-          {alertCount > 0 ? (
-            <span className="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-critical font-mono text-[9px] font-semibold text-critical-foreground">
-              {alertCount > 9 ? "9+" : alertCount}
-            </span>
-          ) : null}
-        </Button>
-
         <AccountControls />
       </div>
     </header>

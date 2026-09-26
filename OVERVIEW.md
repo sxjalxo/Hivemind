@@ -131,27 +131,7 @@ records — the field is omitted rather than reported as `0`, because "never rec
 
 ## 3. Setup
 
-Full instructions are in [`README.md`](README.md). In brief:
-
-```bash
-docker compose up -d                                    # infrastructure
-ollama pull llama3.1:8b                                 # local model
-cd backend && python -m venv .venv
-.venv/Scripts/python -m pip install -e ".[dev]"
-.venv/Scripts/python -m alembic upgrade head
-.venv/Scripts/python -m uvicorn app.main:app --port 8000
-cd ../frontend && npm install
-echo "VITE_API_BASE_URL=http://localhost:8000" > .env
-npm run dev                                             # http://localhost:8080
-```
-
-The backend installs its Elasticsearch pipeline and index template on first start and
-seeds a deterministic corpus, so the interface has data immediately. SSH to
-`127.0.0.1:2222` with any password to generate live traffic.
-
-**One check worth not skipping:** after pulling the model, confirm `ollama ps` reports
-`100% GPU`. If it falls back to CPU everything still works but runs several times
-slower, and nothing warns you.
+Setup is in [`README.md`](README.md).
 
 ---
 
@@ -251,6 +231,91 @@ against a target that does not simulate commands. Containment kept a *caller* fr
 choosing an address; this keeps the system from attacking a machine an operator
 configured.
 
+**Remediation — the loop's last arrow.** A finding says what is wrong; until now nothing
+said what to do about it, and the `recommendation` column wrote `None` for every
+deterministic finding. `GET /api/evaluations/{run_id}/remediation` now returns, for each
+finding, a concrete patch: files to place in the honeypot's honeyfs overlay, or cowrie.cfg
+options to set. It is a read — computing a patch touches nothing, and applying one stays
+the operator's deliberate act.
+
+It is a lookup table, not a model call. The finding key already encodes what a finding is
+*about*, and the set of things a Cowrie decoy can be wrong about in a way a probe detects
+is small and enumerable, so a table is exact where a model would be plausible. Where the
+run's own evidence determines the fix it is derived from it — the hostname written into
+`/etc/hostname` is the one the honeypot's `hostname` command actually printed, and a
+generated `/etc/os-release` describes the distribution the honeypot's own `uname -a`
+reports, read through the same extract contradiction detection uses, so a fix cannot close
+one finding by opening another. Where it cannot be derived — nobody can recover the
+accounts an emptied `/etc/passwd` should hold from the fact that it is empty — the body is
+a template and is flagged as one.
+
+**What it refuses to do is the part that matters.** A finding with no mechanical fix gets
+a reason and no patch at all: no half-fix, no plausible-looking cowrie.cfg stanza. Chain
+findings, evaluator prose and `service.http` are all refused, the last because nmap expects
+an HTTP service and Cowrie has no HTTP listener to enable — which is why it is reported by
+every arm of the degradation matrix including the best one, and is a finding about the
+question rather than the answer. Every finding gets an entry, refusals included, so a
+caller who applies the whole response cannot believe they addressed the whole run.
+
+Two Cowrie constraints are baked into the generated paths and neither is guessable: the
+fix for `/etc/os-release` writes `usr/lib/os-release`, because the former is a symlink and
+Cowrie attaches honeyfs content only to real files — a patch to the link applies cleanly
+and does nothing — and an overlay can replace content but never remove a node.
+
+Measured end to end: the remediation generated from the stock honeypot's own findings is
+byte-identical to the hand-built `hardened` arm of the matrix, which is independently
+measured at sanity 0.667 → 1.000 with contradictions 1 → 0.
+
+**In the interface**, a fix is rendered directly beneath the finding it repairs, on the
+run detail page — a patch read away from the defect it fixes is a patch applied without
+reading the defect. Each one carries the file path it belongs at, its contents with a copy
+button, and a badge saying whether the content was *derived* from this run's own evidence
+or is a *template* to review first. Refusals are rendered with the same weight rather than
+filtered out, for the same reason the API returns them: a reader who applied everything on
+screen must not be able to believe they had addressed the whole run. Nothing is shown at
+all until the fixes have actually loaded, because "we have not asked yet" and "there is no
+fix" are different claims, and if the request fails the page says so instead of leaving a
+silence that reads as the second.
+
+**A degradation matrix, which is how the evaluation is shown to discriminate.** The
+claim that matters about a realism evaluation is that it separates a better honeypot from
+a worse one. Proving that needs decoys of known, differing quality, and the obvious way to
+get them — a second machine, a VPS, a lab — costs money and produces a *worse* experiment:
+two dissimilar hosts differ in dozens of uncontrolled ways, so a delta between them is not
+attributable to any one of them.
+
+The `matrix` compose profile instead runs several containers from the same pinned image,
+each differing from the stock decoy in exactly one declared respect, so a delta has one
+candidate cause. Degradation is applied through Cowrie's `contents_path` overlay, so every
+arm's defect is a file in `infra/cowrie/matrix/` visible in a diff — no rebuilt image, no
+container mutated by hand. Four arms ship: `hardened`, stock, `degraded-sanity` and
+`degraded-fs`. `docker compose --profile matrix up -d` starts them and a plain
+`docker compose up -d` is unchanged, so the default stack and the test suite never see
+them.
+
+`scripts/run_degradation_matrix.py` evaluates every arm and prints the comparison. The
+measured result on this machine:
+
+```
+arm                      basic_c file_sy service attack_  sanity context   contradictions
+matrix-hardened            1.000   1.000   0.667   1.000   1.000   1.000        0
+cowrie-01  (stock)         1.000   1.000   0.667   1.000   0.667   1.000        1
+matrix-degraded-sanity     1.000   1.000   0.667   1.000   1.000   1.000        2
+matrix-degraded-fs         1.000   0.333   0.667   1.000   0.667   1.000        1
+```
+
+Read the `degraded-sanity` row against the `hardened` row: **identical scores, twice the
+contradictions.** That arm answers every probe, so every fact is observed and its sanity
+score is a perfect 3/3 — and it says it is Ubuntu while its kernel says Debian, and gives
+two different hostnames. An evaluation reporting scores alone would call it as good as the
+hardened decoy. The two axes are separate measurements of separate questions — *did it
+answer* and *do its answers agree* — and the matrix exists partly to keep anyone from
+quietly averaging them into one number.
+
+All four arms share one `evaluation_config_fingerprint` and carry four different
+`honeypot_fingerprint`s, which is the precondition that makes the comparison mean
+anything: the same question, asked of four different things.
+
 **Authentication, and roles scoped to a honeypot.** Unset, the API is open — which is
 what it always was, and defensible only bound to localhost. It is never quiet about it:
 a warning on every start and a row on the status dashboard reading *"OPEN — every route
@@ -278,7 +343,7 @@ and the lifecycle policy has no delete phase, deliberately: this is the research
 and a delete phase runs on a timer against data nobody is watching. Old indices become
 individually droppable by hand instead.
 
-**A provenance-tagged dashboard** — nineteen HTTP endpoints, two WebSocket progress
+**A provenance-tagged dashboard** — twenty-two HTTP endpoints, two WebSocket progress
 channels, fourteen routes, every AI conclusion expandable into its source event.
 
 ---
@@ -391,6 +456,20 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
   differ by some other volatile literal still score lower than they should.
 - **Attacker profile queries are O(sessions) per request** — fine at this corpus size,
   needing an aggregation if live traffic grows into the thousands.
+- **Contradiction detection compares claims, not raw output — and only where a probe
+  says how to read its claim.** Two probes can establish one fact in two formats:
+  `uname -a` prints a kernel string and `cat /etc/os-release` prints key=value lines, and
+  those can never be equal even when both correctly describe the same Debian. Compared
+  raw, a *correct* honeypot was reported as contradicting itself, so an operator who
+  populated an empty `/etc/os-release` — a real defect, and the very one the docs use as
+  an example — was handed a fresh false defect for fixing it. Probes now declare an
+  optional `extract` regex and are compared on the captured value; `load_probes` refuses a
+  probe set where two probes for one fact disagree about declaring one, because comparing
+  an extracted token against a raw dump would reintroduce the bug silently. A probe whose
+  extract does not match is dropped from the comparison rather than treated as agreeing —
+  a claim nobody could read is not evidence of agreement. The remaining limitation is that
+  the distribution list in the pattern is finite: a honeypot claiming a distribution not
+  named there has its `os.identity` cross-check silently skipped rather than failed.
 - **Prompt-injection fencing is a mitigation, not a guarantee.** Honeypot commands are
   attacker-authored, and an attacker who suspects analysis can write instructions into a
   command line. Attacker text is fenced and labelled as data, but the schema gates and the
@@ -422,13 +501,27 @@ port `0` where the honeypot had recorded none — both since fixed.
   the one Docker operation unconditionally equivalent to root on the host, and the
   capture was the only thing that needed one; every remaining docker call passes an
   allowlist of `exec`, `inspect` and `kill`.
-- **The scoring and compaction *algorithms* are not fingerprinted.** `scoring.py` holds
-  no constants to hash — it is pure functions — so two runs spanning a change to how a
-  fraction is computed fingerprint identically, and git revision is the extra key when
-  reading a trend. Narrower than it used to be: the result-deciding constants in
-  `rules.py`, `static/nmap.py` and `agent.py` are now hashed by value, so editing the
-  per-command timeout or the expected service list does move the fingerprint. Regex
-  compile flags still do not.
+- **The scoring and compaction *algorithms* are fingerprinted now, by structure.**
+  `scoring.py` holds no constants to hash — it is pure functions — so hashing values was
+  never going to reach it, and two runs spanning a change to how a fraction is computed
+  used to fingerprint identically with git revision as the only thing separating them: a
+  side channel that is not stored with the run and is gone by the time anyone reads a
+  comparison out of the database. `scoring.py`, `compaction.py` and `rules.py` are now
+  hashed as parsed syntax trees with docstrings stripped. Hashing the `.py` bytes was
+  rejected and stays rejected — a digest that moves on a comment trains people to ignore
+  it — but comments and formatting never enter a Python AST, while an operator, a branch
+  or a boundary does. A pure rename does move it, which is the cheap direction of wrong:
+  one lost comparison, rather than two incomparable runs silently sharing a trend line.
+  The result-deciding constants in `rules.py`, `static/nmap.py` and `agent.py` are hashed
+  by value as before. Regex compile flags still are not, and `nmap.py` and `agent.py` are
+  still covered by their constants rather than by their structure — deliberately, because
+  those two produce evidence and degrade to `unknown` when they fail, where the other
+  three silently produce a different number.
+
+  **Upgrading past this invalidates every stored `evaluation_config_fingerprint`.** Runs
+  recorded before it cannot be compared against runs recorded after, which is the correct
+  answer — the question genuinely changed — but it is a one-time break in every existing
+  trend line, not a silent one.
 - **A blank `evaluator_rating` now says why, per characteristic.**
   `evaluation_category_scores` carries `evaluator_status` and `evaluator_detail`, so "no
   BYOK key", "no evidence gathered", "a provider error" and "a verdict whose citations did
@@ -444,15 +537,38 @@ port `0` where the honeypot had recorded none — both since fixed.
   rule, since no better information was ever written for it. The run's own
   `evaluator_status` remains a worst-case aggregate and is a header summary only.
 - **The target and the measurement apparatus ARE fingerprinted now**, and each sits in
-  the fingerprint that means it. The target — host, port, SSH user, container — is part of
-  `honeypot_fingerprint`, because it names the thing under test. The capture interface,
-  capture sidecar and module timeouts are part of `evaluation_config_fingerprint`, because
-  they change what a run can *find* without changing the honeypot. The SSH password is in
+  the fingerprint that means it. The target — host, port, SSH user, container, and the
+  honeypot's own capture sidecar — is part of `honeypot_fingerprint`, because it names the
+  thing under test. The capture interface and module timeouts are part of
+  `evaluation_config_fingerprint`, because they change what a run can *find* without
+  changing the honeypot.
+
+  The capture sidecar moved out of the apparatus and into the target when the degradation
+  matrix was built, and the reason is worth keeping. A sidecar is declared
+  `network_mode: service:<honeypot>`, so it is pinned to one honeypot's network namespace
+  and is one-to-one with its container: there is no configuration in which honeypot A's
+  traffic can be captured from honeypot B's sidecar. Naming it does not describe *how* a
+  run measured, it describes *whose* traffic it measured. Filed as apparatus, it made a
+  fleet incomparable with itself — every honeypot necessarily has its own sidecar, so
+  every cross-honeypot comparison differed on the configuration fingerprint and
+  `compare_runs` reported each delta as **not attributable to the honeypot**, which is the
+  exact opposite of the truth on the comparison the matrix exists to make. The preferred
+  direction of error is unchanged: the value still moves a fingerprint whenever it
+  changes, now the one meaning "a different thing was under test". The SSH password is in
   neither: it does not change what the honeypot is, and fingerprints are stored and
   displayed.
 - **One paid API call per characteristic**, by design — the paper found merged prompts
-  markedly shallower — with no retry or backoff, so a rate limit ends that characteristic's
-  evaluation permanently rather than deferring it.
+  markedly shallower — now with a bounded retry behind it. A 429, a 5xx or a transport
+  failure is retried twice, waiting 1s then 4s, honouring `Retry-After` up to 30 seconds.
+  Every other 4xx is not: a wrong or expired key is settled, and re-asking spends the same
+  call to receive the same answer while delaying the `evaluator_failed` the operator needs
+  to see. A schema rejection is not retried either — the model answered, it answered in
+  the wrong shape, and re-asking that is a decision about paid calls rather than a
+  transport concern. Without this a single rate limit ended a characteristic's evaluation
+  permanently and filed the result as an evaluator failure, which put a gap in the record
+  that the provider caused and the honeypot got blamed for. Retries are logged at warning
+  level, because a key that is rate-limited on every run must not hide behind a run that
+  merely looks slow.
 - **A stale `RUNNING` row is cleared at startup, not while a process is live.** Within a
   single process the reconciliation is age-based (45 minutes) precisely so it can never
   terminate a genuinely running evaluation in another worker.
@@ -461,9 +577,8 @@ port `0` where the honeypot had recorded none — both since fixed.
 
 ## 6. Technical reference
 
-*Moved here from `README.md`, which is now a short overview, screenshots, installation
-and licence. Section 4 says what each of these features is for; this section is the
-operational detail — the commands, the tables and the settings.*
+*Section 4 says what these features are for; this is the operational detail — the
+commands, the tables and the settings.*
 
 ### The loop
 
@@ -487,10 +602,11 @@ captures better attacks.
 
 ```
 backend/     FastAPI service — ingest, analysis pipeline, evaluation subsystem
-             19 HTTP endpoints + 2 WebSocket progress channels
+             22 HTTP endpoints + 2 WebSocket progress channels
 frontend/    React + TanStack Router dashboard
 infra/       Elasticsearch index template, ingest pipeline and lifecycle policy,
              Filebeat and Cowrie config
+             cowrie/matrix/  one directory per degradation-matrix arm
 ```
 
 The evaluation subsystem is the largest piece, split by concern rather than by
@@ -632,9 +748,8 @@ Two model roles, following the source paper's split:
 | Analysis | `llama3.1:8b` locally via Ollama | temperature 0.3, `num_ctx` 8192 |
 | Realism evaluator (optional) | BYOK cloud model | one context per characteristic |
 
-`num_ctx` is 8192 rather than the paper's 32768 because that was measured on an 8 GB
-card: at 32768 the model spills to a 34%/66% CPU/GPU split and runs several times slower,
-silently. Long sessions are chunked and merged instead of being truncated.
+`num_ctx` is 8192 rather than the paper's 32768 — see section 5 for the measurement
+behind that. Long sessions are chunked and merged instead of being truncated.
 
 Each pipeline stage gets its own isolated context — seven for analysis, one per
 characteristic for evaluation — because merging them into a single prompt was measured to
@@ -796,9 +911,8 @@ share a laptop.
 `honeypot-events` is a **rollover alias**, not a single index. An index lifecycle policy
 rolls it over at 5 GB per primary shard or 30 days, whichever comes first.
 
-**Nothing is ever deleted.** The policy has no delete phase, deliberately. What rollover
-buys instead is that old indices become individually droppable *by hand*, once you have
-decided you don't need them:
+**Nothing is ever deleted** (section 4). What rollover buys instead is that old indices
+become individually droppable *by hand*, once you have decided you don't need them:
 
 ```bash
 curl -s "http://localhost:9200/_cat/indices/honeypot-events*?v&h=index,docs.count,store.size"
@@ -878,3 +992,45 @@ simulate commands. All three shipped chains are destructive, so a generic target
 `kind` defaults to `cowrie`, but every field that makes a target dangerous defaults the
 safe way — a target with no `container_name` is rejected rather than guessed at, and the
 internal `EvaluationTarget` defaults to `generic`.
+
+### Running the degradation matrix
+
+```bash
+docker compose --profile matrix up -d
+cd backend && .venv/Scripts/python scripts/run_degradation_matrix.py
+```
+
+`EVALUATION_TARGETS` must map all four arms first; `backend/.env.example` has the entry
+ready to paste. **It must include `cowrie-01` too** — the moment that map holds anything,
+an unmapped id is refused, so leaving the stock decoy out does not fall back to the single
+default, it makes the honeypot you already have un-evaluable.
+
+Each arm runs a full evaluation — reset, nmap, the agent's budget, the chains and their
+read-back, plus one evaluator call per characteristic if a BYOK key is set — so budget a
+few minutes per arm. The runs are ordinary evaluation runs, stored as such, so every
+number the script prints is also in the UI and any two arms can be opened in the
+comparison view afterwards. The script takes the same per-honeypot advisory lock
+`POST /api/evaluations` takes, so it cannot interleave with a run started from the UI.
+
+Arms are defined by `infra/cowrie/matrix/<arm>/`: a `cowrie.cfg` declaring
+`contents_path: /honeyfs`, and a `honeyfs/` tree whose files overlay the image's pickled
+filesystem. Two constraints on that overlay are worth knowing before adding an arm:
+
+- **Overlay the symlink target, never the link.** Cowrie attaches honeyfs content only to
+  nodes of type `T_FILE`; a symlink is skipped in silence, with no error and no log line.
+  `/etc/os-release` is a symlink to `usr/lib/os-release` in the image exactly as on real
+  Debian, so an overlay written at the `/etc` path does nothing at all. That is also *why*
+  stock's `/etc/os-release` is empty: the link resolves to a node the image ships with no
+  contents behind it.
+- **An overlay can only replace content, not remove a node.** Degrading a fact is done
+  with an empty file, which makes `cat` exit 0 with no output — recorded as `not_observed`,
+  a genuine absence, rather than as `unknown`.
+
+**Restarting an arm orphans its capture sidecar.** `network_mode: service:<arm>` joins the
+arm's network namespace at start; restarting the arm destroys that namespace, and the
+sidecar stays attached to the old one. It keeps running and `docker exec` still succeeds,
+so tcpdump reports from an interface the honeypot's traffic no longer crosses, and the run
+records traffic as `unknown`. Honest rather than a false "no traffic" — but it silently
+costs a characteristic, and it is what made two arms report `context` as unestablished on
+this matrix's first run. After restarting any arm, restart its sidecar too. A plain
+`docker compose --profile matrix up -d` orders them correctly by itself.

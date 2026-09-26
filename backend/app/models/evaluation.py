@@ -120,6 +120,52 @@ class FindingOut(CamelModel):
     evidence: list[EvidenceOut]
 
 
+class HoneyfsFileOut(CamelModel):
+    """One file to place in the honeypot's honeyfs overlay.
+
+    `path` is always relative to a honeyfs root the operator chooses. It is
+    never absolute, so applying a remediation cannot write outside the
+    directory the operator pointed at.
+    """
+
+    path: str
+    content: str
+
+
+class ConfigSettingOut(CamelModel):
+    section: str
+    option: str
+    value: str
+
+
+class RemediationOut(CamelModel):
+    """What to do about one finding, or why nothing can be done about it.
+
+    Served for EVERY finding in a run, including those nothing can fix.
+    Returning only the actionable ones would let a caller who applied the
+    whole response believe they had addressed the whole run.
+
+    `unsupportedReason` and the two patch collections are mutually exclusive:
+    when a reason is present both collections are empty. A remediation that
+    both explained why it could not help and shipped a patch would be telling
+    the operator two different things.
+
+    `fromTemplate` separates a value derived from this run's own evidence
+    (the hostname to write is the hostname the honeypot itself reported) from
+    a reviewed starting point (nobody can derive the contents of an emptied
+    /etc/passwd from the fact that it is empty). Applying a template is a
+    claim about the honeypot; applying a derived value is not.
+    """
+
+    finding_key: str
+    summary: str
+    honeyfs_files: list[HoneyfsFileOut] = []
+    config_settings: list[ConfigSettingOut] = []
+    unsupported_reason: str | None = None
+    from_template: bool = False
+    is_actionable: bool
+
+
 class FindingLifecycleOut(CamelModel):
     """One defect, and what happened to it between two runs.
 

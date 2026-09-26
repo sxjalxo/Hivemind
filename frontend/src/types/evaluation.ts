@@ -251,6 +251,50 @@ export interface EvaluationFinding {
   evidence: EvaluationEvidence[];
 }
 
+/** One file to place in the honeypot's honeyfs overlay. */
+export interface RemediationHoneyfsFile {
+  /**
+   * Relative to a honeyfs root the operator chooses, never absolute, so
+   * applying a remediation cannot write outside the directory they pointed at.
+   */
+  path: string;
+  content: string;
+}
+
+/** One cowrie.cfg option to set. */
+export interface RemediationConfigSetting {
+  section: string;
+  option: string;
+  value: string;
+}
+
+/**
+ * What to do about one finding, or why nothing can be done about it.
+ *
+ * The backend returns one of these for EVERY finding in a run, including the
+ * ones nothing can fix, so a reader who applied everything on screen cannot
+ * believe they addressed the whole run.
+ *
+ * `unsupportedReason` and the two patch collections are mutually exclusive:
+ * when a reason is present both collections are empty. The UI must not render
+ * a refusal as though a patch were coming.
+ */
+export interface EvaluationRemediation {
+  /** Lines up with `EvaluationFinding.findingKey`, which is how the UI pairs them. */
+  findingKey: string;
+  summary: string;
+  honeyfsFiles: RemediationHoneyfsFile[];
+  configSettings: RemediationConfigSetting[];
+  unsupportedReason: string | null;
+  /**
+   * True when the content is a reviewed starting point rather than a value
+   * derived from this run's own evidence. Applying a template is a claim about
+   * the honeypot; applying a derived value is not, and the UI says which.
+   */
+  fromTemplate: boolean;
+  isActionable: boolean;
+}
+
 /**
  * What happened to one defect between two runs.
  *

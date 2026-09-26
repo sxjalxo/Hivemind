@@ -134,16 +134,6 @@ A scripted generator is also available:
 cd backend && .venv/Scripts/python scripts/generate_traffic.py
 ```
 
-### Tests
-
-```bash
-cd backend && .venv/Scripts/python -m pytest
-cd frontend && npx tsc --noEmit && npm run lint && npm run build
-```
-
-The backend suite runs against the live Docker stack and the real local model, so bring
-the infrastructure up first. A clean run is `653 passed, 1 skipped`.
-
 ---
 
 ## License

@@ -264,6 +264,15 @@ export const evaluationQueries = {
       queryKey: ["evaluation-compare", base, head],
       queryFn: () => provider.compareEvaluations(base, head),
     }),
+  /**
+   * How to fix what a run found. Safe to fetch whenever the run is on screen:
+   * it is a pure read and a settled run's remediation never changes.
+   */
+  remediation: (id: string) =>
+    queryOptions({
+      queryKey: ["evaluation-remediation", id],
+      queryFn: () => provider.getEvaluationRemediation(id),
+    }),
 };
 
 /** Total stages a run publishes, for progress copy. */

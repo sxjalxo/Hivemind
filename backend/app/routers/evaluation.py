@@ -49,12 +49,15 @@ from app.models.evaluation import (
     EvaluationRunOut,
     EvaluationRunSummary,
     RunComparison,
+    ConfigSettingOut,
+    HoneyfsFileOut,
+    RemediationOut,
     StartEvaluationRequest,
     StartEvaluationResponse,
 )
 from app.config import get_settings
 from app.services.dashboard import list_honeypots
-from app.services.evaluation import runs, targets
+from app.services.evaluation import remediation, runs, targets
 from app.workers.queue import evaluation_job_key, get_queue, stream_progress
 
 logger = logging.getLogger(__name__)
@@ -264,6 +267,45 @@ async def get_evaluation(run_id: uuid.UUID) -> EvaluationRunOut:
     if run is None:
         raise HTTPException(status_code=404, detail=f"unknown evaluation run {run_id}")
     return run
+
+
+@router.get(
+    "/evaluations/{run_id}/remediation", response_model=list[RemediationOut]
+)
+async def get_evaluation_remediation(run_id: uuid.UUID) -> list[RemediationOut]:
+    """How to fix what this run found, finding by finding.
+
+    A read, not an action: this computes a patch and returns it, and nothing
+    here touches the honeypot. Applying a remediation is the operator's
+    deliberate act -- writing files into a honeyfs directory and restarting
+    the decoy -- which is why this is a GET and needs no admin role even
+    though starting the run that produced the findings does.
+
+    Every finding gets an entry, including the ones with no mechanical fix,
+    which carry `unsupportedReason` and no patch. See `remediation.py` for
+    why that refusal is the point rather than a gap.
+    """
+    run = await runs.load_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"unknown evaluation run {run_id}")
+    return [
+        RemediationOut(
+            finding_key=item.finding_key,
+            summary=item.summary,
+            honeyfs_files=[
+                HoneyfsFileOut(path=f.path, content=f.content)
+                for f in item.honeyfs_files
+            ],
+            config_settings=[
+                ConfigSettingOut(section=s.section, option=s.option, value=s.value)
+                for s in item.config_settings
+            ],
+            unsupported_reason=item.unsupported_reason,
+            from_template=item.from_template,
+            is_actionable=item.is_actionable,
+        )
+        for item in remediation.remediate(run)
+    ]
 
 
 @router.websocket("/evaluations/{run_id}/progress")

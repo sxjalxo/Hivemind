@@ -98,13 +98,141 @@ services:
     volumes:
       - ./infra/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
       - cowrie-logs:/cowrie-logs:ro
+      # The matrix arms' logs. Mounted unconditionally: the volumes are
+      # declared whatever profile is active, and an input whose file does
+      # not exist yet finds nothing, so this is inert until the arms run.
+      - cowrie-logs-hardened:/cowrie-logs-hardened:ro
+      - cowrie-logs-degraded-sanity:/cowrie-logs-degraded-sanity:ro
+      - cowrie-logs-degraded-fs:/cowrie-logs-degraded-fs:ro
     depends_on:
       elasticsearch:
         condition: service_healthy
       cowrie:
         condition: service_started
 
+  # ---------------------------------------------------------------------
+  # The degradation matrix.
+  #
+  # Arms of a controlled experiment: several honeypots from the SAME pinned
+  # image, each differing from the stock `cowrie` service above in exactly
+  # one declared respect, so a score delta between two arms is attributable
+  # to that one difference and to nothing else. It is what lets the realism
+  # evaluation be shown to discriminate without a second machine, a VPS or a
+  # cloud budget -- and it is better controlled than two dissimilar hosts
+  # would be, because everything except the named defect is held identical.
+  #
+  # Every arm sits behind `profiles: [matrix]`, so a plain `docker compose
+  # up -d` brings up exactly what it always did and the test suite sees an
+  # unchanged stack. Start them with:
+  #
+  #     docker compose --profile matrix up -d
+  #
+  # Each arm needs three things and gets them the same way:
+  #
+  #   * its own cowrie.cfg, mounted read-only, declaring `contents_path` so
+  #     the arm's honeyfs/ overlays the image's pickled filesystem. That
+  #     overlay is the whole degradation mechanism: no rebuilt image, no
+  #     mutated container, and every difference visible in a git diff.
+  #   * its own log volume and its own filebeat input, so its events carry
+  #     its own honeypot.id. Without that the arm is invisible to
+  #     `/honeypots` AND its attack chains cannot be verified -- the chain
+  #     read-back queries Elasticsearch by honeypot id, and an arm whose
+  #     logs never arrive leaves `attack_possibilities` unestablished.
+  #   * its own capture sidecar in its own network namespace, for the same
+  #     reason the stock one exists: a capture outside the namespace sees
+  #     none of the honeypot's traffic and would report "no traffic" as a
+  #     finding.
+  #
+  # Ports are published on the host because the backend usually runs there;
+  # the in-container listener stays 2222 for every arm.
+  #
+  # RESTARTING AN ARM ORPHANS ITS CAPTURE SIDECAR. `network_mode:
+  # service:<arm>` joins the arm's network namespace at start; restarting the
+  # arm destroys that namespace and creates a new one, and the sidecar is
+  # left attached to the old one. It keeps running, `docker exec` still
+  # succeeds, tcpdump still reports -- on an interface the honeypot's traffic
+  # no longer crosses. The capture then observes nothing, and the run records
+  # the traffic fact as `unknown`.
+  #
+  # That is the honest outcome rather than a false "no traffic", which is the
+  # whole reason the sidecar exists, but it silently costs a characteristic.
+  # It was caught the first time this matrix ran: two arms had been restarted
+  # and reported `context` as unestablished while two untouched arms scored
+  # it 1.000. So after restarting ANY arm, restart its sidecar too:
+  #
+  #     docker compose --profile matrix restart cowrie-hardened
+  #     docker compose --profile matrix restart capture-hardened
+  #
+  # `docker compose --profile matrix up -d` orders them correctly by itself;
+  # only a targeted `restart` needs this.
+
+  cowrie-hardened:
+    profiles: ["matrix"]
+    image: cowrie/cowrie@sha256:42e01e0e5fe705a0a63dacc0f1992b2d230740ac149af7675f48197abf740d44
+    ports:
+      - "127.0.0.1:2232:2222"
+    volumes:
+      - ./infra/cowrie/matrix/hardened/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./infra/cowrie/matrix/hardened/honeyfs:/honeyfs:ro
+      - cowrie-logs-hardened:/cowrie/cowrie-git/var/log/cowrie
+    restart: unless-stopped
+
+  capture-hardened:
+    profiles: ["matrix"]
+    image: nicolaka/netshoot@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+    command: ["sleep", "infinity"]
+    network_mode: "service:cowrie-hardened"
+    restart: unless-stopped
+    depends_on:
+      cowrie-hardened:
+        condition: service_started
+
+  cowrie-degraded-sanity:
+    profiles: ["matrix"]
+    image: cowrie/cowrie@sha256:42e01e0e5fe705a0a63dacc0f1992b2d230740ac149af7675f48197abf740d44
+    ports:
+      - "127.0.0.1:2242:2222"
+    volumes:
+      - ./infra/cowrie/matrix/degraded-sanity/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./infra/cowrie/matrix/degraded-sanity/honeyfs:/honeyfs:ro
+      - cowrie-logs-degraded-sanity:/cowrie/cowrie-git/var/log/cowrie
+    restart: unless-stopped
+
+  capture-degraded-sanity:
+    profiles: ["matrix"]
+    image: nicolaka/netshoot@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+    command: ["sleep", "infinity"]
+    network_mode: "service:cowrie-degraded-sanity"
+    restart: unless-stopped
+    depends_on:
+      cowrie-degraded-sanity:
+        condition: service_started
+
+  cowrie-degraded-fs:
+    profiles: ["matrix"]
+    image: cowrie/cowrie@sha256:42e01e0e5fe705a0a63dacc0f1992b2d230740ac149af7675f48197abf740d44
+    ports:
+      - "127.0.0.1:2252:2222"
+    volumes:
+      - ./infra/cowrie/matrix/degraded-fs/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./infra/cowrie/matrix/degraded-fs/honeyfs:/honeyfs:ro
+      - cowrie-logs-degraded-fs:/cowrie/cowrie-git/var/log/cowrie
+    restart: unless-stopped
+
+  capture-degraded-fs:
+    profiles: ["matrix"]
+    image: nicolaka/netshoot@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+    command: ["sleep", "infinity"]
+    network_mode: "service:cowrie-degraded-fs"
+    restart: unless-stopped
+    depends_on:
+      cowrie-degraded-fs:
+        condition: service_started
+
 volumes:
   es-data:
   pg-data:
   cowrie-logs:
+  cowrie-logs-hardened:
+  cowrie-logs-degraded-sanity:
+  cowrie-logs-degraded-fs:

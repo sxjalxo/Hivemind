@@ -4,6 +4,7 @@ import type {
   AttackSession,
   AttackerProfile,
   EvaluationProgressEvent,
+  EvaluationRemediation,
   EvaluationRun,
   EvaluationRunSummary,
   Honeypot,
@@ -146,6 +147,9 @@ export const FastAPIProvider: DataProvider = {
 
   compareEvaluations: (base, head) =>
     request<RunComparison>(endpoints.evaluationCompare, { query: { base, head } }),
+
+  getEvaluationRemediation: (runId) =>
+    request<EvaluationRemediation[]>(endpoints.evaluationRemediation(runId)),
 
   /**
    * Live stage channel for a running evaluation.

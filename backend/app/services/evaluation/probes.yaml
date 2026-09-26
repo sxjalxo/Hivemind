@@ -1,13 +1,31 @@
-version: "1"
+version: "2"
+
+# How a probe's claim about `os.identity` is read out of its raw output.
+#
+# Anchored and shared rather than written twice, because the two probes below
+# MUST read the fact the same way: `uname -a` prints a kernel string and
+# `cat /etc/os-release` prints key=value lines, so their raw outputs can never
+# be equal even when both correctly describe the same distribution. Comparing
+# them raw reported a working honeypot as contradicting itself. `load_probes`
+# refuses a probe set where two probes for one fact disagree about declaring an
+# extract; the anchor makes them agree on the pattern as well.
+#
+# The group is the distribution name, matched case-insensitively and
+# lower-cased before comparison, so "Debian" from a kernel string and
+# "Debian GNU/Linux 12 (bookworm)" from an os-release both reduce to `debian`.
+_os_distro: &os_distro '\b(debian|ubuntu|centos|fedora|alpine|arch|red\s*hat|rhel|suse|gentoo)\b'
+
 probes:
   - id: uname
     characteristic: basic_commands
     command: "uname -a"
     establishes: os.identity
+    extract: *os_distro
   - id: os_release
     characteristic: sanity
     command: "cat /etc/os-release"
     establishes: os.identity
+    extract: *os_distro
   - id: hostname_cmd
     characteristic: sanity
     command: "hostname"

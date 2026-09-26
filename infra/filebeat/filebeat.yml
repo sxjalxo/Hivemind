@@ -1,3 +1,17 @@
+# One input per honeypot, each stamping its OWN honeypot.id.
+#
+# `honeypot.id` is not cosmetic and is not only for the inventory screen.
+# `list_honeypots` derives the inventory by aggregating events on this field
+# -- a honeypot exists because its events do -- and, more consequentially,
+# chain verification reads the executed commands back out of Elasticsearch
+# filtered by honeypot id. An arm whose log never arrives under its own id
+# cannot have a single chain verified, and `attack_possibilities` is left
+# unestablished for it. So an arm without its own input here is an arm that
+# can only ever be compared on five of the six characteristics.
+#
+# The matrix inputs below point at volumes that only carry data while the
+# `matrix` compose profile is up. A filestream input whose path does not
+# exist simply finds nothing, so these are inert on a default stack.
 filebeat.inputs:
   - type: filestream
     id: cowrie-json
@@ -9,6 +23,63 @@ filebeat.inputs:
           target: cowrie
           overwrite_keys: true
           add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: cowrie-01
+            name: Cowrie SSH (med-ws-04)
+
+  - type: filestream
+    id: cowrie-json-hardened
+    enabled: true
+    paths:
+      - /cowrie-logs-hardened/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: matrix-hardened
+            name: Matrix arm - hardened
+
+  - type: filestream
+    id: cowrie-json-degraded-sanity
+    enabled: true
+    paths:
+      - /cowrie-logs-degraded-sanity/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: matrix-degraded-sanity
+            name: Matrix arm - degraded sanity
+
+  - type: filestream
+    id: cowrie-json-degraded-fs
+    enabled: true
+    paths:
+      - /cowrie-logs-degraded-fs/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: matrix-degraded-fs
+            name: Matrix arm - degraded filesystem
 
 # Cowrie's JSON is parsed into the nested "cowrie" namespace above (rather than
 # the document root) because Filebeat's own filestream input always attaches a
@@ -29,15 +100,12 @@ filebeat.inputs:
 # metadata (agent/ecs/host/input/log/@metadata.beat) and never touches the
 # "cowrie" object's contents, so an unrecognised Cowrie field can never be
 # silently discarded before Elasticsearch gets a chance to flag it.
+# Global processors. `honeypot.id` deliberately does NOT live here any more:
+# it is per-input above, because each matrix arm must stamp its own.
 processors:
   - drop_fields:
       fields: ["agent", "ecs", "host", "input", "log", "@metadata.beat"]
       ignore_missing: true
-  - add_fields:
-      target: honeypot
-      fields:
-        id: cowrie-01
-        name: Cowrie SSH (med-ws-04)
   - add_fields:
       target: labels
       fields:

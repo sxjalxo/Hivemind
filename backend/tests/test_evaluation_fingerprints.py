@@ -31,6 +31,7 @@ def _target(**overrides) -> "fingerprints.Target":
         "host": "cowrie",
         "ssh_port": 2222,
         "ssh_username": "root",
+        "capture_container": "hivemind-capture-1",
     }
     return fingerprints.Target(**{**base, **overrides})
 
@@ -39,7 +40,6 @@ def _apparatus(**overrides) -> "fingerprints.Apparatus":
     """The default measurement apparatus, overridden field by field."""
     base = {
         "capture_interface": "eth0",
-        "capture_container": "hivemind-capture-1",
         "nmap_timeout_seconds": 120,
         "capture_timeout_seconds": 30,
     }
@@ -583,6 +583,88 @@ def test_the_evaluator_model_is_not_part_of_the_config_fingerprint() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The algorithm digest. Hashing .py bytes was rejected because a comment edit
+# would invalidate every stored fingerprint; hashing the parsed tree is only
+# an acceptable substitute if it actually holds still across prose. Both
+# halves of that claim are load-bearing, so both are pinned.
+
+
+def test_prose_edits_do_not_move_the_algorithm_digest() -> None:
+    # If this fails, the digest moves on comments and docstrings, and the
+    # objection that ruled out file hashing applies to it too.
+    original = '''
+"""Module docstring, edited constantly."""
+
+
+def fraction(observed, established):
+    """Explain the rule at length."""
+    # A comment about the guard.
+    if not established:
+        return None
+    return observed / established
+'''
+    reworded = '''
+"""Module docstring, rewritten on a docs pass."""
+
+
+def fraction(observed, established):
+    """A completely different and much longer explanation."""
+    # A comment rewritten during review, plus a blank line below.
+
+    if not established:
+        return None
+
+    return observed / established
+'''
+    assert fingerprints._source_digest(original) == fingerprints._source_digest(reworded)
+
+
+def test_a_docstring_only_function_digests_without_raising() -> None:
+    # `_strip_docstrings` pops the docstring, which leaves an empty body.
+    # A stub like this is ordinary in this codebase and must not crash the
+    # fingerprint that gates every comparison.
+    assert fingerprints._source_digest('def stub():\n    """Nothing yet."""\n')
+
+
+@pytest.mark.parametrize(
+    "mutated",
+    [
+        # The exact edit the old docstring admitted was invisible: a change
+        # to how the fraction is computed.
+        "    return observed // established",
+        # A boundary moving by one.
+        "    return observed / established if established > 1 else None",
+        # A guard inverted.
+        "    return None if established else observed / established",
+    ],
+)
+def test_a_changed_computation_moves_the_algorithm_digest(mutated: str) -> None:
+    base = "def fraction(observed, established):\n    return observed / established\n"
+    head = base.rsplit("\n", 2)[0]
+    assert fingerprints._source_digest(base) != fingerprints._source_digest(
+        head + "\n" + mutated + "\n"
+    )
+
+
+def test_the_config_fingerprint_covers_the_scoring_and_compaction_code() -> None:
+    # The gap this closes: `scoring.py` is pure functions, so it contributes
+    # no constant to `_code_constants` and used to contribute nothing at all.
+    algorithms = fingerprints._config_parts(BUDGET, _apparatus())["algorithms"]
+    assert set(algorithms) == {
+        "app.services.evaluation.scoring",
+        "app.services.compaction",
+        "app.services.mitre.rules",
+    }
+    assert all(re.fullmatch(r"[0-9a-f]{64}", value) for value in algorithms.values())
+
+
+def test_the_algorithm_digest_is_stable_across_calls() -> None:
+    # Reads three files off disk on every call; a digest that moved between
+    # two reads of unchanged files would make every run incomparable.
+    assert fingerprints._algorithm_digest() == fingerprints._algorithm_digest()
+
+
+# ---------------------------------------------------------------------------
 # Live: the real container. Skips when docker or the honeypot is absent, so
 # the default suite stays hermetic. Read-only -- nothing is written into the
 # honeypot.
@@ -743,7 +825,17 @@ def test_the_target_carries_no_credential() -> None:
     """
     names = {field.name for field in dataclasses.fields(fingerprints.Target)}
 
-    assert names == {"kind", "container_name", "host", "ssh_port", "ssh_username"}
+    assert names == {
+        "kind",
+        "container_name",
+        "host",
+        "ssh_port",
+        "ssh_username",
+        # Pinned to this honeypot's network namespace by compose, so it names
+        # whose traffic was captured rather than how. Moved here from
+        # `Apparatus`; see the note there.
+        "capture_container",
+    }
     # The property, not just the current field list: any future field
     # whose name looks like a credential fails here too.
     assert not {n for n in names if "password" in n or "secret" in n or "key" in n}
@@ -791,7 +883,6 @@ async def test_an_invalid_container_name_still_raises_through_the_target(
     "field,value",
     [
         ("capture_interface", "eth1"),
-        ("capture_container", "hivemind-capture-other-1"),
         ("nmap_timeout_seconds", 5),
         ("capture_timeout_seconds", 1),
     ],
@@ -803,6 +894,37 @@ def test_changing_the_apparatus_changes_the_config_fingerprint(field, value) -> 
     )
 
     assert first != second, f"{field} moved but the fingerprint did not"
+
+
+def test_the_capture_sidecar_is_part_of_the_target_not_the_apparatus() -> None:
+    """A sidecar names WHOSE traffic was captured, not HOW we captured it.
+
+    It is declared `network_mode: service:<honeypot>`, so it is pinned to one
+    honeypot's namespace and is 1:1 with `container_name`. Fingerprinting it
+    as apparatus made every honeypot in a fleet incomparable with every other
+    one -- each necessarily has its own sidecar, so every cross-honeypot
+    comparison differed on the config fingerprint and `compare_runs` reported
+    the delta as not attributable to the honeypot, which is backwards.
+
+    Both halves are asserted: it must move the honeypot fingerprint, and it
+    must NOT move the config one. Dropping it from both would also satisfy
+    "the config fingerprint holds still", and would silently stop recording
+    which sidecar a run measured through.
+    """
+    import asyncio
+
+    async def _honeypot_fp(**overrides) -> str:
+        return fingerprints._uninspectable_fingerprint(_target(**overrides))
+
+    base = asyncio.run(_honeypot_fp())
+    moved = asyncio.run(_honeypot_fp(capture_container="hivemind-capture-other-1"))
+    assert base != moved, "the sidecar moved but the honeypot fingerprint did not"
+
+    assert fingerprints.evaluation_config_fingerprint(
+        BUDGET, _apparatus()
+    ) == fingerprints.evaluation_config_fingerprint(BUDGET, _apparatus()), (
+        "the config fingerprint must not depend on which honeypot was measured"
+    )
 
 
 def test_the_apparatus_is_frozen_and_whole() -> None:

@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, GitCompareArrows } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AssessmentPair } from "@/components/evaluation/AssessmentPair";
 import { EvaluatorStatusChip, RunStatusChip } from "@/components/evaluation/EvaluationStatusChips";
 import { EvaluationFindings } from "@/components/evaluation/EvaluationFindings";
@@ -113,6 +113,26 @@ function EvaluationRunPage() {
 }
 
 function RunDetail({ run }: { run: EvaluationRun }) {
+  // Remediation is derived from this run's findings, so it is only asked for
+  // once the run has settled. Fetching mid-run would show a fix list that
+  // changes under the reader as later stages raise more findings.
+  const remediationQuery = useQuery({
+    ...evaluationQueries.remediation(run.id),
+    enabled: isSettledRun(run),
+  });
+
+  // Undefined until it has actually loaded, never an empty map. An undefined
+  // map renders no fixes at all, while a loaded entry renders either a patch
+  // or "no automated fix" -- and "we have not asked yet" must never be shown
+  // as "there is no fix".
+  const remediationByKey = useMemo(
+    () =>
+      remediationQuery.data
+        ? new Map(remediationQuery.data.map((item) => [item.findingKey, item]))
+        : undefined,
+    [remediationQuery.data],
+  );
+
   const evaluatorAbsence =
     run.evaluatorStatus === "completed" ? null : RUN_EVALUATOR_ABSENCE_TEXT[run.evaluatorStatus];
   const everyModuleCompleted =
@@ -248,9 +268,17 @@ function RunDetail({ run }: { run: EvaluationRun }) {
 
       <Panel
         title="Findings"
-        description="Grouped by characteristic. Every finding carries the evidence it rests on."
+        description="Grouped by characteristic. Every finding carries the evidence it rests on, and the fix for it where one can be generated."
       >
-        <EvaluationFindings run={run} />
+        {remediationQuery.isError ? (
+          // Said out loud, because the alternative is silence that reads as
+          // "no fix exists" for every finding on the page.
+          <p className="mb-3 rounded border border-border bg-background/50 px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
+            Suggested fixes could not be loaded, so none are shown below. That is this request
+            failing, not a run whose findings have no fixes.
+          </p>
+        ) : null}
+        <EvaluationFindings run={run} remediation={remediationByKey} />
       </Panel>
 
       <Panel

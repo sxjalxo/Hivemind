@@ -1,11 +1,13 @@
 import { AlertTriangle } from "lucide-react";
 import { EventDisclosure } from "./EventDisclosure";
+import { RemediationPatch } from "./RemediationPatch";
 import { Mono, ProvenanceBadge, RiskBadge } from "@/components/common";
 import { CHARACTERISTIC_LABELS, SEVERITY_AS_RISK } from "@/services/evaluation";
 import type {
   EvaluationCharacteristic,
   EvaluationEvidence,
   EvaluationFinding,
+  EvaluationRemediation,
   EvaluationRun,
 } from "@/types";
 
@@ -19,7 +21,22 @@ import type {
  * cannot be resolved it says so, because an unresolvable claim rendered as a
  * grounded one is the failure this whole surface exists to prevent.
  */
-export function EvaluationFindings({ run }: { run: EvaluationRun }) {
+export function EvaluationFindings({
+  run,
+  remediation,
+}: {
+  run: EvaluationRun;
+  /**
+   * Fixes keyed by `findingKey`, or undefined while they are still loading or
+   * could not be fetched.
+   *
+   * Undefined renders NOTHING rather than an empty state. "We have not asked
+   * yet" and "there is no fix" are different claims, and showing the second
+   * for the first would report a defect as unfixable on the strength of a
+   * pending request.
+   */
+  remediation?: Map<string, EvaluationRemediation> | undefined;
+}) {
   if (run.findings.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
@@ -48,36 +65,45 @@ export function EvaluationFindings({ run }: { run: EvaluationRun }) {
             </span>
           </h3>
           <ul className="space-y-2">
-            {findings.map((finding) => (
-              <li
-                key={finding.id}
-                className="rounded-md border border-border bg-background/40 px-3 py-2.5"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <RiskBadge level={SEVERITY_AS_RISK[finding.severity]} />
-                  <ProvenanceBadge
-                    kind={finding.source === "evaluator" ? "AI INFERENCE" : "CORRELATED"}
-                  />
-                  <Mono tone="muted" className="text-[10px]">
-                    {finding.source}
-                  </Mono>
-                </div>
-                <p className="mt-2 text-sm leading-relaxed text-foreground/90">{finding.finding}</p>
-                {finding.recommendation ? (
-                  <p className="mt-1.5 border-l-2 border-border pl-2.5 text-xs leading-relaxed text-muted-foreground">
-                    {finding.recommendation}
+            {findings.map((finding) => {
+              const fix = remediation?.get(finding.findingKey);
+              return (
+                <li
+                  key={finding.id}
+                  className="rounded-md border border-border bg-background/40 px-3 py-2.5"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <RiskBadge level={SEVERITY_AS_RISK[finding.severity]} />
+                    <ProvenanceBadge
+                      kind={finding.source === "evaluator" ? "AI INFERENCE" : "CORRELATED"}
+                    />
+                    <Mono tone="muted" className="text-[10px]">
+                      {finding.source}
+                    </Mono>
+                  </div>
+                  <p className="mt-2 text-sm leading-relaxed text-foreground/90">
+                    {finding.finding}
                   </p>
-                ) : (
-                  <p className="mt-1.5 text-xs italic text-muted-foreground/70">
-                    No recommendation was attached to this finding.
-                  </p>
-                )}
-                <div className="mt-2.5 border-t border-border/70 pt-2">
-                  <p className="label-caps mb-1.5">Evidence</p>
-                  <EvidenceList evidence={finding.evidence} run={run} />
-                </div>
-              </li>
-            ))}
+                  {finding.recommendation ? (
+                    <p className="mt-1.5 border-l-2 border-border pl-2.5 text-xs leading-relaxed text-muted-foreground">
+                      {finding.recommendation}
+                    </p>
+                  ) : fix ? null : (
+                    // Only when nothing else says anything. With a fix on screen
+                    // this line would contradict it; without one it is still the
+                    // accurate statement it always was.
+                    <p className="mt-1.5 text-xs italic text-muted-foreground/70">
+                      No recommendation was attached to this finding.
+                    </p>
+                  )}
+                  {fix ? <RemediationPatch remediation={fix} /> : null}
+                  <div className="mt-2.5 border-t border-border/70 pt-2">
+                    <p className="label-caps mb-1.5">Evidence</p>
+                    <EvidenceList evidence={finding.evidence} run={run} />
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </section>
       ))}

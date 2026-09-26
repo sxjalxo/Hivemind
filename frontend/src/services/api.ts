@@ -130,4 +130,5 @@ export const endpoints = {
   evaluations: "/api/evaluations",
   evaluation: (id: string) => `/api/evaluations/${encodeURIComponent(id)}`,
   evaluationCompare: "/api/evaluations/compare",
+  evaluationRemediation: (id: string) => `/api/evaluations/${encodeURIComponent(id)}/remediation`,
 } as const;

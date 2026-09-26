@@ -28,11 +28,14 @@ STABLE when it should have changed silently merges two incomparable runs
 into a trend line. Every judgement here leans toward the first.
 """
 
+import ast
 import hashlib
 import json
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
-from app.services.evaluation import agent, container, probes
+from app.services import compaction
+from app.services.evaluation import agent, container, probes, scoring
 from app.services.evaluation.agent import AgentBudget
 from app.services.evaluation.static import chains, nmap
 from app.services.mitre import rules
@@ -64,6 +67,12 @@ class Target:
     host: str
     ssh_port: int
     ssh_username: str
+    # The honeypot's own packet-capture sidecar, declared in compose with
+    # `network_mode: service:<this honeypot>`. Part of the TARGET, not of the
+    # apparatus, because it is pinned to this honeypot's network namespace and
+    # cannot be pointed at another -- see the note in `Apparatus`, which is
+    # where it used to live and why it moved.
+    capture_container: str | None = None
 
 
 @dataclass(frozen=True)
@@ -83,20 +92,31 @@ class Apparatus:
     """
 
     capture_interface: str
-    # The capture sidecar, replacing the old `capture_image`. The backend no
-    # longer chooses an image -- compose declares the container and the
-    # backend execs into it -- so fingerprinting an image setting would claim
-    # to describe something this side does not control. What IS covered is
-    # which sidecar was used; the image behind it is the operator's, the same
-    # accepted gap as the honeypot container's writable layer.
-    #
-    # Renaming the field moves every stored evaluation-config fingerprint
-    # once. That is this module's preferred direction of error: one lost
-    # comparison, rather than two runs measured through different apparatus
-    # comparing as though they were the same.
-    capture_container: str | None
     nmap_timeout_seconds: int
     capture_timeout_seconds: int
+
+    # `capture_container` USED TO LIVE HERE and was moved to `Target`. The
+    # reasoning that put it here was that a capture sidecar is our instrument
+    # -- true of `capture_interface` and both timeouts, which stay, because an
+    # operator may point any of them anywhere for any honeypot.
+    #
+    # It is not true of the sidecar itself. A sidecar is declared
+    # `network_mode: service:<honeypot>`, so it is pinned to one honeypot's
+    # network namespace and is 1:1 with `container_name`, which was already in
+    # `Target`. There is no configuration in which honeypot A's traffic can be
+    # captured from honeypot B's sidecar, so naming it does not describe HOW we
+    # measured; it describes WHOSE traffic we measured.
+    #
+    # Leaving it here made a fleet uncomparable with itself. Every honeypot
+    # necessarily has its own sidecar, so every cross-honeypot comparison
+    # differed on the config fingerprint, and `compare_runs` reported every one
+    # of those deltas as NOT attributable to the honeypot -- the exact opposite
+    # of the truth, on the comparison the degradation matrix exists to make.
+    #
+    # The error direction this module prefers is unchanged: the value still
+    # moves a fingerprint whenever it changes, just the one that means "a
+    # different thing was under test" rather than "a different question was
+    # asked".
 
 # The one file in the honeypot that is not part of its image: bind-mounted
 # read-only from ./infra/cowrie/cowrie.cfg, so it changes what the honeypot
@@ -164,10 +184,10 @@ def _code_constants() -> dict:
     compile-time flags are NOT covered, so swapping `re.IGNORECASE` on or off
     without touching the pattern text moves no fingerprint.
 
-    Still uncovered, and honestly: the scoring and compaction ALGORITHMS.
-    `scoring.py` holds no constants to hash -- it is pure functions -- so a
-    change to how a fraction is computed moves nothing here. Two runs across
-    that kind of edit are still compared by git revision.
+    The scoring and compaction ALGORITHMS are not here either, and cannot
+    be: `scoring.py` holds no constants to hash, it is pure functions. They
+    are covered by `_algorithm_digest`, which hashes their parsed structure
+    rather than any value they contain.
     """
     return {
         "agent_per_command_timeout_seconds": agent.PER_COMMAND_TIMEOUT_SECONDS,
@@ -180,6 +200,85 @@ def _code_constants() -> dict:
         # is reproducible across processes.
         "rules_raw_text_rule_ids": sorted(rules._RAW_TEXT_RULE_IDS),
     }
+
+
+# The algorithms that decide a result, as opposed to the constants they read.
+# Named here rather than discovered, because a fingerprint over a set that can
+# grow by accident is a fingerprint nobody can reproduce from a stored digest.
+_ALGORITHM_MODULES = (scoring, compaction, rules)
+
+
+def _strip_docstrings(tree: ast.AST) -> ast.AST:
+    """Drop every docstring node, in place, and return the tree.
+
+    Docstrings are the one kind of prose that DOES reach the AST -- comments
+    do not -- so leaving them in would reintroduce exactly the defect that
+    made file hashing unacceptable. This module's docstrings are long and
+    edited often; each edit would otherwise invalidate every stored
+    fingerprint.
+    """
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            node.body.pop(0)
+    return tree
+
+
+def _algorithm_digest() -> dict:
+    """Digest the result-deciding CODE, not just the constants it reads.
+
+    This is the gap `_code_constants` records and does not close. Hashing
+    values covers a changed timeout or a changed expected-service list; it
+    covers nothing about how `_fraction_observed` computes a fraction, how
+    `compaction.py` decides what text the rulebook ever sees, or how
+    `rules.apply_rules` splits a command into segments. Edit any of those
+    and two runs across the change used to fingerprint byte-identically,
+    leaving git revision as the only thing separating them -- a side channel
+    that is not stored with the run and is gone the moment anyone reads a
+    comparison from the database.
+
+    Why this is not the file hashing the module docstring rejects. That
+    rejection is sound and stands: a digest that moves on a comment or a
+    reformat trains developers to ignore it, and this codebase carries more
+    explanatory prose per line than most. So the digest is taken over the
+    *parsed* module with docstrings stripped. Comments never enter a Python
+    AST at all, and neither does whitespace, line length, quote style or
+    trailing-comma churn. What does enter it is every operator, constant,
+    comparison, call and branch -- which is precisely the set that changes a
+    result.
+
+    Error direction, following the module header. A pure rename of a local
+    variable DOES move this digest, because names are AST nodes. That is the
+    cheap direction of wrong: it costs one lost comparison. The expensive
+    direction -- a changed algorithm that leaves the digest stable, merging
+    two incomparable runs into one trend line -- is the one it removes.
+
+    `ast.dump` rather than the source text, so the digest is a function of
+    the parsed structure and nothing else. Text mode with an explicit
+    encoding on the read, so a checkout with CRLF endings digests the same
+    as one with LF; this repo is `text=auto eol=lf` and the working tree on
+    Windows is not the only place these run.
+    """
+    return {
+        module.__name__: _source_digest(
+            Path(module.__file__).read_text(encoding="utf-8")
+        )
+        for module in _ALGORITHM_MODULES
+    }
+
+
+def _source_digest(source: str) -> str:
+    """Digest of one module's parsed structure. Raises if it will not parse."""
+    dumped = ast.dump(_strip_docstrings(ast.parse(source)))
+    return hashlib.sha256(dumped.encode("utf-8")).hexdigest()
 
 
 def _config_parts(budget: AgentBudget, apparatus: Apparatus) -> dict:
@@ -223,22 +322,30 @@ def _config_parts(budget: AgentBudget, apparatus: Apparatus) -> dict:
     different budgets fingerprint byte-identically until somebody remembers
     to edit this dict.
 
-    What is still NOT covered: the deterministic scoring *code*. Only its
-    data files are. `apply_rules` is `rules.py` as much as it is
-    rulebook.yaml -- `_split_command_segments`, `_filtered_command_text`,
+    The deterministic scoring *code* is covered too, by `algorithms`.
+    `apply_rules` is `rules.py` as much as it is rulebook.yaml --
+    `_split_command_segments`, `_filtered_command_text`,
     `_DATA_PRODUCING_HEAD` and `_RAW_TEXT_RULE_IDS` all decide what counts
     as a technique hit; `app/services/compaction.py` decides what text those
-    rules ever see; `static/nmap.py`'s `_EXPECTED_SERVICES` and `_OPEN_LINE`
-    decide what a port scan establishes; `agent.PER_COMMAND_TIMEOUT_SECONDS`
-    decides how long a probe gets before it counts as failed. Editing any of
-    them changes a run's results with no fingerprint movement. (One narrow
-    exception falls out of hashing loaded objects: `rules._CMD_START` is
-    substituted into every anchored pattern by `load_rules`, so the patterns
+    rules ever see; `scoring.py` decides how the fractions they feed are
+    computed. Those three modules are hashed as parsed syntax trees with
+    docstrings removed, which is what makes it acceptable where hashing the
+    .py bytes was not: a comment, a reformat or a docstring edit moves
+    nothing, an operator or a branch moves everything. See
+    `_algorithm_digest`.
+
+    (One narrow overlap falls out of hashing loaded objects: `rules._CMD_START`
+    is substituted into every anchored pattern by `load_rules`, so the patterns
     as loaded -- and hence that constant, as it stood at load time -- are
-    covered.) Hashing the .py files themselves was rejected: it would
-    invalidate every stored fingerprint on a comment or a refactor, which
-    trains developers to ignore the value. Two runs across a code change to
-    the scoring pipeline are compared by git revision, not by this.
+    covered twice over.)
+
+    Two modules are still covered by constants alone rather than by
+    structure: `static/nmap.py` and `agent.py`. Their result-deciding values
+    are hashed by `_code_constants`, but a change to how `nmap.py` parses a
+    scan, or how `agent.py` sequences a command, moves nothing. They were
+    left out because they produce *evidence* and degrade honestly to
+    `unknown` when they fail, where the three above silently produce a
+    different number. Add them here if that stops being true.
 
     The evaluator's model and provider are deliberately NOT here. Three
     reasons: `EvaluationRun.evaluator_model` is already persisted per-run
@@ -271,6 +378,10 @@ def _config_parts(budget: AgentBudget, apparatus: Apparatus) -> dict:
         rule_payload = {
             "rules": [rule.model_dump(mode="json") for rule in rules.load_rules()]
         }
+        # Inside the try for the same reason as everything above it: an
+        # unreadable or unparseable module is a run that cannot be compared,
+        # never a run that quietly drops one component of its fingerprint.
+        algorithms = _algorithm_digest()
     except Exception as exc:
         # Any failure to produce the configuration -- an unreadable file,
         # malformed yaml, a model that will not validate -- is a run that
@@ -288,6 +399,7 @@ def _config_parts(budget: AgentBudget, apparatus: Apparatus) -> dict:
         # field and it enters the digest without anyone remembering to.
         "apparatus": asdict(apparatus),
         "code_constants": _code_constants(),
+        "algorithms": algorithms,
     }
 
 

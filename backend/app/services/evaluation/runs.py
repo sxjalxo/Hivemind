@@ -1231,13 +1231,13 @@ async def start_run(
             host=target.host,
             ssh_port=target.port,
             ssh_username=target.username,
+            capture_container=configured.capture_container,
         )
     )
     config_fp = _evaluation_config_fingerprint(
         budget,
         fingerprints.Apparatus(
             capture_interface=configured.capture_interface,
-            capture_container=configured.capture_container,
             nmap_timeout_seconds=settings.evaluation_nmap_timeout_seconds,
             capture_timeout_seconds=settings.evaluation_capture_timeout_seconds,
         ),

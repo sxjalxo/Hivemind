@@ -35,3 +35,41 @@ def test_at_least_two_sanity_probes_share_one_fact() -> None:
 
 def test_probe_set_version_is_pinned() -> None:
     assert PROBE_SET_VERSION
+
+
+def test_a_half_declared_extract_is_refused_at_load() -> None:
+    # The silent failure this guard exists for: one probe of a pair reads its
+    # fact through an extract and the other does not, so an extracted token is
+    # compared against a raw command dump. They differ on every run, every run
+    # reports a contradiction, and the honeypot is blamed for our own
+    # inconsistent declaration. Refused loudly instead.
+    import pytest
+
+    from app.services.evaluation.probes import Probe, ProbeSetError, _check_comparable_forms
+
+    mixed = (
+        Probe(id="a", characteristic="sanity", command="x", establishes="os.identity",
+              extract=r"\b(debian)\b"),
+        Probe(id="b", characteristic="sanity", command="y", establishes="os.identity"),
+    )
+    with pytest.raises(ProbeSetError, match="os.identity"):
+        _check_comparable_forms(mixed)
+
+
+def test_a_consistently_declared_pair_loads() -> None:
+    from app.services.evaluation.probes import Probe, _check_comparable_forms
+
+    pattern = r"\b(debian)\b"
+    both = (
+        Probe(id="a", characteristic="sanity", command="x", establishes="os.identity",
+              extract=pattern),
+        Probe(id="b", characteristic="sanity", command="y", establishes="os.identity",
+              extract=pattern),
+    )
+    _check_comparable_forms(both)  # must not raise
+
+    neither = (
+        Probe(id="c", characteristic="sanity", command="x", establishes="host.name"),
+        Probe(id="d", characteristic="sanity", command="y", establishes="host.name"),
+    )
+    _check_comparable_forms(neither)  # must not raise

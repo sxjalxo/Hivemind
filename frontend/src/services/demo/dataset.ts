@@ -8,6 +8,7 @@
 import type {
   AttackSession,
   AttackerProfile,
+  EvaluationRemediation,
   EvaluationRun,
   EvaluationRunSummary,
   FindingLifecycle,
@@ -1246,6 +1247,28 @@ const evaluationRunA: EvaluationRun = {
       ],
     },
     {
+      // The one demo finding with a mechanical fix, so demo mode exercises
+      // the patch path and not only the refusal path. Its remediation below
+      // mirrors what the real backend generates for this key: the file
+      // written is `usr/lib/os-release`, the symlink TARGET, because Cowrie
+      // attaches honeyfs content only to real files.
+      id: "5e1a9c30-6b82-4d47-93f1-7c0a4e2d8b65",
+      findingKey: "probe:os_release:os.identity",
+      characteristic: "sanity",
+      severity: "medium",
+      finding: "os_release did not establish os.identity",
+      recommendation: null,
+      source: "deterministic",
+      evidence: [
+        {
+          kind: "probe",
+          esEventId: null,
+          chainStepId: null,
+          probeResultId: "7a3f5c81-04be-4d29-9f16-6c8d21ba47e0",
+        },
+      ],
+    },
+    {
       id: "3c8e0a17-19bd-4f52-b6c7-84a2d5e61b9f",
       findingKey: "evaluator:file_system",
       characteristic: "file_system",
@@ -1294,6 +1317,27 @@ const evaluationRunA: EvaluationRun = {
       establishes: null,
       value: null,
       factStatus: "unknown",
+    },
+    {
+      // `not_observed`, NOT `unknown`: the command ran cleanly and the file
+      // was empty, which is a genuine absence and therefore a defect. The
+      // `unknown` row above is the opposite case and must stay distinct.
+      id: "7a3f5c81-04be-4d29-9f16-6c8d21ba47e0",
+      module: "shell_probes",
+      probeId: "os_release",
+      target: "/etc/os-release",
+      establishes: "os.identity",
+      value: null,
+      factStatus: "not_observed",
+    },
+    {
+      id: "9c21e7d4-b85a-4f63-8e07-1d4a90f3cb52",
+      module: "shell_probes",
+      probeId: "uname",
+      target: "uname -a",
+      establishes: "os.identity",
+      value: "Linux med-ws-04 6.1.0-21-amd64 #1 SMP Debian 6.1.90-1 x86_64 GNU/Linux",
+      factStatus: "observed",
     },
   ],
 };
@@ -1478,6 +1522,82 @@ const evaluationRunC: EvaluationRun = {
 };
 
 export const evaluationRuns: EvaluationRun[] = [evaluationRunA, evaluationRunB, evaluationRunC];
+
+/**
+ * Remediation per run, keyed by run id.
+ *
+ * Hand-authored to match what the backend's own table produces for these
+ * finding keys, because the alternative -- reimplementing the lookup here --
+ * would be a second copy of the rules that could drift from the real one and
+ * show a fix the backend would never generate.
+ *
+ * There is one entry per finding of each run and no more. Most of them are
+ * refusals, which is accurate rather than a gap in the demo: of the kinds
+ * these runs raise, only a probe fact has a mechanical fix. A chain technique
+ * that never appeared has several possible causes needing different fixes, the
+ * evaluator writes prose that is deliberately not reduced to a patch, and the
+ * banner contradiction has no honeyfs or cowrie.cfg lever in this image.
+ */
+export const evaluationRemediation: Record<string, EvaluationRemediation[]> = {
+  [evaluationRunA.id]: [
+    {
+      findingKey: "sanity:service.banner:ssh_banner+uname",
+      summary: "No generated fix for a contradiction about 'service.banner'.",
+      honeyfsFiles: [],
+      configSettings: [],
+      unsupportedReason: "no lever is known for reconciling these two sources in this image.",
+      fromTemplate: false,
+      isActionable: false,
+    },
+    {
+      findingKey: "probe:os_release:os.identity",
+      summary:
+        "The honeypot returns an empty /etc/os-release. Write an os-release describing debian, matching the distribution this honeypot's own `uname -a` already reports.",
+      honeyfsFiles: [
+        {
+          path: "usr/lib/os-release",
+          content: `PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+`,
+        },
+      ],
+      configSettings: [],
+      unsupportedReason: null,
+      fromTemplate: true,
+      isActionable: true,
+    },
+    {
+      findingKey: "evaluator:file_system",
+      summary: "The evaluator's critique is prose, not a patch.",
+      honeyfsFiles: [],
+      configSettings: [],
+      unsupportedReason:
+        "this is a model's judgement about one characteristic, deliberately not reduced to a mechanical change. Read it and decide.",
+      fromTemplate: false,
+      isActionable: false,
+    },
+  ],
+  [evaluationRunB.id]: [],
+  [evaluationRunC.id]: [
+    {
+      findingKey: "chain:download-and-execute:T1105",
+      summary: "No generated fix for T1105 missing from the download-and-execute chain.",
+      honeyfsFiles: [],
+      configSettings: [],
+      unsupportedReason:
+        "a technique failing to appear has many possible causes -- an unimplemented command, a step that errored, ingest lag -- and they need different fixes. Read the chain step's own evidence.",
+      fromTemplate: false,
+      isActionable: false,
+    },
+  ],
+};
 
 const toEvaluationSummary = (run: EvaluationRun): EvaluationRunSummary => ({
   id: run.id,
