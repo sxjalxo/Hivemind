@@ -121,6 +121,13 @@ async def get_session(session_id: str) -> AttackSession | None:
     analysis = await latest_for_session(session_id)
     if analysis:
         session.analysis_state = "completed"
+        # `risk` and `risk_score` are the MODEL's, copied onto the session --
+        # there is no deterministic scorer, and `_assemble` leaves them 0 /
+        # "informational" until an analysis exists. They are not evidence-gated
+        # (see `compaction.build_prompt`) and move between runs of one session,
+        # so anything rendering them must label them as inference. The session
+        # page once captioned this value "scored from recorded session
+        # behaviour before any LLM interpretation", which was exactly backwards.
         session.risk = analysis.risk
         session.risk_score = analysis.risk_score
         session.mitre_technique_ids = [t.technique_id for t in analysis.techniques]

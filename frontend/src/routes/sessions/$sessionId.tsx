@@ -73,6 +73,8 @@ function SessionInvestigationPage() {
 
   const data = session.data;
   const observedTechniques = mitre.data?.techniques.filter((item) => item.observed) ?? [];
+  /** Whether a stored analysis is what `riskScore` and `risk` are reporting. */
+  const analysed = data.analysisState === "completed";
 
   return (
     <div className="space-y-5">
@@ -111,9 +113,19 @@ function SessionInvestigationPage() {
           <RiskScoreMeter score={data.riskScore} />
           <div className="mt-3 flex items-center gap-2">
             <RiskBadge level={data.risk} size="md" />
+            {analysed ? <ProvenanceBadge kind="AI INFERENCE" /> : null}
           </div>
+          {/* This number is `analysis.risk_score`, which `get_session` copies
+              onto the session -- there is no deterministic scorer behind it.
+              It comes from the model's JSON, is explicitly NOT evidence-gated
+              (see the note in `services/compaction.py`), and moves between
+              runs of the same session. Captioning it as a pre-LLM measurement,
+              as this panel once did, was the one mislabel this project cannot
+              afford: it presented a model's opinion as an observation. */}
           <p className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted-foreground">
-            Scored from recorded session behaviour before any LLM interpretation.
+            {analysed
+              ? "Proposed by the model in the latest analysis — not measured from telemetry. It is not evidence-gated and can differ between runs of the same session."
+              : "Not established. The session has not been analysed, so nothing has scored it; this reads informational because the question is unanswered, not because the session is harmless."}
           </p>
         </Panel>
 
