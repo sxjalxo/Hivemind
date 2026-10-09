@@ -635,14 +635,16 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `653 passed, 1 skipped`** — there are no
-expected failures.
+infrastructure up first. **A clean run is `703 passed` with at most one skip** — there are
+no expected failures.
 
-The skip is the one end-to-end test that depends on whether `llama3.1:8b` infers a
-technique on that pass, and on whether its citation survives the evidence barrier. Neither
-is a defect in the code, so it skips with a reason rather than failing. The boundary it
-protects — an LLM-sourced mapping is never marked `observed` — is pinned separately by a
-deterministic test that needs no model at all.
+The last digit moves because one test is model-dependent, not because the suite is flaky.
+That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
+on whether its citation survives the evidence barrier; when it does not, the test skips
+with a reason rather than failing, so a clean run is `703 passed` or `702 passed,
+1 skipped` and both are green. Quoting a single exact number here would make an ordinary
+run look like a regression. The boundary it protects — an LLM-sourced mapping is never
+marked `observed` — is pinned separately by a deterministic test that needs no model.
 
 ```bash
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
@@ -870,12 +872,75 @@ and a report credits the analysis it triggers to whoever asked for the report.
 per session or per report. And the roles map is edited by hand through the Clerk API —
 there is no UI for granting access.
 
+### Running the whole product in containers
+
+`docker compose --profile app up -d` brings up the backend and the dashboard alongside the
+infrastructure. Behind a profile for the same reason the matrix arms are: a plain
+`docker compose up -d` still starts exactly the infrastructure it always did, so the
+developer install and the test suite are untouched and nothing contends for port 8000.
+
+Three things the packaging had to solve, each of which was a real defect rather than a
+packaging inconvenience:
+
+- **`paramiko` was declared as a dev extra**, while `agent.py` imports it at module scope
+  and `app.main` imports that transitively. A plain `pip install .` therefore produced a
+  backend that died on import. Nobody had hit it because the documented install is
+  `pip install -e ".[dev]"`, which pulls the extra in and hides the mistake. It is a
+  runtime dependency now.
+- **The frontend refused to render without Clerk credentials.** `clerkMiddleware()` throws
+  at request time when no secret key is set, turning every page into a 500 — the opposite
+  of the backend, which answers every caller with `CLERK_ISSUER` unset and says so loudly.
+  A frontend that cannot start without the author's Clerk keys cannot be distributed at
+  all, so the middleware is now installed only when a key exists. Nothing in the app calls
+  `auth()` or any other server-side Clerk helper; anything that ever does must check the
+  same condition.
+- **`bootstrap_es` resolves the ingest pipeline, index template and ILM policy from the
+  repo root** (`parents[3] / "infra"`), which inside the image is `/infra`. They are
+  bind-mounted there rather than baked in, for the same reason Elasticsearch, Filebeat and
+  Cowrie bind-mount that directory: it is operator-editable configuration, and a copy
+  inside the image would diverge from the one on disk without anyone noticing.
+
+Ollama is deliberately not containerised — a container would not reach the GPU on Windows,
+and the model only fits on an 8 GB card at `num_ctx` 8192 — so the backend reaches it at
+`host.docker.internal`. `VITE_API_BASE_URL` is baked into the bundle at build time and is
+therefore the address the *browser* uses, not one resolved inside the compose network.
+
 ### Docker privilege
 
 The backend talks to the Docker daemon, and that access has no gradations of its own:
 whoever can reach it can create a container, and `docker run -v /:/host --privileged` is
 root on the host with no exploit required. No socket proxy, seccomp profile or API policy
 makes that call safe. It can only be not made.
+
+**So the containerised backend does not get it.** Driving the honeypot's container from
+inside a container means sharing `/var/run/docker.sock`, and that is the same
+unconditional grant as above: the verb allowlist lives in this codebase, the daemon does
+not enforce it, and it therefore constrains this backend rather than anyone who reaches
+the socket by another route. Mounting it read-only would not change that — the socket is
+an API, and `ro` does not remove its write verbs. `docker-compose.yml` leaves it out.
+
+What that costs is the evaluation half, and only when the backend runs in a container. The
+reset is a precondition, so a run against a `cowrie` target fails there with a
+`ResetError` before any run row exists — a terminal progress frame and a permanent 404,
+which is the same loud failure the preconditions give for an unreachable target. Analysis
+is untouched. Evaluations are run from the host install instead, where the backend calls
+Docker as the invoking user and shares nothing with a container; that is the configuration
+every number in the degradation matrix above was measured with.
+
+**And the dashboard says so before you try.** A run that fails in its preconditions never
+gets a row, so without a status row "evaluation is unavailable" was discoverable only by
+starting one and waiting out the run-detail page's grace window to be told the run has no
+record — true, but a poor way to learn it. `docker_health` probes with the `inspect` verb
+the allowlist already permits and reports three states that must not be collapsed:
+`connected`, `disconnected` (*"no Docker access — evaluation runs cannot start; analysis
+is unaffected"*, naming both halves so an open dashboard does not read as a broken
+install), and `degraded` for a daemon that answered when the honeypot's container did not,
+which is a different problem with a different fix. An unrecognised failure never reports
+`connected`. Same convention as the auth row, and for the same reason.
+
+The `docker` CLI stays in the image so that restoring the mount is a one-line compose
+change rather than a rebuild, for anyone who decides the trade is worth it on a host that
+is theirs alone.
 
 So the application does not make it. Three verbs are permitted, enforced by an allowlist
 every docker invocation passes through (`app/services/evaluation/container.py`):

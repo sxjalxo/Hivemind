@@ -11,6 +11,24 @@ export const API_BASE_URL: string =
 /** Demo mode is on unless an API base URL is explicitly configured. */
 export const DEMO_MODE: boolean = !import.meta.env["VITE_API_BASE_URL"];
 
+/**
+ * Whether this build has authentication at all.
+ *
+ * Clerk needs a publishable key in the bundle. Without one there is no
+ * identity: ClerkProvider still mounts, but no session and no claims ever
+ * arrive, so every role check resolves to the `viewer` floor and every
+ * admin-gated control renders disabled — while the backend, configured the
+ * same way, is fail-open and answers every caller ("OPEN — every route
+ * answers any caller", as its own status row says). A UI stricter than the
+ * backend it fronts is not a security boundary, it is a broken install: it
+ * hides working features and explains itself with a tooltip asking for a
+ * role that cannot be granted.
+ *
+ * Mirrors `clerkConfigured` in `start.ts`, which makes the same call for the
+ * server middleware.
+ */
+export const AUTH_CONFIGURED: boolean = Boolean(import.meta.env["VITE_CLERK_PUBLISHABLE_KEY"]);
+
 export class ApiError extends Error {
   constructor(
     message: string,

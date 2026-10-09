@@ -1,5 +1,17 @@
 import { useAuth } from "@clerk/tanstack-react-start";
-import { isDemoMode } from "@/services";
+import { AUTH_CONFIGURED, isDemoMode } from "@/services";
+
+/**
+ * An instance with nobody to be: demo mode, or a build with no Clerk key.
+ *
+ * Both report `admin` for the same reason. There is no identity to read a
+ * role from, and the backend in this configuration refuses nothing, so a
+ * role check can only ever subtract — disabling AI Analyze, Run evaluation
+ * and Analyse while the API behind them answers every caller. Resolving to
+ * `viewer` here was a silent regression: it made the documented default
+ * setup (no `CLERK_ISSUER`, open API) a read-only shell.
+ */
+const OPEN_INSTANCE = isDemoMode || !AUTH_CONFIGURED;
 
 export type Role = "admin" | "viewer";
 
@@ -23,7 +35,8 @@ export type Role = "admin" | "viewer";
  *
  * Demo mode has no Clerk and no backend to refuse anything, so it reports
  * `admin` rather than rendering a read-only shell of an app whose whole
- * purpose is to demonstrate the features.
+ * purpose is to demonstrate the features. A build with no Clerk key does the
+ * same, for the same reason — see `OPEN_INSTANCE` above.
  */
 export function useRole(): {
   role: Role;
@@ -46,7 +59,7 @@ export function useRole(): {
   // LOWER than the global role, otherwise the map could only ever widen
   // access and would not be an access-control list.
   const roleFor = (honeypotId: string): Role => {
-    if (isDemoMode) return "admin";
+    if (OPEN_INSTANCE) return "admin";
     const explicit =
       perHoneypot && typeof perHoneypot === "object" ? perHoneypot[honeypotId] : undefined;
     if (explicit === "admin") return "admin";
@@ -54,7 +67,7 @@ export function useRole(): {
     return globalRole;
   };
 
-  if (isDemoMode) {
+  if (OPEN_INSTANCE) {
     return {
       role: "admin",
       isAdmin: true,

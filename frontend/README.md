@@ -14,8 +14,8 @@ Honeypot → Logs → Elasticsearch → AI/LLM Analysis → Attacker Behaviour C
 
 This directory is the **frontend workspace** of the Hivemind monorepo; the FastAPI
 service lives in `../backend` and the infrastructure in `../infra`. To run the whole
-stack see the [root README](../README.md), or [`../DEMO.md`](../DEMO.md) for a
-step-by-step setup guide that assumes no prior knowledge.
+stack see the [root README](../README.md), or [`../OVERVIEW.md`](../OVERVIEW.md) for the
+design rationale and technical reference.
 
 The frontend still stands alone: it ships with a clearly-labelled demo dataset so it runs
 with no backend at all, and a single environment variable moves every request onto

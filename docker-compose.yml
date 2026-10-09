@@ -111,6 +111,99 @@ services:
         condition: service_started
 
   # ---------------------------------------------------------------------
+  # The application itself.
+  #
+  # Behind a profile for the same reason the matrix arms are: a plain
+  # `docker compose up -d` still brings up exactly the infrastructure it
+  # always did, so the developer install (backend on the host with reload,
+  # `npm run dev`, the test suite on :8000) is unchanged and nothing fights
+  # over port 8000. The whole product is one command away:
+  #
+  #     docker compose --profile app up -d          # everything, on :8080
+  #
+  # Ollama is deliberately NOT containerised. It stays on the host for GPU
+  # access -- an 8 GB card holds llama3.1:8b only at num_ctx 8192, and a
+  # container would not see the GPU on Windows at all -- so the backend
+  # reaches it through host.docker.internal.
+
+  backend:
+    profiles: ["app"]
+    build: ./backend
+    ports:
+      - "127.0.0.1:8000:8000"
+    # THE DOCKER SOCKET IS DELIBERATELY NOT MOUNTED HERE.
+    #
+    # `container.py` shells out to the docker CLI to reset the honeypot, digest
+    # its cowrie.cfg and exec tcpdump into the capture sidecar. From inside a
+    # container that needs /var/run/docker.sock -- and anything that can reach
+    # that socket can start a privileged container and own the host. The verb
+    # allowlist (exec / inspect / kill) lives in OUR code; the daemon does not
+    # enforce it, so it constrains this backend and not an attacker who has
+    # reached the socket by another route. Mounting it read-only would not
+    # help: the socket is an API and `ro` does not remove its write verbs.
+    #
+    # WHAT THIS COSTS. The containerised backend cannot run evaluations. The
+    # reset is a precondition, so a run against a `cowrie` target fails there
+    # with a ResetError, before any run row exists -- a terminal progress frame
+    # and a permanent 404, never a run whose facts are quietly all `unknown`.
+    # The analysis half is completely unaffected: ingest, sessions, the seven
+    # stage pipeline, ATT&CK mapping, indicators and reports all work.
+    #
+    # HOW TO RUN EVALUATIONS ANYWAY, in ascending order of privilege:
+    #
+    #   1. Run the backend on the host (the "Develop on it" install). It calls
+    #      docker as your own user, with no socket shared into a container.
+    #      This is what the degradation matrix was measured with.
+    #   2. Add the mount back, if you accept the trade above:
+    #        volumes:
+    #          - /var/run/docker.sock:/var/run/docker.sock
+    #
+    # The docker CLI is still present in the image so that (2) is a one-line
+    # change needing no rebuild.
+    volumes:
+      # The ingest pipeline, index template and ILM policy that `bootstrap_es`
+      # installs on startup. It resolves them from the repo root
+      # (`parents[3] / "infra"`), which inside this image is `/infra` -- so
+      # they are mounted there rather than baked in. Bind-mounted for the same
+      # reason elasticsearch, filebeat and cowrie bind-mount it: this is
+      # operator-editable configuration with one source of truth, and a copy
+      # inside the image would silently diverge from the one on disk.
+      - ./infra:/infra:ro
+    environment:
+      # The honeypot, its container and its capture sidecar, by compose
+      # service and container name -- all reachable from inside this network.
+      - EVALUATION_TARGET_HOST=cowrie
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      cowrie:
+        condition: service_started
+    restart: unless-stopped
+
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./frontend
+      args:
+        # Baked into the bundle at build time, so this is the address the
+        # BROWSER uses. It has to be reachable from the user's machine, which
+        # is why it is the published loopback port rather than the compose
+        # service name.
+        #
+        # Spelled `localhost` to match the backend's `cors_origins` default of
+        # `http://localhost:8080` -- that is the origin the dashboard has to be
+        # opened on, so this is the spelling that pairs with it.
+        - VITE_API_BASE_URL=http://localhost:8000
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------
   # The degradation matrix.
   #
   # Arms of a controlled experiment: several honeypots from the SAME pinned

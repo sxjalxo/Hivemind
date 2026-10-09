@@ -34,6 +34,26 @@ const csrfMiddleware = createCsrfMiddleware({
 // Order: errorMiddleware stays outermost so it still catches anything Clerk
 // throws. CSRF stays last -- it rejects cross-site server-function calls and
 // does not need auth context to do it.
+// Clerk's middleware THROWS at request time when no secret key is set --
+// "Clerk: no secret key provided" -- which turns every page into a 500 rather
+// than an unauthenticated one. That is the opposite of how the backend
+// behaves: with `CLERK_ISSUER` unset it answers every caller and says so
+// loudly, on startup and on the status dashboard, because an open API bound
+// to localhost is the configuration this project ships for a local install.
+//
+// A frontend that refuses to render without the author's Clerk credentials
+// cannot be distributed at all, so the middleware is installed only when
+// there is a key for it to use. Nothing in this app calls `auth()` or any
+// other server-side Clerk helper, so its absence costs nothing here; if
+// something ever does, it must check this same condition.
+//
+// The sign-in UI is driven separately by VITE_CLERK_PUBLISHABLE_KEY, and the
+// backend remains the only thing that actually enforces access -- it answers
+// 403 regardless of what the client rendered.
+const clerkConfigured = Boolean(process.env["CLERK_SECRET_KEY"]);
+
 export const startInstance = createStart(() => ({
-  requestMiddleware: [errorMiddleware, clerkMiddleware(), csrfMiddleware],
+  requestMiddleware: clerkConfigured
+    ? [errorMiddleware, clerkMiddleware(), csrfMiddleware]
+    : [errorMiddleware, csrfMiddleware],
 }));

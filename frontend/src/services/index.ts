@@ -13,4 +13,4 @@ export const isDemoMode = provider.mode === "demo";
 
 export { DemoProvider, FastAPIProvider };
 export * from "./provider";
-export { API_BASE_URL, ApiError, endpoints } from "./api";
+export { API_BASE_URL, ApiError, endpoints, AUTH_CONFIGURED } from "./api";

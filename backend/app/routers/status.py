@@ -8,6 +8,7 @@ from app.db.session import pg_health
 from app.es.client import es_health
 from app.seed.seeder import seeded_count
 from app.serialization import CamelModel
+from app.services.evaluation.container import docker_health
 from app.services.llm.ollama import ollama_health
 
 router = APIRouter()
@@ -25,8 +26,19 @@ class ServiceStatus(CamelModel):
 @router.get("/status", response_model=list[ServiceStatus])
 async def get_status() -> list[ServiceStatus]:
     settings = get_settings()
-    (es_state, es_detail), (pg_state, pg_detail), (ol_state, ol_detail) = (
-        await asyncio.gather(es_health(), pg_health(), ollama_health())
+    (
+        (es_state, es_detail),
+        (pg_state, pg_detail),
+        (ol_state, ol_detail),
+        (docker_state, docker_detail),
+    ) = await asyncio.gather(
+        es_health(),
+        pg_health(),
+        ollama_health(),
+        # Gathered with the rest rather than awaited after them: this shells
+        # out to the docker CLI, and run serially it would add its latency to
+        # a dashboard that polls.
+        docker_health(settings.evaluation_container_name),
     )
     evaluator_configured = settings.byok_api_key is not None
     seeded = await seeded_count()
@@ -61,6 +73,14 @@ async def get_status() -> list[ServiceStatus]:
                 if settings.auth_enabled
                 else "OPEN — every route answers any caller; set CLERK_ISSUER"
             ),
+        ),
+        ServiceStatus(
+            id="docker",
+            # Named for what it gates rather than for the daemon, because the
+            # question an operator has is "can I evaluate", not "is Docker up".
+            name="Evaluation (Docker)",
+            state=docker_state,
+            detail=docker_detail,
         ),
         ServiceStatus(
             id="seed-corpus",

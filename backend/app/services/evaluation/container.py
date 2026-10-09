@@ -179,3 +179,73 @@ async def run(argv: list[str], *, timeout_seconds: float) -> bytes:
         )
 
     return stdout
+
+
+# A status probe must not sit behind the module timeouts, which are sized for
+# real work. Five seconds is long enough for a healthy daemon and short enough
+# that a wedged one does not hold the dashboard open.
+_HEALTH_TIMEOUT_SECONDS = 5.0
+
+# How "the daemon is not reachable" reads across the CLI's own wordings and
+# the ways the process can fail to start at all. Matched case-insensitively.
+#
+# Substring matching rather than an exit code, because the CLI answers 1 for
+# both "no daemon" and "no such container" and those are different conditions
+# an operator acts on differently. A wording this does not recognise degrades
+# to the container-level message, which names the real error either way --
+# never to "connected".
+_NO_DAEMON_MARKERS = (
+    "cannot connect to the docker daemon",
+    "is the docker daemon running",
+    "could not run 'docker'",
+    "error during connect",
+    "open //./pipe/docker_engine",
+    # Docker Desktop on Windows says this, and says it INSTEAD of the two
+    # "docker daemon" phrasings above -- it was reporting `degraded` on the
+    # machine this was written on until the wording was checked against a
+    # genuinely stopped daemon rather than assumed.
+    "failed to connect to the docker api",
+    "dockerdesktoplinuxengine",
+)
+
+
+async def docker_health(container_name: str) -> tuple[str, str | None]:
+    """Whether this backend can drive Docker, for the status dashboard.
+
+    Three outcomes, and collapsing any two of them would mislead:
+
+      * `connected` -- the daemon answered and the honeypot's container is
+        inspectable, so evaluation runs can start.
+      * `disconnected` -- no daemon. This is the ordinary state of the
+        CONTAINERISED backend, which deliberately does not mount the socket.
+        Evaluation cannot start; analysis is completely unaffected, and the
+        detail says so rather than reading as a broken deployment.
+      * `degraded` -- the daemon answered but this container did not. The
+        honeypot is not running, or is named something else. Different
+        problem, different fix.
+
+    Why this row exists at all: without it, "evaluation is unavailable" is
+    discoverable only by starting a run and waiting out the run-detail page's
+    grace window, because the reset fails as a PRECONDITION and a run that
+    fails there never gets a row to look at. The same reasoning as the auth
+    row, which announces an open API rather than leaving it to be discovered.
+
+    `inspect` is read-only and already on the allowlist, so the probe adds no
+    verb. It names `container_name` because the allowlist has no daemon-level
+    verb to ask instead -- which also means that with EVALUATION_TARGETS
+    mapping several honeypots this checks the default one and reports on that.
+    """
+    try:
+        await run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container_name],
+            timeout_seconds=_HEALTH_TIMEOUT_SECONDS,
+        )
+    except ContainerExecError as exc:
+        text = str(exc).lower()
+        if any(marker in text for marker in _NO_DAEMON_MARKERS):
+            return "disconnected", (
+                "no Docker access — evaluation runs cannot start; analysis is unaffected"
+            )
+        return "degraded", f"Docker answered, but {container_name} did not: {str(exc)[:120]}"
+
+    return "connected", container_name
