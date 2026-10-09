@@ -1,9 +1,11 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from app.auth import denied_honeypots, denies_everything, require_user
 from app.es.queries import search_logs
 from app.models.event import HoneypotEvent, LogQuery, Paginated
+from app.routers.limits import MAX_PAGE_LIMIT
 
 router = APIRouter()
 
@@ -21,8 +23,14 @@ async def get_logs(
     session_id: Annotated[str | None, Query(alias="sessionId")] = None,
     from_: Annotated[str | None, Query(alias="from")] = None,
     to: Annotated[str | None, Query()] = None,
-    page: Annotated[int, Query()] = 1,
-    page_size: Annotated[int, Query(alias="pageSize")] = 50,
+    page: Annotated[int, Query(ge=1)] = 1,
+    # The only list parameter a caller already controlled, and the only one
+    # with no ceiling: `pageSize=1000000` was a valid request for a million
+    # events in one response. Bounded here rather than clamped, so an
+    # over-large ask is a 422 naming the limit instead of a short page that
+    # looks like the whole answer.
+    page_size: Annotated[int, Query(alias="pageSize", ge=1, le=MAX_PAGE_LIMIT)] = 50,
+    claims: dict | None = Depends(require_user),
 ) -> Paginated[HoneypotEvent]:
     """Bind every documented LogQuery param explicitly.
 
@@ -50,4 +58,9 @@ async def get_logs(
         page=page,
         page_size=page_size,
     )
-    return await search_logs(query)
+    if denies_everything(claims):
+        # An empty page rather than a 403: the raw log surface is a search,
+        # and a caller denied every sensor has nothing to search, not an
+        # error to report.
+        return Paginated(items=[], total=0, page=page, page_size=page_size)
+    return await search_logs(query, denied_honeypots(claims))

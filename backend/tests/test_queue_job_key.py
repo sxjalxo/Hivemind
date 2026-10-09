@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 
 import pytest
 
@@ -183,3 +184,60 @@ async def test_watching_for_a_disconnect_does_not_stop_events_flowing() -> None:
         await asyncio.wait_for(handler, timeout=5)
 
     assert queue._subscribers == {}
+
+
+# --- dispatched-job release ---------------------------------------------
+#
+# `_subscribers` was taught not to retain a key; `_tasks` had the same leak one
+# attribute over. The entry exists only to stop the event loop -- which holds a
+# weak reference to a running task -- collecting a long run mid-flight, and
+# nothing ever reads it afterwards.
+
+
+@pytest.mark.asyncio
+async def test_a_finished_job_is_not_retained() -> None:
+    queue = JobQueue()
+
+    async def work() -> None:
+        await asyncio.sleep(0)
+
+    job_id = queue.enqueue(evaluation_job_key("retire-ok"), work())
+    task = queue._tasks[job_id]  # held while in flight, which is the point
+
+    await asyncio.wait_for(task, timeout=5)
+    await asyncio.sleep(0)  # let the done-callback run
+    assert queue._tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_a_failed_job_is_retired_too() -> None:
+    """A run that raised is exactly the one a leak would pin in memory."""
+    queue = JobQueue()
+
+    async def boom() -> None:
+        raise RuntimeError("run failed")
+
+    job_id = queue.enqueue(evaluation_job_key("retire-boom"), boom())
+    task = queue._tasks[job_id]
+
+    with contextlib.suppress(RuntimeError):
+        await asyncio.wait_for(task, timeout=5)
+    await asyncio.sleep(0)
+    assert queue._tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_many_dispatched_jobs_retain_nothing() -> None:
+    queue = JobQueue()
+
+    async def work() -> None:
+        await asyncio.sleep(0)
+
+    tasks = []
+    for index in range(200):
+        job_id = queue.enqueue(evaluation_job_key(f"bulk-{index}"), work())
+        tasks.append(queue._tasks[job_id])
+
+    await asyncio.gather(*tasks)
+    await asyncio.sleep(0)
+    assert queue._tasks == {}

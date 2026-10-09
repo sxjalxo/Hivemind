@@ -67,6 +67,10 @@ CHAIN_INGEST_POLL_SECONDS = 1.0
 # own declared steps are fed to `verify_chain`.
 CHAIN_CLOCK_SKEW_SECONDS = 5
 
+# One Elasticsearch page of read-back. A chain is three steps, so this is
+# headroom; reaching it is reported rather than scored as an unobserved step.
+_MAX_READ_BACK_EVENTS = 1000
+
 
 async def run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
     """Execute the predefined chains, then verify them from Cowrie's own log.
@@ -301,9 +305,23 @@ async def search_commands(
             }
         },
         sort=[{"@timestamp": "asc"}],
-        size=1000,
+        size=_MAX_READ_BACK_EVENTS,
     )
-    return result["hits"]["hits"]
+    hits = result["hits"]["hits"]
+    total = result["hits"].get("total", {}).get("value", len(hits))
+    if total > len(hits):
+        # A chain step whose command sits past the cap reads as never observed,
+        # which this half reports as a honeypot that failed to record it. That
+        # is a verdict about the decoy drawn from a limit of ours, so it has to
+        # be visible rather than inferred from a surprising score.
+        logger.warning(
+            "chain read-back truncated at %d of %d events for session %s: a step "
+            "beyond the cap would be scored as unobserved",
+            len(hits),
+            total,
+            session_id,
+        )
+    return hits
 
 
 async def read_back_commands(

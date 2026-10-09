@@ -14,8 +14,14 @@ _TERM_FIELDS = {
 }
 
 
-def build_log_query(query: LogQuery) -> dict:
-    """Translate the frontend's LogQuery into an Elasticsearch bool query."""
+def build_log_query(query: LogQuery, deny_honeypots: set[str] | None = None) -> dict:
+    """Translate the frontend's LogQuery into an Elasticsearch bool query.
+
+    `deny_honeypots` is the caller's read scope, applied here rather than by
+    filtering hits afterwards: the page size and the total count both come
+    from Elasticsearch, so dropping rows after the fact would return short
+    pages beside a total that still counted the hidden sensor's events.
+    """
     filters: list[dict] = []
     must: list[dict] = []
 
@@ -54,7 +60,13 @@ def build_log_query(query: LogQuery) -> dict:
             }
         )
 
-    return {"bool": {"filter": filters, "must": must}}
+    # `must_not` is added only when something is actually excluded, so an
+    # unscoped query keeps the exact shape it has always had rather than
+    # growing a permanently empty clause.
+    bool_query: dict = {"filter": filters, "must": must}
+    if deny_honeypots:
+        bool_query["must_not"] = [{"terms": {"honeypot.id": sorted(deny_honeypots)}}]
+    return {"bool": bool_query}
 
 
 def to_event(hit: dict) -> HoneypotEvent:
@@ -95,14 +107,16 @@ def to_event(hit: dict) -> HoneypotEvent:
     )
 
 
-async def search_logs(query: LogQuery) -> Paginated[HoneypotEvent]:
+async def search_logs(
+    query: LogQuery, deny_honeypots: set[str] | None = None
+) -> Paginated[HoneypotEvent]:
     settings = get_settings()
     page = max(query.page, 1)
     size = min(max(query.page_size, 1), 500)
 
     result = await get_es().search(
         index=settings.es_index,
-        query=build_log_query(query),
+        query=build_log_query(query, deny_honeypots),
         sort=[{"@timestamp": "asc"}],
         from_=(page - 1) * size,
         size=size,

@@ -1,8 +1,11 @@
+import logging
+
 import pytest
 
 from app.config import get_settings
 from app.es.client import get_es
 from app.seed.seeder import seed
+from app.services import session_builder
 from app.services.session_builder import (
     build_timeline,
     get_session,
@@ -238,3 +241,44 @@ async def test_timeline_does_not_repeat_the_event_action_as_label_and_detail() -
         assert rows["tk-failed"].detail == "cowrie.command.failed"
     finally:
         await _delete_kind_fixture()
+
+
+@pytest.mark.asyncio
+async def test_a_session_past_the_page_size_says_so(monkeypatch, caplog) -> None:
+    """Truncation must be loud, not a short timeline nobody questions.
+
+    `_fetch_session_events` reads one Elasticsearch page. A session past it
+    used to lose its tail in silence: a timeline missing its end, an
+    understated command count, and a compaction the model reads as the whole
+    session -- every one of which looks like a quiet honeypot rather than a
+    cut-off read.
+    """
+
+    class _StubES:
+        async def search(self, **_: object) -> dict:
+            return {"hits": {"total": {"value": 1500}, "hits": []}}
+
+    monkeypatch.setattr(session_builder, "get_es", lambda: _StubES())
+
+    with caplog.at_level(logging.WARNING):
+        events = await get_session_events("huge-session")
+
+    assert events == []
+    assert "truncated" in caplog.text
+    assert "huge-session" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_session_inside_the_page_size_is_silent(monkeypatch, caplog) -> None:
+    """The warning has to mean something, so it must not fire on every read."""
+
+    class _StubES:
+        async def search(self, **_: object) -> dict:
+            return {"hits": {"total": {"value": 0}, "hits": []}}
+
+    monkeypatch.setattr(session_builder, "get_es", lambda: _StubES())
+
+    with caplog.at_level(logging.WARNING):
+        await get_session_events("small-session")
+
+    assert "truncated" not in caplog.text

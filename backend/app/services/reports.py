@@ -91,11 +91,11 @@ async def create_report(session_id: str, actor: Actor | None = None) -> ThreatRe
     return report
 
 
-async def list_reports() -> list[ThreatReport]:
+async def list_reports(limit: int | None = None) -> list[ThreatReport]:
+    """Newest reports first. `limit` is None for internal callers."""
     async with get_session_factory()() as db:
-        rows = (
-            (await db.execute(select(ReportRow).order_by(ReportRow.created_at.desc())))
-            .scalars()
-            .all()
-        )
+        statement = select(ReportRow).order_by(ReportRow.created_at.desc())
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = (await db.execute(statement)).scalars().all()
     return [ThreatReport.model_validate(row.body) for row in rows]

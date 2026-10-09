@@ -80,7 +80,26 @@ WS_PROTOCOL = "clerk"
 # shows a viewer) and recoverable without disabling auth.
 ROLE_ADMIN = "admin"
 ROLE_VIEWER = "viewer"
-_KNOWN_ROLES = frozenset({ROLE_ADMIN, ROLE_VIEWER})
+
+# The floor, and the only way to say "not this one".
+#
+# Added when read paths were scoped. The problem it solves: `role_for` falls
+# back to the GLOBAL role for any honeypot the map does not mention, so with
+# only `admin`/`viewer` every authenticated caller is at least a viewer
+# everywhere and there is no value that denies anything. Scoping reads by
+# "which honeypots appear in the map" would have been the other way to get
+# there, and it is the wrong way -- an account holding only a global role
+# names no honeypots, so the day anyone added one entry it would silently
+# lose access to every other sensor. The fallback has to survive; what was
+# missing was a role BELOW viewer.
+#
+# So the three form a ladder -- `none` < `viewer` < `admin` -- and scoping is
+# expressed as explicit denial rather than an allow-list. `{"cowrie-01":
+# "none"}` means exactly that one honeypot is hidden from this account;
+# everything else still resolves through the global role as before.
+ROLE_NONE = "none"
+
+_KNOWN_ROLES = frozenset({ROLE_ADMIN, ROLE_VIEWER, ROLE_NONE})
 
 
 def role_of(claims: dict | None) -> str:
@@ -112,11 +131,34 @@ def roles_map(claims: dict | None) -> dict[str, str]:
     raw = (claims or {}).get("roles")
     if not isinstance(raw, dict):
         return {}
-    return {
+    kept = {
         key: value
         for key, value in raw.items()
         if isinstance(key, str) and isinstance(value, str) and value in _KNOWN_ROLES
     }
+    # Dropping is still the behaviour, but it is no longer symmetric and that
+    # has to be visible. Before `none` existed every entry was a GRANT, so an
+    # unreadable one falling through to the global role could only ever cost
+    # access. A denial is the opposite: `{"cowrie-01": "None"}` is dropped,
+    # falls through to the global role, and the honeypot the operator meant
+    # to hide stays readable. Nothing here can tell a typo from a value a
+    # future version will understand, so the conservative-for-grants rule is
+    # kept and the event is logged instead -- a denial that did not take is
+    # recoverable if someone can see it happen, and silent if not.
+    if len(kept) != len(raw):
+        # `repr` before sorting, not after: a key does not have to be a string
+        # (`{4: "admin"}` is a live possibility through the Clerk API, and
+        # `test_a_malformed_entry_is_dropped_rather_than_honoured` has one),
+        # and sorting str against int raises -- which would turn a log line
+        # about a bad grant into a 500 on every request carrying one.
+        dropped = sorted(repr(key) for key in set(raw) - set(kept))
+        logger.warning(
+            "ignored %d unreadable per-honeypot role entries (%s): each falls back "
+            "to the global role, so an intended DENIAL among them did not take",
+            len(dropped),
+            ", ".join(dropped[:5]),
+        )
+    return kept
 
 
 def role_for(claims: dict | None, honeypot_id: str) -> str:
@@ -132,16 +174,90 @@ def role_for(claims: dict | None, honeypot_id: str) -> str:
          everywhere, and makes the map an override rather than a replacement.
       3. `viewer`, the floor.
 
-    Scoping is WRITE-ONLY by design: this decides who may start an evaluation
-    or an analysis against a honeypot, not who may read one. Every
-    authenticated caller can read everything. That is a deliberate boundary,
-    not an oversight -- see the README. Do not reach for this in a read path
-    and assume it makes one confidential.
+    Two questions are answered from this one value, and they are not the same
+    question:
+
+      * **Write** -- `assert_admin_for` requires exactly `admin`.
+      * **Read** -- `can_read` requires anything above `none`.
+
+    Reads were unscoped until `ROLE_NONE` existed, because every authenticated
+    caller resolved to at least `viewer` everywhere and nothing could say
+    otherwise. They are scoped now for sessions, logs and analyses.
+
+    Threat intelligence is deliberately NOT scoped and must stay that way:
+    it correlates indicators ACROSS honeypots, so filtering it by sensor does
+    not secure the feature, it removes it. See `OVERVIEW.md`.
     """
     explicit = roles_map(claims).get(honeypot_id)
     if explicit is not None:
         return explicit
     return role_of(claims)
+
+
+def can_read(claims: dict | None, honeypot_id: str) -> bool:
+    """Whether the caller may see one honeypot's operational data.
+
+    True for every honeypot unless the roles map explicitly says `none`, which
+    is what keeps an account holding only a global role working exactly as it
+    did. Always True when authentication is not configured: an open deployment
+    has no identities, so it has no denials either.
+    """
+    if not get_settings().auth_enabled:
+        return True
+    return role_for(claims, honeypot_id) != ROLE_NONE
+
+
+def denied_honeypots(claims: dict | None) -> set[str]:
+    """The honeypot ids this caller may not read, for filtering a list.
+
+    The deny set rather than the allow set, because the allow set is "every
+    honeypot that exists" minus these -- it cannot be enumerated from the
+    token, and asking the registry for it would make every list route depend
+    on the registry being reachable.
+
+    Empty when authentication is off, so an open deployment filters nothing.
+    """
+    if not get_settings().auth_enabled:
+        return set()
+    denied = {
+        honeypot_id
+        for honeypot_id, role in roles_map(claims).items()
+        if role == ROLE_NONE
+    }
+    # A global `none` would deny everything, which no list filter can express
+    # as a set of ids. Routes call `can_read` per honeypot as well, so this is
+    # only about the list path: it is refused outright there instead.
+    return denied
+
+
+def denies_everything(claims: dict | None) -> bool:
+    """Whether the caller's GLOBAL role denies, so no list can be served.
+
+    Separate from `denied_honeypots` because "deny these three" and "deny
+    everything except where told otherwise" are different shapes, and a set of
+    ids cannot carry the second.
+    """
+    if not get_settings().auth_enabled:
+        return False
+    return role_of(claims) == ROLE_NONE
+
+
+def assert_can_read(claims: dict | None, honeypot_id: str) -> None:
+    """404 unless the caller may read this honeypot.
+
+    404 and not 403, which is the opposite of `assert_admin_for`, and the
+    difference is deliberate. A write refusal can be a 403 because the caller
+    can already SEE the thing they may not change -- the status code leaks
+    nothing they did not have. A read refusal cannot: answering 403 for a
+    session that exists and 404 for one that does not turns this route into an
+    oracle for which sessions a hidden honeypot has, which is the thing being
+    denied. `require_admin` already refuses admin-nowhere callers early for
+    the same reason.
+    """
+    if can_read(claims, honeypot_id):
+        return
+    logger.warning("refused a read of honeypot %s: role is %r", honeypot_id, ROLE_NONE)
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
 
 
 def is_admin_anywhere(claims: dict | None) -> bool:

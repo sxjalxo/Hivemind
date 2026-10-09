@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime
 
 from app.config import get_settings
@@ -6,7 +7,21 @@ from app.es.queries import to_event
 from app.models.event import HoneypotEvent
 from app.models.session import AttackSession, SessionTimelineEvent
 
+logger = logging.getLogger(__name__)
+
 _COMMAND_ACTION = "cowrie.command.input"
+
+# One Elasticsearch page. Cowrie sessions run to tens of events, so this is
+# headroom rather than a limit anyone meets -- but it IS a limit, and a session
+# past it lost its tail with nothing said: a short timeline, an understated
+# command count, and a compaction the model would read as the whole session.
+# Reaching it is loud now; raising it or paging is a deliberate change, not a
+# number to nudge when a warning appears.
+_MAX_SESSION_EVENTS = 1000
+
+# Ceiling on the session-list aggregation, independent of what a caller asks
+# for. Reaching it is reported rather than silently truncating the fleet.
+_MAX_SESSION_BUCKETS = 500
 
 _KIND_BY_ACTION = {
     "cowrie.session.connect": "connection",
@@ -60,9 +75,22 @@ async def _fetch_session_events(session_id: str) -> list[HoneypotEvent]:
         index=get_settings().es_index,
         query={"term": {"session.id": session_id}},
         sort=[{"@timestamp": "asc"}],
-        size=1000,
+        size=_MAX_SESSION_EVENTS,
     )
-    return [to_event(h) for h in result["hits"]["hits"]]
+    hits = result["hits"]["hits"]
+    # ES caps `total.value` at 10 000 by default and marks it `gte`, so this
+    # under-reports a very large session -- it still exceeds `len(hits)`, which
+    # is the only comparison being made.
+    total = result["hits"].get("total", {}).get("value", len(hits))
+    if total > len(hits):
+        logger.warning(
+            "session %s truncated at %d of %d events: its timeline, command count "
+            "and any analysis of it describe only the first page",
+            session_id,
+            len(hits),
+            total,
+        )
+    return [to_event(h) for h in hits]
 
 
 def _assemble(session_id: str, events: list[HoneypotEvent]) -> AttackSession:
@@ -143,13 +171,29 @@ async def list_sessions(
     risk: str | None = None,
     honeypot_id: str | None = None,
     q: str | None = None,
+    limit: int | None = None,
+    deny_honeypots: set[str] | None = None,
 ) -> list[AttackSession]:
-    """Find session ids matching the filters, then assemble each one."""
+    """Find session ids matching the filters, then assemble each one.
+
+    `limit` is None for internal callers and set by the route. It is not
+    cosmetic: `get_session` below costs two Elasticsearch round trips per
+    session, run sequentially, so an unbounded list made the slowest request
+    in the API grow with the corpus rather than with the question asked.
+    """
     filters: list[dict] = []
     if honeypot_id:
         filters.append({"term": {"honeypot.id": honeypot_id}})
     if risk:
         filters.append({"term": {"risk.level": risk}})
+
+    # Applied in the query, not by dropping rows afterwards: a denied honeypot
+    # must not reach the aggregation either, or its sessions consume buckets
+    # from the caller's page and the list comes back short for no visible
+    # reason.
+    must_not: list[dict] = []
+    if deny_honeypots:
+        must_not.append({"terms": {"honeypot.id": sorted(deny_honeypots)}})
 
     must: list[dict] = []
     if q:
@@ -168,20 +212,50 @@ async def list_sessions(
             }
         )
 
+    # `must_not` only when something is excluded, so an unscoped query keeps
+    # the shape it has always had rather than growing an empty clause.
+    bool_query: dict = {"filter": filters, "must": must}
+    if must_not:
+        bool_query["must_not"] = must_not
+
+    wanted = _MAX_SESSION_BUCKETS if limit is None else min(limit, _MAX_SESSION_BUCKETS)
     result = await get_es().search(
         index=get_settings().es_index,
-        query={"bool": {"filter": filters, "must": must}},
+        query={"bool": bool_query},
         size=0,
         aggs={
             "sessions": {
-                "terms": {"field": "session.id", "size": 500},
+                # Ordered by `first_seen`, NOT by doc count. A terms aggregation
+                # defaults to the biggest buckets, so the cap used to keep the
+                # NOISIEST sessions and drop quiet ones -- including the most
+                # recent -- and the sort below then presented that selection as
+                # if it were "the latest sessions". Ordering here makes the cap
+                # mean what the list claims: the newest `wanted` sessions.
+                "terms": {
+                    "field": "session.id",
+                    "size": wanted,
+                    "order": {"first_seen": "desc"},
+                },
                 "aggs": {"first_seen": {"min": {"field": "@timestamp"}}},
             }
         },
     )
 
-    buckets = result["aggregations"]["sessions"]["buckets"]
+    aggregation = result["aggregations"]["sessions"]
+    buckets = aggregation["buckets"]
     buckets.sort(key=lambda b: b["first_seen"]["value"], reverse=True)
+
+    # Anything the cap left behind. Silence here read as a short fleet rather
+    # than a truncated answer -- and the caller cannot tell the two apart from
+    # the response, which is a list either way.
+    dropped = aggregation.get("sum_other_doc_count", 0)
+    if dropped:
+        logger.warning(
+            "session list truncated at %d: %d further events belong to sessions "
+            "outside this page",
+            len(buckets),
+            dropped,
+        )
 
     sessions: list[AttackSession] = []
     for bucket in buckets:
@@ -189,6 +263,40 @@ async def list_sessions(
         if session:
             sessions.append(session)
     return sessions
+
+
+async def honeypots_for_sessions(session_ids: list[str]) -> dict[str, str]:
+    """Map each session id to the honeypot that recorded it, in one query.
+
+    `analyses` stores a session id and no honeypot, so scoping an analysis
+    read means asking Elasticsearch which sensor the session came from. One
+    aggregation for the whole page rather than `get_session` per row: that
+    would be two round trips per analysis, which is the N+1 the list route's
+    limit exists to avoid in the first place.
+
+    A session id absent from the result is simply omitted -- its events have
+    aged out of the index, and a caller scoping reads must treat an id it
+    cannot place as one it cannot show.
+    """
+    if not session_ids:
+        return {}
+    result = await get_es().search(
+        index=get_settings().es_index,
+        query={"terms": {"session.id": sorted(set(session_ids))}},
+        size=0,
+        aggs={
+            "sessions": {
+                "terms": {"field": "session.id", "size": len(set(session_ids))},
+                "aggs": {"honeypot": {"terms": {"field": "honeypot.id", "size": 1}}},
+            }
+        },
+    )
+    mapping: dict[str, str] = {}
+    for bucket in result["aggregations"]["sessions"]["buckets"]:
+        honeypots = bucket["honeypot"]["buckets"]
+        if honeypots:
+            mapping[bucket["key"]] = honeypots[0]["key"]
+    return mapping
 
 
 async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:

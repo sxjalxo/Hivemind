@@ -444,11 +444,16 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
 
 - **Single-worker deployment.** The job queue and WebSocket fan-out are in-process; running
   multiple uvicorn workers would require Redis pub/sub.
-- **Read paths are not access-scoped.** Roles are per honeypot and gate *writing*:
-  who may run an analysis, generate a report or start an evaluation. Any signed-in
-  account reads everything. It is an authorisation boundary, not a confidentiality one,
-  and threat intelligence correlates IOCs across honeypots by design — scoping that
-  would break the feature rather than secure it.
+- **Read scoping is a deny-list, and covers the operational surfaces only.** Sessions,
+  logs and analyses are filtered by the caller's role on the honeypot that produced
+  them; threat intelligence is deliberately NOT, because it correlates IOCs across
+  honeypots and filtering it by sensor removes the feature rather than securing it.
+  Scoping is expressed as an explicit `none` in the per-honeypot roles map rather than
+  as an allow-list: the global role remains the default on every honeypot, so reading
+  access off the map's *keys* would silently strip every sensor from an account holding
+  only a global role the first time anyone added one entry to it. One consequence is
+  worth knowing — because a malformed map value is dropped and falls back to the global
+  role, a mistyped denial (`"None"`) does not deny. That is logged, not guessed at.
 - **Similarity normalises only the literals that vary between runs of one campaign** — IPv4
   addresses and file hashes become placeholders, so two runs of a dropper pointed at different
   C2 hosts match. Arguments are deliberately not stripped further: `cat /etc/passwd` and
@@ -868,9 +873,10 @@ The actor is derived from the verified token, never from the request:
 analyses carry the same audit columns (`analyses.started_by`, migration `d2f8b4c61e07`),
 and a report credits the analysis it triggers to whoever asked for the report.
 
-**What this still does not do.** Read paths are not scoped. Roles are per honeypot but not
-per session or per report. And the roles map is edited by hand through the Clerk API —
-there is no UI for granting access.
+**What this still does not do.** Read scoping covers sessions, logs and analyses; reports,
+dashboards and the ATT&CK matrix are not scoped, and threat intelligence is deliberately
+global. Roles are per honeypot but not per session or per report. And the roles map is
+edited by hand through the Clerk API — there is no UI for granting access.
 
 ### Running the whole product in containers
 

@@ -205,7 +205,7 @@ def _like_escaped(term: str) -> str:
 
 
 async def list_indicators(
-    type_: str | None = None, q: str | None = None
+    type_: str | None = None, q: str | None = None, limit: int | None = None
 ) -> list[Indicator]:
     """Every indicator, filtered, with the sessions each was seen in.
 
@@ -232,17 +232,14 @@ async def list_indicators(
             statement = statement.where(
                 IndicatorRow.value.ilike(f"%{_like_escaped(q)}%", escape="\\")
             )
-        rows = (
-            (
-                await db.execute(
-                    statement.order_by(
-                        IndicatorRow.last_seen.desc(), IndicatorRow.id
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
+        statement = statement.order_by(IndicatorRow.last_seen.desc(), IndicatorRow.id)
+        # Applied after the ordering, so a bounded page is the NEWEST rows
+        # rather than whichever the planner happened to reach first. None for
+        # internal callers: `create_report` reads every indicator and keeps one
+        # session's worth, so a cap here would drop evidence from a report.
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = (await db.execute(statement)).scalars().all()
         if not rows:
             return []
 

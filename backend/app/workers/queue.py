@@ -84,9 +84,30 @@ class JobQueue:
         """
         job_id = str(uuid.uuid4())
         task = asyncio.create_task(coro)
-        task.add_done_callback(lambda t: _log_task_exception(job_id, t))
+        # Registered before the callback, so the entry is already present when
+        # a task that finishes immediately fires it.
         self._tasks[job_id] = task
+        task.add_done_callback(lambda t: self._retire(job_id, t))
         return job_id
+
+    def _retire(self, job_id: str, task: "asyncio.Task[Any]") -> None:
+        """Drop a finished job, then report however it ended.
+
+        The entry in `_tasks` exists for exactly one reason: the event loop
+        keeps only a weak reference to a running task, so without a strong one
+        here a long run can be garbage-collected mid-flight. That reason
+        expires the moment the task is done, and nothing ever reads `_tasks`
+        afterwards -- so leaving the entry grew the dict by one finished Task,
+        its result and its coroutine frame for every run the process had ever
+        dispatched. `_unsubscribe` already refuses to leak a key for the same
+        reason; this is the same leak one attribute over.
+
+        Only finished jobs are removed, which is what keeps the `drain` fixture
+        in `test_evaluation_api` working: it awaits the runs still in flight at
+        teardown, and a finished run is one it no longer needs to wait for.
+        """
+        self._tasks.pop(job_id, None)
+        _log_task_exception(job_id, task)
 
     async def publish(self, job_key: str, event: AnalysisProgressEvent) -> None:
         for queue in list(self._subscribers.get(job_key, [])):

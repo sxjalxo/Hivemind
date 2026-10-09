@@ -41,7 +41,7 @@ from app.services.llm.schemas import (
 )
 from app.services.mitre.mapper import MappingResult, map_techniques
 from app.services.persistence import Claim, persist_analysis
-from app.services.session_builder import get_session_events
+from app.services.session_builder import get_session_events, honeypots_for_sessions
 from app.workers.queue import analysis_job_key, get_queue
 
 logger = logging.getLogger(__name__)
@@ -546,14 +546,40 @@ async def load_analysis(analysis_id: uuid.UUID) -> SessionAnalysis | None:
         return await _hydrate(db, analysis) if analysis else None
 
 
-async def load_history() -> list[SessionAnalysis]:
+async def load_history(
+    limit: int | None = None, deny_honeypots: set[str] | None = None
+) -> list[SessionAnalysis]:
+    """Newest analyses first, hydrated.
+
+    `limit` is None for internal callers and set by the route. It bounds the
+    rows read AND the `_hydrate` per row that follows them, which is the
+    expensive half: this list grows with every analysis ever run.
+    """
     async with get_session_factory()() as db:
-        rows = (
-            (await db.execute(select(Analysis).order_by(Analysis.created_at.desc())))
-            .scalars()
-            .all()
-        )
-        return [await _hydrate(db, row) for row in rows]
+        statement = select(Analysis).order_by(Analysis.created_at.desc())
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = (await db.execute(statement)).scalars().all()
+        analyses = [await _hydrate(db, row) for row in rows]
+
+    if not deny_honeypots:
+        return analyses
+
+    # Filtered after the page is read, because `analyses` has no honeypot
+    # column to filter ON -- the sensor is a property of the session, which
+    # lives in Elasticsearch. The consequence is honest and worth naming: a
+    # scoped page can come back SHORTER than `limit`. The alternatives were
+    # a migration to denormalise the honeypot onto every analysis, or an
+    # unbounded `NOT IN` of every denied session id -- neither of which this
+    # change is. A session whose events have aged out is omitted too: an id
+    # that cannot be placed on a sensor cannot be shown to a scoped caller.
+    owners = await honeypots_for_sessions([a.session_id for a in analyses])
+    return [
+        analysis
+        for analysis in analyses
+        if owners.get(analysis.session_id) not in deny_honeypots
+        and analysis.session_id in owners
+    ]
 
 
 async def latest_for_session(session_id: str) -> SessionAnalysis | None:
