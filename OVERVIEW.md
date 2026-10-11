@@ -454,6 +454,16 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
   only a global role the first time anyone added one entry to it. One consequence is
   worth knowing — because a malformed map value is dropped and falls back to the global
   role, a mistyped denial (`"None"`) does not deny. That is logged, not guessed at.
+- **List endpoints are bounded, and there is no cursor.** Every list route takes a
+  `limit` (default 100, ceiling 500 — `/api/evaluations` keeps its own 20/100), and an
+  over-large ask is a 422 naming the bound rather than a silently clamped page that looks
+  complete. There is no way to page *past* the ceiling: these are first-screen bounds, not
+  pagination. The services keep an unbounded default so internal callers are unaffected —
+  `create_report` reads every indicator and keeps one session's worth. Two reads cap
+  below that and say so in the log when they do: a single session's events (1000) and a
+  chain's read-back (1000). Scoping analyses can also return a page shorter than its
+  limit, because `analyses` carries no honeypot column and the filter has to run after
+  the rows are read.
 - **Similarity normalises only the literals that vary between runs of one campaign** — IPv4
   addresses and file hashes become placeholders, so two runs of a dropper pointed at different
   C2 hosts match. Arguments are deliberately not stripped further: `cat /etc/passwd` and
@@ -640,13 +650,13 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `703 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `722 passed` with at most one skip** — there are
 no expected failures.
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `703 passed` or `702 passed,
+with a reason rather than failing, so a clean run is `722 passed` or `721 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.
