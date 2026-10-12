@@ -173,6 +173,7 @@ async def list_sessions(
     q: str | None = None,
     limit: int | None = None,
     deny_honeypots: set[str] | None = None,
+    attacker_ip: str | None = None,
 ) -> list[AttackSession]:
     """Find session ids matching the filters, then assemble each one.
 
@@ -186,6 +187,13 @@ async def list_sessions(
         filters.append({"term": {"honeypot.id": honeypot_id}})
     if risk:
         filters.append({"term": {"risk.level": risk}})
+    # In the query, not by filtering the result: the aggregation keeps only the
+    # NEWEST `wanted` sessions fleet-wide, so filtering afterwards loses every
+    # attacker whose sessions are older than that page. The caller must pass a
+    # valid IP literal -- `source.ip` is mapped `ip`, and a term query with
+    # anything else is a 400 from Elasticsearch, not an empty answer.
+    if attacker_ip:
+        filters.append({"term": {"source.ip": attacker_ip}})
 
     # Applied in the query, not by dropping rows afterwards: a denied honeypot
     # must not reach the aggregation either, or its sessions consume buckets

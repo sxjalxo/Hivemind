@@ -128,3 +128,41 @@ async def test_a_working_daemon_reads_as_connected(monkeypatch) -> None:
 
     assert state == "connected"
     assert detail == "hivemind-cowrie-1"
+
+
+async def test_rejected_events_read_zero_without_an_index_and_degraded_with_one(
+    monkeypatch,
+) -> None:
+    """Filebeat creates the dead-letter index on the first rejection, so absent
+    means none -- and one document must surface, not round down to "fine"."""
+    import uuid
+
+    from app.es.client import get_es
+    from app.routers import status
+
+    index = f"hivemind-rejected-test-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(status, "REJECTED_EVENTS_INDEX", index)
+
+    assert await status.rejected_events_health() == ("running", "0 events rejected")
+
+    es = get_es()
+    await es.index(index=index, document={"message": "{}", "error.type": 400}, refresh=True)
+    try:
+        state, detail = await status.rejected_events_health()
+        assert state == "degraded"
+        assert "1 captured events" in detail and index in detail
+    finally:
+        await es.indices.delete(index=index)
+
+
+async def test_an_unreadable_rejected_count_is_unknown_never_clean(monkeypatch) -> None:
+    from app.routers import status
+
+    class _Broken:
+        async def count(self, **kwargs):
+            raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(status, "get_es", lambda: _Broken())
+
+    state, _ = await status.rejected_events_health()
+    assert state == "unknown"

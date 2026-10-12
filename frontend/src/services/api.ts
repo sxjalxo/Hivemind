@@ -134,6 +134,7 @@ export async function wsProtocols(): Promise<string[]> {
 export const endpoints = {
   honeypots: "/api/honeypots",
   sessions: "/api/sessions",
+  campaigns: "/api/campaigns",
   session: (id: string) => `/api/sessions/${id}`,
   event: (id: string) => `/api/events/${encodeURIComponent(id)}`,
   logs: "/api/logs",

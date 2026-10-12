@@ -2,6 +2,7 @@ import { API_BASE_URL, endpoints, request, wsProtocols } from "./api";
 import type { AnalysisProgressEvent, DashboardData, DataProvider, Unsubscribe } from "./provider";
 import type {
   AttackSession,
+  CampaignList,
   AttackerProfile,
   EvaluationProgressEvent,
   EvaluationRemediation,
@@ -37,6 +38,8 @@ export const FastAPIProvider: DataProvider = {
     }),
 
   getSession: (id) => request<AttackSession>(endpoints.session(id)),
+
+  getCampaigns: () => request<CampaignList>(endpoints.campaigns),
 
   getSessionTimeline: (id) => request<SessionTimelineEvent[]>(`${endpoints.session(id)}/timeline`),
 

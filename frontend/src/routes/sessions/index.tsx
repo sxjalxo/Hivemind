@@ -16,6 +16,7 @@ import {
   TableSkeleton,
 } from "@/components/common";
 import { AnalysisStateChip } from "@/components/session/AnalysisStateChip";
+import { CampaignsPanel } from "@/components/session/CampaignsPanel";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -78,6 +79,8 @@ function SessionsPage() {
           </>
         }
       />
+
+      <CampaignsPanel />
 
       <Panel bodyClassName="p-0">
         <div className="flex flex-col gap-2 border-b border-border p-3 sm:flex-row sm:items-center">

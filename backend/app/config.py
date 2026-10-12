@@ -153,6 +153,18 @@ class Settings(BaseSettings):
     byok_api_key: str | None = None
     byok_model: str | None = None
 
+    # Index the demo corpus (`labels.seeded: true`) on startup when none exists.
+    #
+    # On by default because the dashboard is empty without it. Turn it OFF for a
+    # deployment that collects real traffic: seeded events carry a real-looking
+    # honeypot id, count in every KPI and top-attacker panel, and nothing on the
+    # dashboard distinguishes them from captured ones.
+    #
+    # Turning it off stops FUTURE seeding only. A corpus already in the index
+    # stays until `seed()` replaces it or it is deleted by query on
+    # `labels.seeded: true`.
+    seed_corpus_on_startup: bool = True
+
     seed_output_head_lines: int = 20
     seed_output_tail_lines: int = 20
 

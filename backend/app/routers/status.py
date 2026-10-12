@@ -1,11 +1,12 @@
 import asyncio
 from typing import Literal
 
+from elasticsearch import NotFoundError
 from fastapi import APIRouter
 
 from app.config import get_settings
 from app.db.session import pg_health
-from app.es.client import es_health
+from app.es.client import es_health, get_es
 from app.seed.seeder import seeded_count
 from app.serialization import CamelModel
 from app.services.evaluation.container import docker_health
@@ -14,6 +15,35 @@ from app.services.llm.ollama import ollama_health
 router = APIRouter()
 
 ServiceState = Literal["connected", "degraded", "disconnected", "running", "unknown"]
+
+# Where Filebeat puts events Elasticsearch refused (see the
+# `non_indexable_policy` stanza in infra/filebeat/filebeat.yml). Filebeat's
+# default is to DROP them, so this index is the only record they existed.
+REJECTED_EVENTS_INDEX = "hivemind-rejected-events"
+
+
+async def rejected_events_health() -> tuple[ServiceState, str]:
+    """How many captured events the index mapping has refused.
+
+    No index is zero rejections: Filebeat creates it on the first one. Any
+    other failure is `unknown`, never "none" -- a count we could not read is
+    not a clean bill.
+    """
+    try:
+        count = (await get_es().count(index=REJECTED_EVENTS_INDEX))["count"]
+    except NotFoundError:
+        return "running", "0 events rejected"
+    except Exception as exc:  # noqa: BLE001
+        return "unknown", f"could not count rejected events: {str(exc)[:120]}"
+    if count:
+        return (
+            "degraded",
+            (
+                f"{count} captured events refused by the index mapping; the originals "
+                f"are kept in {REJECTED_EVENTS_INDEX}"
+            ),
+        )
+    return "running", "0 events rejected"
 
 
 class ServiceStatus(CamelModel):
@@ -31,6 +61,7 @@ async def get_status() -> list[ServiceStatus]:
         (pg_state, pg_detail),
         (ol_state, ol_detail),
         (docker_state, docker_detail),
+        (rejected_state, rejected_detail),
     ) = await asyncio.gather(
         es_health(),
         pg_health(),
@@ -39,6 +70,7 @@ async def get_status() -> list[ServiceStatus]:
         # out to the docker CLI, and run serially it would add its latency to
         # a dashboard that polls.
         docker_health(settings.evaluation_container_name),
+        rejected_events_health(),
     )
     evaluator_configured = settings.byok_api_key is not None
     seeded = await seeded_count()
@@ -87,5 +119,11 @@ async def get_status() -> list[ServiceStatus]:
             name="Seeded corpus",
             state="running" if seeded else "unknown",
             detail=f"{seeded} seeded events" if seeded else "no seeded events",
+        ),
+        ServiceStatus(
+            id="rejected-events",
+            name="Rejected events",
+            state=rejected_state,
+            detail=rejected_detail,
         ),
     ]

@@ -1,0 +1,49 @@
+# Does a clean checkout still build and start?
+#
+# Deliberately NOT the test suite: that runs against live Elasticsearch,
+# Postgres and a local Ollama model, none of which a runner has. What it does
+# catch is the class the suite is structurally blind to, because the suite runs
+# in a venv that already has every package.
+#
+#   * `paramiko` (2026-09-27) and `greenlet` (2026-10-11) were both imported by
+#     the app and declared by nothing. The dev venv had them, so the suite was
+#     green for weeks while a clean install could not start.
+#   * The `greenlet` failure was at import time, not build time -- the image
+#     built fine and the container crash-looped before the first migration. So
+#     building is not enough; the second step imports the app inside the image.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the backend and frontend images
+        run: docker compose --profile app build backend frontend
+      - name: Import the app inside the backend image
+        # --no-deps: importing needs no Elasticsearch or Postgres, and starting
+        # them would turn a dependency check into an infrastructure check.
+        run: docker compose --profile app run --rm --no-deps --entrypoint python backend -c "import app.main"
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # The lockfile needs ^22.13 || ^24.3; both Dockerfiles use node:24.
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # Errors fail the job; the standing warnings (5) do not.
+      - run: npx eslint .
+      - run: npx tsc --noEmit

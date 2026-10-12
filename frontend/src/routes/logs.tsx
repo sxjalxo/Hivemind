@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Code2, Rows3, ScrollText, Search, Table2 } from "lucide-react";
+import { ChevronRight, Code2, Download, Rows3, ScrollText, Search, Table2 } from "lucide-react";
 import { Fragment, useState } from "react";
 import {
   CopyButton,
@@ -24,7 +24,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { isDemoMode } from "@/services";
+import { isDemoMode, provider } from "@/services";
+import { downloadText, toCsv } from "@/utils/csv";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { HoneypotEvent, LogQuery, RiskLevel } from "@/types";
@@ -59,6 +60,43 @@ export const Route = createFileRoute("/logs")({
 });
 
 const PAGE_SIZE = 25;
+
+// The API's own ceiling for one response (`MAX_PAGE_LIMIT`). An export asks for
+// one full-size page rather than looping: a larger match is reported as
+// truncated, not quietly stitched together.
+const EXPORT_LIMIT = 500;
+
+const CSV_HEADER = [
+  "timestamp",
+  "honeypot_id",
+  "session_id",
+  "source_ip",
+  "event_action",
+  "event_category",
+  "protocol",
+  "username",
+  "command",
+  "risk_level",
+  "risk_score",
+  "technique_id",
+];
+
+function eventToCsvRow(e: HoneypotEvent) {
+  return [
+    e.timestamp,
+    e.honeypot.id,
+    e.session.id,
+    e.source.ip,
+    e.event.action,
+    e.event.category,
+    e.network.protocol,
+    e.user?.name,
+    e.process?.commandLine,
+    e.risk.level,
+    e.risk.score,
+    e.mitre?.techniqueId,
+  ];
+}
 
 const ECS_FIELDS = [
   "timestamp",
@@ -95,6 +133,29 @@ function LogExplorerPage() {
     pageSize: PAGE_SIZE,
   };
   const { data, isPending, isError, error, refetch } = useQuery(logSearchQuery(query));
+
+  const [exporting, setExporting] = useState(false);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+
+  // Re-queries with the SAME filters at the API's page ceiling instead of
+  // exporting the 25 rows on screen, which would be a CSV of one page.
+  const exportCsv = async () => {
+    setExporting(true);
+    setExportNote(null);
+    try {
+      const result = await provider.queryLogs({ ...query, page: 1, pageSize: EXPORT_LIMIT });
+      downloadText("hivemind-events.csv", toCsv(CSV_HEADER, result.items.map(eventToCsvRow)));
+      setExportNote(
+        result.total > result.items.length
+          ? `Exported the first ${formatNumber(result.items.length)} of ${formatNumber(result.total)} matching events. Narrow the filters to export the rest.`
+          : `Exported ${formatNumber(result.items.length)} events.`,
+      );
+    } catch {
+      setExportNote("Export failed - the events could not be read.");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   const patch = (next: Partial<LogSearch>) =>
     void navigate({ search: (prev) => ({ ...prev, ...next, page: undefined }) });
@@ -259,7 +320,22 @@ function LogExplorerPage() {
             <span className="font-mono text-[11px] text-muted-foreground">
               Page {page} of {totalPages} — {formatNumber(data.total)} events
             </span>
-            <span className="flex gap-1.5">
+            <span className="flex items-center gap-1.5">
+              {exportNote ? (
+                <span className="mr-2 hidden font-mono text-[10px] text-muted-foreground md:inline">
+                  {exportNote}
+                </span>
+              ) : null}
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7"
+                disabled={exporting}
+                onClick={() => void exportCsv()}
+              >
+                <Download className="size-3.5" aria-hidden />
+                {exporting ? "Exporting..." : "Export CSV"}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"

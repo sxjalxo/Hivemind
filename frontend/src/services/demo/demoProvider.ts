@@ -230,6 +230,18 @@ export const DemoProvider: DataProvider = {
     return demo.honeypots;
   },
 
+  async getCampaigns() {
+    await delay(220);
+    // No invented campaigns. A campaign is a claim that real sessions repeated
+    // one script, and the demo sessions are distinct by construction.
+    return {
+      campaigns: [],
+      sessionsConsidered: demo.sessions.length,
+      complete: true,
+      incompleteReason: null,
+    };
+  },
+
   async getSessions(params) {
     await delay(220);
     let items = demo.sessions;

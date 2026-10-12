@@ -2,6 +2,7 @@ import type {
   AnalysisStage,
   AttackSession,
   AttackerProfile,
+  CampaignList,
   EvaluationProgressEvent,
   EvaluationRemediation,
   EvaluationRun,
@@ -48,6 +49,7 @@ export interface DataProvider {
     q?: string;
   }): Promise<AttackSession[]>;
   getSession(id: string): Promise<AttackSession>;
+  getCampaigns(): Promise<CampaignList>;
   getSessionTimeline(id: string): Promise<SessionTimelineEvent[]>;
   getSessionEvents(id: string): Promise<HoneypotEvent[]>;
 

@@ -1,3 +1,4 @@
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass
@@ -143,7 +144,17 @@ async def _run_command_aggregation(settings, ip_limit: int, command_limit: int) 
 
 
 async def build_profile(ip: str) -> AttackerProfileOut | None:
-    sessions = [s for s in await list_sessions() if s.attacker_ip == ip]
+    # Not an IP literal means no attacker could have it: answer "unknown"
+    # rather than sending Elasticsearch a term query it rejects with a 400.
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        return None
+    # Filtered in the query. This used to fetch the newest 500 sessions
+    # fleet-wide and keep this IP's in Python -- two round trips per session for
+    # every one of them, and a false "no sessions recorded" for any attacker
+    # whose sessions were older than the newest 500.
+    sessions = await list_sessions(attacker_ip=ip)
     if not sessions:
         return None
 

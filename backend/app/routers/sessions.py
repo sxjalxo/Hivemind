@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import assert_can_read, denied_honeypots, denies_everything, require_user
 from app.models.event import HoneypotEvent
-from app.models.session import AttackSession, SessionTimelineEvent
+from app.models.session import AttackSession, CampaignList, SessionTimelineEvent
 from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
-from app.services import session_builder
+from app.services import campaigns, session_builder
 
 router = APIRouter()
 
@@ -32,6 +32,17 @@ async def get_sessions(
         limit=limit,
         deny_honeypots=denied_honeypots(claims),
     )
+
+
+@router.get("/campaigns", response_model=CampaignList)
+async def get_campaigns(
+    limit: int = Query(DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+    claims: dict | None = Depends(require_user),
+) -> CampaignList:
+    # Built from per-honeypot sessions, so scoped exactly as the session list.
+    if denies_everything(claims):
+        return CampaignList(campaigns=[], sessions_considered=0, complete=True)
+    return await campaigns.list_campaigns(deny_honeypots=denied_honeypots(claims), limit=limit)
 
 
 @router.get("/sessions/{session_id}", response_model=AttackSession)

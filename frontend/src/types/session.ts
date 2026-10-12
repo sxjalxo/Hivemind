@@ -25,6 +25,36 @@ export interface AttackSession {
   username?: string | undefined;
 }
 
+/**
+ * Sessions whose ordered command sequences are identical once IP literals and
+ * hex digests are masked. A deterministic grouping, not a model judgement.
+ * Lists are capped by the backend; every `*Count` is exact.
+ */
+export interface Campaign {
+  fingerprint: string;
+  /** Normalised commands from the newest session, e.g. `wget http://<ip>/x`. */
+  commands: string[];
+  commandCount: number;
+  sessionCount: number;
+  sessionIds: string[];
+  attackerIps: string[];
+  attackerIpCount: number;
+  honeypotIds: string[];
+  firstSeen: string;
+  lastSeen: string;
+}
+
+export interface CampaignList {
+  campaigns: Campaign[];
+  sessionsConsidered: number;
+  /**
+   * False when a backend cap left sessions unexamined. The campaigns shown are
+   * exact for what was examined; what is missing is whole sessions.
+   */
+  complete: boolean;
+  incompleteReason: string | null;
+}
+
 export interface SessionTimelineEvent {
   id: string;
   timestamp: string;

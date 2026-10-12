@@ -742,3 +742,34 @@ async def test_listing_indicators_does_not_query_once_per_row() -> None:
         assert len(selects) == 2, f"expected 2 queries, got {len(selects)}:\n" + "\n".join(selects)
     finally:
         await _delete_indicators_for_session(session_id)
+
+
+async def test_an_attacker_outside_the_newest_session_page_still_has_a_profile(
+    monkeypatch,
+) -> None:
+    """The profile must not depend on the attacker being among the newest sessions.
+
+    The session list keeps the newest N sessions fleet-wide. Filtering that page by
+    IP afterwards answered "no sessions recorded" for any older attacker, which a
+    honeypot collecting real traffic reaches as soon as it has N sessions.
+    """
+    from app.services import session_builder
+
+    await seed(reset=True)
+    newest = (await session_builder.list_sessions(limit=1))[0]
+    older_ip = next(
+        s.attacker_ip
+        for s in await session_builder.list_sessions()
+        if s.attacker_ip != newest.attacker_ip
+    )
+    # A page of one: only the newest session fits, and it is not this attacker's.
+    monkeypatch.setattr(session_builder, "_MAX_SESSION_BUCKETS", 1)
+
+    profile = await build_profile(older_ip)
+
+    assert profile is not None
+    assert profile.ip == older_ip
+
+
+async def test_a_non_ip_attacker_id_is_unknown_not_a_server_error() -> None:
+    assert await build_profile("not-an-ip") is None

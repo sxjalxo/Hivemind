@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
         )
 
     await bootstrap_es()
-    if await seeded_count() == 0:
+    if settings.seed_corpus_on_startup and await seeded_count() == 0:
         await seed()
 
     # A process killed mid-run leaves `status=running` with nothing left in

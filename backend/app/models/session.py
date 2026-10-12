@@ -33,3 +33,32 @@ class SessionTimelineEvent(CamelModel):
     detail: str | None = None
     severity: str
     technique_id: str | None = None
+
+
+class Campaign(CamelModel):
+    """Sessions whose ordered, normalised command sequences are identical.
+
+    Lists are capped for the response; every `*_count` is exact.
+    """
+
+    fingerprint: str
+    # Normalised (IP literals and digests masked), from the newest session.
+    commands: list[str]
+    command_count: int
+    session_count: int
+    session_ids: list[str]
+    attacker_ips: list[str]
+    attacker_ip_count: int
+    honeypot_ids: list[str]
+    first_seen: str
+    last_seen: str
+
+
+class CampaignList(CamelModel):
+    campaigns: list[Campaign]
+    sessions_considered: int
+    # False when a cap left sessions unexamined. The campaigns returned are
+    # still exact for the sessions that were examined; what is missing is
+    # sessions, never part of one.
+    complete: bool
+    incomplete_reason: str | None = None

@@ -1031,6 +1031,34 @@ touch this area:
 Postgres has no retention policy at all. Growth there is one row per analysis and per
 evaluation run, which is slow enough to ignore for now.
 
+### Rejected events and GeoIP
+
+**An event the mapping refuses is kept, not dropped.** `honeypot-events` is
+`dynamic: strict`, so a Cowrie field the template does not know is rejected at index time
+-- after the pipeline, where its `on_failure` cannot see it. Filebeat's default for a
+rejected event is to *drop* it, with nothing but a line in its own log. Filebeat is now
+configured with `non_indexable_policy.dead_letter_index`, which writes the refused event to
+`hivemind-rejected-events`: Elasticsearch's reason in `error.message`, the complete
+original in `message`, ready to replay once the mapping is fixed. The status page carries a
+**Rejected events** row (`degraded` from the first one), so a rejection is visible on the
+dashboard rather than only in a container log.
+
+Filebeat's output names **no pipeline** for this reason. Every `honeypot-events*` index
+gets `index.default_pipeline: cowrie-ecs` from the template, so normal events are processed
+exactly as before; naming the pipeline on the output also applied it to dead letters, and
+`cowrie-ecs` removes `message` -- the field holding the original. That was measured on
+8.15.3, not assumed.
+
+**The source country comes from GeoLite2, not from telemetry.** The pipeline looks the
+source address up in Elasticsearch's GeoLite2 Country database and writes the ISO code into
+the already-mapped `source.country`, so no index needed new mappings. Country only; an
+address the database cannot place, or a private one, simply has no country. Elasticsearch
+downloads the database lazily after the pipeline is first installed and needs internet to do
+so. Until it has, the geoip processor tags every document `_geoip_database_unavailable_...`
+in a `tags` field the strict mapping does not have, which would reject every event; the
+pipeline removes exactly those tags and nothing else. The GeoLite2 data is MaxMind's and
+is distributed under CC BY-SA 4.0.
+
 ### Security
 
 Cowrie is deliberately attackable software. Its ports bind to `127.0.0.1` only and it must

@@ -131,3 +131,85 @@ async def test_unrecognized_cowrie_field_is_rejected_not_silently_dropped() -> N
     message = str(exc_info.value)
     assert "strict_dynamic_mapping_exception" in message
     assert "mystery_field" in message
+
+
+# --- GeoIP --------------------------------------------------------------------
+#
+# The dangerous state is the one a fresh install is in: no GeoLite2 database
+# yet. The geoip processor then tags every document, and under dynamic:strict an
+# unmapped `tags` field rejects the event -- ingest would stop. These tests hold
+# whichever state the cluster is in; the country assertion needs the database.
+
+
+async def _geoip_database_present() -> bool:
+    # The COUNTRY database on a node, not "any database": the downloader fetches
+    # ASN, City and Country separately, and ASN arriving first made a count > 0
+    # look like readiness.
+    stats = await get_es().ingest.geo_ip_stats()
+    return any(
+        db["name"] == "GeoLite2-Country.mmdb"
+        for node in stats["nodes"].values()
+        for db in node.get("databases", [])
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_live_shaped_event_is_accepted_whatever_the_geoip_database_state() -> None:
+    """Indexed into the REAL index through the real pipeline, as Filebeat does.
+
+    `_simulate` would show a stray tag but not the rejection; only indexing
+    under the real strict mapping proves the event is not refused.
+    """
+    await bootstrap_es()
+    settings = get_settings()
+    doc = {
+        "cowrie": {
+            "eventid": "cowrie.command.input",
+            "session": "test-geoip-accepted",
+            "input": "id",
+            "src_ip": "8.8.8.8",
+            "timestamp": "2026-08-20T10:15:03.421000Z",
+        },
+        "honeypot": {"id": "cowrie-01", "name": "Cowrie SSH (med-ws-04)"},
+        "labels": {"seeded": False},
+    }
+    resp = await get_es().index(
+        index=settings.es_index, document=doc, pipeline=PIPELINE_ID, refresh=True
+    )
+    try:
+        src = (await get_es().get(index=settings.es_index, id=resp["_id"]))["_source"]
+        assert "tags" not in src
+        assert "tmp_geo" not in src
+    finally:
+        await get_es().delete(index=settings.es_index, id=resp["_id"])
+
+
+@pytest.mark.asyncio
+async def test_a_private_address_gets_no_country_and_no_leftovers() -> None:
+    src = await _simulate({**COWRIE_COMMAND_EVENT, "src_ip": "172.19.0.1"})
+
+    assert "country" not in src["source"]
+    assert "tags" not in src
+    assert "tmp_geo" not in src
+
+
+@pytest.mark.asyncio
+async def test_a_country_already_present_is_kept() -> None:
+    src = await _simulate(
+        {**COWRIE_COMMAND_EVENT, "src_ip": "8.8.8.8", "source": {"country": "XX"}}
+    )
+
+    assert src["source"]["country"] == "XX"
+
+
+@pytest.mark.asyncio
+async def test_a_public_address_is_placed_in_a_country() -> None:
+    await bootstrap_es()
+    if not await _geoip_database_present():
+        pytest.skip(
+            "Elasticsearch has not downloaded GeoLite2 yet (it fetches lazily, "
+            "and needs internet); the leak/acceptance tests above still ran"
+        )
+    src = await _simulate({**COWRIE_COMMAND_EVENT, "src_ip": "8.8.8.8"})
+
+    assert src["source"]["country"] == "US"

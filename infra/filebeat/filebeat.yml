@@ -114,7 +114,23 @@ processors:
 output.elasticsearch:
   hosts: ["http://elasticsearch:9200"]
   index: "honeypot-events"
-  pipeline: "cowrie-ecs"
+  # No `pipeline:` here, deliberately. Every `honeypot-events*` index gets
+  # `index.default_pipeline: cowrie-ecs` from the template, so normal events are
+  # processed exactly as before. Naming the pipeline on the OUTPUT also applied
+  # it to dead-lettered events below, and cowrie-ecs removes `message` -- which
+  # is where Filebeat puts the rejected original -- so the dead letter kept the
+  # reason and lost the event. Measured on 8.15.3, not assumed.
+  # An event Elasticsearch REJECTS -- a Cowrie field the strict mapping does
+  # not know, which real internet traffic produces sooner or later -- is
+  # DROPPED by default (`non_indexable_policy: drop`), visible only as a line
+  # in this container's log. Dropped means lost: there is no replay. This keeps
+  # it instead, with Elasticsearch's reason, in an index outside the
+  # `honeypot-events*` pattern so neither the strict template nor the
+  # cowrie-ecs default pipeline applies to it. The backend's status page
+  # counts it, so a rejection is visible on the dashboard rather than only
+  # here. Fix the mapping, then the original event is in `message` to replay.
+  non_indexable_policy.dead_letter_index:
+    index: "hivemind-rejected-events"
 
 setup.template.enabled: false
 setup.ilm.enabled: false

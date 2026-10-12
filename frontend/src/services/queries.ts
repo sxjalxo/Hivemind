@@ -26,6 +26,8 @@ export const sessionQueries = {
     }),
   detail: (id: string) =>
     queryOptions({ queryKey: ["session", id], queryFn: () => provider.getSession(id) }),
+  campaigns: () =>
+    queryOptions({ queryKey: ["campaigns"], queryFn: () => provider.getCampaigns() }),
   timeline: (id: string) =>
     queryOptions({
       queryKey: ["session-timeline", id],

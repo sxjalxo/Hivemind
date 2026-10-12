@@ -13,6 +13,32 @@
     { "rename": { "field": "src_port", "target_field": "source.port", "ignore_missing": true } },
     { "rename": { "field": "dst_ip", "target_field": "destination.ip", "ignore_missing": true } },
     { "rename": { "field": "dst_port", "target_field": "destination.port", "ignore_missing": true } },
+    {
+      "geoip": {
+        "description": "Country of the source address, into the already-mapped source.country (no template change, so no index needs new mappings). Country only: city-level lookups on attacker infrastructure are precise-looking and frequently wrong. Skipped when a country is already present, so a document that arrives with one keeps it. ignore_failure: an address the database cannot place stays unplaced; it is never a reason to reject the event. Private addresses simply resolve to nothing.",
+        "field": "source.ip",
+        "target_field": "tmp_geo",
+        "database_file": "GeoLite2-Country.mmdb",
+        "properties": ["country_iso_code"],
+        "ignore_missing": true,
+        "ignore_failure": true,
+        "if": "ctx.source?.ip != null && ctx.source?.country == null"
+      }
+    },
+    {
+      "set": {
+        "field": "source.country",
+        "copy_from": "tmp_geo.country_iso_code",
+        "if": "ctx.tmp_geo?.country_iso_code != null"
+      }
+    },
+    {
+      "script": {
+        "lang": "painless",
+        "description": "LOAD-BEARING under dynamic:strict. Until Elasticsearch has downloaded the GeoLite2 database -- lazily, after this pipeline is first installed, and never on an offline machine -- the geoip processor tags EVERY document '_geoip_database_unavailable_GeoLite2-Country.mmdb' in a 'tags' field this mapping does not have, so every event would be rejected at index time and ingest would stop. Only that processor's own tags are removed; any other 'tags' still fails loudly, as unmapped fields should. Verified with _simulate on 8.15 with no database present.",
+        "source": "ctx.remove('tmp_geo'); if (ctx.tags instanceof List) { ctx.tags.removeIf(t -> t instanceof String && t.startsWith('_geoip_')); if (ctx.tags.isEmpty()) { ctx.remove('tags'); } }"
+      }
+    },
     { "rename": { "field": "session", "target_field": "session.id", "ignore_missing": true } },
     { "rename": { "field": "eventid", "target_field": "event.action", "ignore_missing": true } },
     { "rename": { "field": "input", "target_field": "process.command_line", "ignore_missing": true } },

@@ -16,7 +16,7 @@ import { useEvaluationRun } from "@/hooks/useEvaluationRun";
 import { useAdminForHoneypot } from "@/hooks/useAdminFor";
 import { EVALUATION_STAGE_COUNT, RUN_STATUS_LABELS } from "@/services/evaluation";
 import { cn } from "@/lib/utils";
-import { honeypotsQuery } from "@/services/queries";
+import { honeypotsQuery, systemStatusQuery } from "@/services/queries";
 
 /**
  * Dispatches a run and follows it.
@@ -40,6 +40,16 @@ export function RunEvaluationPanel() {
   // are per-honeypot, so the question is about the SELECTED one, not about
   // holding admin somewhere.
   const canRun = useAdminForHoneypot(target || undefined);
+  // The status page already knows whether any run can start: with no Docker
+  // access the reset precondition fails, the POST is accepted, and the run then
+  // 404s permanently with its only record in a progress frame. Offering the
+  // button anyway invites exactly that. Blocked only on a POSITIVE
+  // "disconnected" -- a pending, errored or absent row proves nothing, and the
+  // backend's reset precondition stays the authority either way. "degraded" is
+  // not blocked: the probe checks the default container, so it says nothing
+  // about a different target's.
+  const status = useQuery(systemStatusQuery());
+  const dockerDown = status.data?.find((row) => row.id === "docker")?.state === "disconnected";
 
   return (
     <Panel
@@ -72,14 +82,27 @@ export function RunEvaluationPanel() {
         <Button
           size="sm"
           className="h-9"
-          disabled={target === "" || isBusy || !canRun.allowed}
-          title={target === "" ? undefined : canRun.title}
+          disabled={target === "" || isBusy || !canRun.allowed || dockerDown}
+          title={
+            dockerDown
+              ? "No Docker access - evaluation runs cannot start. Analysis is unaffected."
+              : target === ""
+                ? undefined
+                : canRun.title
+          }
           onClick={() => start(target)}
         >
           <FlaskConical className={cn("size-3.5", isBusy && "animate-pulse")} aria-hidden />
           {isBusy ? "Evaluation in flight..." : "Run evaluation"}
         </Button>
       </div>
+
+      {dockerDown ? (
+        <InlineNotice tone="critical" className="mt-3">
+          No Docker access, so an evaluation run cannot start: it resets the honeypot&apos;s
+          container first. Analysis is unaffected. Stored runs below can still be opened.
+        </InlineNotice>
+      ) : null}
 
       {honeypots.isError ? (
         <InlineNotice tone="critical" className="mt-3">
