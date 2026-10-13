@@ -26,6 +26,16 @@ export const sessionQueries = {
     }),
   detail: (id: string) =>
     queryOptions({ queryKey: ["session", id], queryFn: () => provider.getSession(id) }),
+  annotations: (id: string) =>
+    queryOptions({
+      queryKey: ["session-annotations", id],
+      queryFn: () => provider.getAnnotations(id),
+    }),
+  identical: (id: string) =>
+    queryOptions({
+      queryKey: ["session-identical", id],
+      queryFn: () => provider.getIdenticalSessions(id),
+    }),
   campaigns: () =>
     queryOptions({ queryKey: ["campaigns"], queryFn: () => provider.getCampaigns() }),
   timeline: (id: string) =>
@@ -38,6 +48,12 @@ export const sessionQueries = {
       queryKey: ["session-events", id],
       queryFn: () => provider.getSessionEvents(id),
     }),
+  reputation: (ip: string) =>
+    queryOptions({
+      queryKey: ["attacker-reputation", ip],
+      queryFn: () => provider.getAttackerReputation(ip),
+      staleTime: 60 * 60 * 1000, // the backend caches a day; no need to re-ask on every focus
+    }),
   attacker: (ip: string) =>
     queryOptions({ queryKey: ["attacker", ip], queryFn: () => provider.getAttackerProfile(ip) }),
 };
@@ -49,8 +65,18 @@ export const analysisQueries = {
     queryOptions({ queryKey: ["analysis", id], queryFn: () => provider.getAnalysis(id) }),
 };
 
+export const notablesQuery = () =>
+  queryOptions({
+    queryKey: ["notables"],
+    queryFn: () => provider.getNotables(),
+    refetchInterval: 60_000,
+  });
+
 export const dashboardQuery = (range: string) =>
   queryOptions({ queryKey: ["dashboard", range], queryFn: () => provider.getDashboard(range) });
+
+export const logFacetsQuery = () =>
+  queryOptions({ queryKey: ["log-facets"], queryFn: () => provider.getLogFacets() });
 
 export const logSearchQuery = (query: LogQuery) =>
   queryOptions({ queryKey: ["logs", query], queryFn: () => provider.queryLogs(query) });

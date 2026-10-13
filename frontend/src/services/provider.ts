@@ -2,7 +2,9 @@ import type {
   AnalysisStage,
   AttackSession,
   AttackerProfile,
+  Annotation,
   CampaignList,
+  SessionTwins,
   EvaluationProgressEvent,
   EvaluationRemediation,
   EvaluationRun,
@@ -10,16 +12,22 @@ import type {
   Honeypot,
   HoneypotEvent,
   Indicator,
+  IocExport,
+  IocExportFormat,
   LiveAnalysisState,
+  LogFacets,
   LogQuery,
   MitreCoverage,
+  Notable,
   Paginated,
+  Reputation,
   RunComparison,
   ServiceStatus,
   SessionAnalysis,
   SessionTimelineEvent,
   StartEvaluationResponse,
   ThreatReport,
+  VirusTotalVerdict,
 } from "@/types";
 
 /** One progress tick emitted by the backend while an analysis runs. */
@@ -50,10 +58,19 @@ export interface DataProvider {
   }): Promise<AttackSession[]>;
   getSession(id: string): Promise<AttackSession>;
   getCampaigns(): Promise<CampaignList>;
+  getIdenticalSessions(id: string): Promise<SessionTwins>;
+  getAnnotations(sessionId: string): Promise<Annotation[]>;
+  /** A tag already on the session resolves to that same tag, not a duplicate. */
+  addAnnotation(sessionId: string, kind: "tag" | "note", body: string): Promise<Annotation>;
+  deleteAnnotation(sessionId: string, annotationId: string): Promise<void>;
+  /** Notable items from the last `days` days, newest first. No read state server-side. */
+  getNotables(days?: number): Promise<Notable[]>;
   getSessionTimeline(id: string): Promise<SessionTimelineEvent[]>;
   getSessionEvents(id: string): Promise<HoneypotEvent[]>;
 
   queryLogs(query: LogQuery): Promise<Paginated<HoneypotEvent>>;
+  /** Filter options that exist in the data, so no dropdown offers a value that matches nothing. */
+  getLogFacets(): Promise<LogFacets>;
 
   /**
    * Resolve an EvidenceRef to its source event.
@@ -97,7 +114,17 @@ export interface DataProvider {
   getMitreCoverage(params?: { sessionId?: string }): Promise<MitreCoverage>;
 
   getIndicators(params?: { type?: string; q?: string }): Promise<Indicator[]>;
+
+  /**
+   * Optional: indicators as STIX 2.1, a MISP event or an IP blocklist. Absent
+   * in demo mode, which has no backend to build a real export from -- the UI
+   * then offers no export rather than a synthetic file.
+   */
+  exportIndicators?(format: IocExportFormat): Promise<IocExport>;
   getAttackerProfile(ip: string): Promise<AttackerProfile>;
+  getAttackerReputation(ip: string): Promise<Reputation>;
+  /** By indicator id: only indicators this system extracted can be looked up. */
+  getVirusTotalVerdict(indicatorId: string): Promise<VirusTotalVerdict>;
 
   getReports(): Promise<ThreatReport[]>;
   createReport(sessionId: string): Promise<ThreatReport>;

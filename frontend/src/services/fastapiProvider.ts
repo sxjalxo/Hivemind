@@ -2,7 +2,10 @@ import { API_BASE_URL, endpoints, request, wsProtocols } from "./api";
 import type { AnalysisProgressEvent, DashboardData, DataProvider, Unsubscribe } from "./provider";
 import type {
   AttackSession,
+  Annotation,
   CampaignList,
+  LogFacets,
+  SessionTwins,
   AttackerProfile,
   EvaluationProgressEvent,
   EvaluationRemediation,
@@ -11,14 +14,18 @@ import type {
   Honeypot,
   HoneypotEvent,
   Indicator,
+  IocExport,
   MitreCoverage,
+  Notable,
   Paginated,
+  Reputation,
   RunComparison,
   ServiceStatus,
   SessionAnalysis,
   SessionTimelineEvent,
   StartEvaluationResponse,
   ThreatReport,
+  VirusTotalVerdict,
 } from "@/types";
 
 /**
@@ -41,9 +48,28 @@ export const FastAPIProvider: DataProvider = {
 
   getCampaigns: () => request<CampaignList>(endpoints.campaigns),
 
+  getIdenticalSessions: (id) => request<SessionTwins>(`${endpoints.session(id)}/identical`),
+
+  getAnnotations: (id) => request<Annotation[]>(`${endpoints.session(id)}/annotations`),
+
+  addAnnotation: (id, kind, body) =>
+    request<Annotation>(`${endpoints.session(id)}/annotations`, {
+      method: "POST",
+      body: { kind, body },
+    }),
+
+  deleteAnnotation: (id, annotationId) =>
+    request<void>(`${endpoints.session(id)}/annotations/${encodeURIComponent(annotationId)}`, {
+      method: "DELETE",
+    }),
+
+  getNotables: (days) => request<Notable[]>(endpoints.notables, { query: { days } }),
+
   getSessionTimeline: (id) => request<SessionTimelineEvent[]>(`${endpoints.session(id)}/timeline`),
 
   getSessionEvents: (id) => request<HoneypotEvent[]>(`${endpoints.session(id)}/events`),
+
+  getLogFacets: () => request<LogFacets>(endpoints.logFacets),
 
   queryLogs: (query) =>
     request<Paginated<HoneypotEvent>>(endpoints.logs, {
@@ -121,7 +147,15 @@ export const FastAPIProvider: DataProvider = {
   getIndicators: (params) =>
     request<Indicator[]>(endpoints.threatIntel, { query: { type: params?.type, q: params?.q } }),
 
+  exportIndicators: (format) =>
+    request<IocExport>(endpoints.threatIntelExport, { query: { format } }),
+
   getAttackerProfile: (ip) => request<AttackerProfile>(endpoints.attacker(ip)),
+
+  getAttackerReputation: (ip) => request<Reputation>(`${endpoints.attacker(ip)}/reputation`),
+
+  getVirusTotalVerdict: (id) =>
+    request<VirusTotalVerdict>(`${endpoints.threatIntel}/${encodeURIComponent(id)}/virustotal`),
 
   getReports: () => request<ThreatReport[]>(endpoints.reports),
 

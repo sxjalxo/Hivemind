@@ -80,6 +80,9 @@ export function useAnalysisRun(sessionId: string) {
       void queryClient.invalidateQueries({ queryKey: ["analysis-history"] });
       void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
       void queryClient.invalidateQueries({ queryKey: ["mitre"] });
+      // An analysis is what creates a notable (a high-risk rating, a first rule-backed
+      // technique), so the bell should not wait for its next minute poll.
+      void queryClient.invalidateQueries({ queryKey: ["notables"] });
     },
     onError: stopProgress,
   });

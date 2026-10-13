@@ -41,6 +41,20 @@ services:
       timeout: 5s
       retries: 12
 
+  # Cross-worker progress fan-out (backend/app/workers/queue.py). Ephemeral by
+  # design: pub/sub holds no data, so there is no volume and nothing to back up.
+  # Loopback-only, like every other port here.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   cowrie:
     # Pinned by digest, not `:latest`. Two reasons, and the second is the one
     # that matters here: `docker inspect --format {{.Image}}` on this
@@ -104,6 +118,16 @@ services:
       - cowrie-logs-hardened:/cowrie-logs-hardened:ro
       - cowrie-logs-degraded-sanity:/cowrie-logs-degraded-sanity:ro
       - cowrie-logs-degraded-fs:/cowrie-logs-degraded-fs:ro
+      # The registry: how far into each Cowrie log Filebeat has shipped. It
+      # lived in the container's writable layer until 2026-10-12, so anything
+      # that RECREATED this container -- `docker compose down` then `up`, or
+      # any change to this service -- lost it, and filestream re-read every log
+      # from offset 0. Events carry no deterministic _id, so every event was
+      # indexed a second time. `docker restart` kept it, which is why it never
+      # showed. Files are identified by inode + device, and the device is the
+      # Docker VM's disk, so it survives recreation; it would NOT survive moving
+      # the log volumes to another disk.
+      - filebeat-data:/usr/share/filebeat/data
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -173,12 +197,23 @@ services:
       # The honeypot, its container and its capture sidecar, by compose
       # service and container name -- all reachable from inside this network.
       - EVALUATION_TARGET_HOST=cowrie
+      # Optional third-party reputation (app/services/reputation.py). Read from
+      # the repo-root .env (gitignored) or the shell; empty means off. Passed
+      # through ONE variable at a time on purpose: an env_file here would also
+      # pull in host-run settings like ES_URL=localhost and break the container.
+      - ABUSEIPDB_API_KEY=${ABUSEIPDB_API_KEY:-}
+      - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       elasticsearch:
         condition: service_healthy
       postgres:
         condition: service_healthy
       cowrie:
+        condition: service_started
+      # `started`, not `healthy`: Redis only adds cross-worker progress, and the
+      # queue survives it being down. It must never be what stops the API booting.
+      redis:
         condition: service_started
     restart: unless-stopped
 
@@ -329,3 +364,4 @@ volumes:
   cowrie-logs-hardened:
   cowrie-logs-degraded-sanity:
   cowrie-logs-degraded-fs:
+  filebeat-data:

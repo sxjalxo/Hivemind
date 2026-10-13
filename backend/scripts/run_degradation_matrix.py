@@ -118,6 +118,57 @@ def _fmt(value: float | None) -> str:
     return "  -  " if value is None else f"{value:>5.3f}"
 
 
+def stability(runs: list) -> dict[str, tuple[float | None, float | None, float | None, int, int]]:
+    """Per characteristic across repeated runs of ONE arm: (mean, min, max, established, n).
+
+    Pure. Only established scores are averaged: a run that could not determine a
+    characteristic is counted in `n` but never as a zero, for the reason `_fmt`
+    gives. `established < n` is itself a finding about the apparatus.
+    """
+    out = {}
+    for characteristic in CHARACTERISTICS:
+        values = [
+            score.deterministic_score
+            for run in runs
+            for score in run.category_scores
+            if score.characteristic == characteristic and score.deterministic_score is not None
+        ]
+        if values:
+            out[characteristic] = (
+                sum(values) / len(values),
+                min(values),
+                max(values),
+                len(values),
+                len(runs),
+            )
+        else:
+            out[characteristic] = (None, None, None, 0, len(runs))
+    return out
+
+
+def _print_stability(runs_by_arm: dict[str, list]) -> None:
+    """Is a score a property of the honeypot, or of one run? Spread answers it."""
+    width = max(len(a) for a in runs_by_arm) + 2
+    print()
+    print(
+        f"Stability across {len(next(iter(runs_by_arm.values())))} runs per arm: mean [min-max] established/n"
+    )
+    print("-" * (width + 26 * len(CHARACTERISTICS)))
+    print("arm".ljust(width) + "".join(c[:24].ljust(26) for c in CHARACTERISTICS))
+    for arm, arm_runs in runs_by_arm.items():
+        cells = []
+        for mean, low, high, established, n in stability(arm_runs).values():
+            if mean is None:
+                cells.append(f"-  0/{n}".ljust(26))
+            else:
+                cells.append(f"{mean:.3f} [{low:.3f}-{high:.3f}] {established}/{n}".ljust(26))
+        print(arm.ljust(width) + "".join(cells))
+    print()
+    print("Contradictions per run")
+    for arm, arm_runs in runs_by_arm.items():
+        print(f"{arm.ljust(width)}{[len(_contradictions(r)) for r in arm_runs]}")
+
+
 def _contradictions(run: EvaluationRunOut) -> list[str]:
     """Finding keys for self-contradictions, which start `sanity:`."""
     return sorted(f.finding_key for f in run.findings if f.finding_key.startswith("sanity:"))
@@ -219,19 +270,31 @@ async def main() -> int:
         dest="arms",
         help="Evaluate only this honeypot id. Repeatable. Defaults to every arm.",
     )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Evaluate every arm N times and print each score's spread. Each run is a full "
+        "evaluation (reset, probes, chains): minutes per arm per run.",
+    )
     args = parser.parse_args()
     arms = tuple(args.arms) if args.arms else ARMS
 
     _check_targets(arms)
 
     results: dict[str, EvaluationRunOut] = {}
-    for arm in arms:
-        print(f"evaluating {arm} ...", flush=True)
-        run = await _evaluate(arm)
-        results[arm] = run
-        print(f"  {arm}: {run.status}, run {run.id}", flush=True)
+    runs_by_arm: dict[str, list[EvaluationRunOut]] = {arm: [] for arm in arms}
+    for attempt in range(1, args.repeat + 1):
+        for arm in arms:
+            print(f"evaluating {arm} (run {attempt}/{args.repeat}) ...", flush=True)
+            run = await _evaluate(arm)
+            results[arm] = run
+            runs_by_arm[arm].append(run)
+            print(f"  {arm}: {run.status}, run {run.id}", flush=True)
 
-    _print_report(results)
+    _print_report(results)  # the last run of each arm, as before
+    if args.repeat > 1:
+        _print_stability(runs_by_arm)
     # The same close `app.main`'s shutdown does. Without it the cached
     # AsyncElasticsearch leaks its aiohttp session and the script's last words
     # are a connector warning, which reads like a failure at the exact moment

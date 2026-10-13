@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.db.session import get_engine
 from app.es.bootstrap import bootstrap_es
 from app.es.client import get_es
+from app.middleware import RejectNulBytes
 from app.routers import (
     analysis,
     analyze,
@@ -20,11 +21,13 @@ from app.routers import (
     intel,
     logs,
     mitre,
+    notables,
     reports,
     sessions,
     status,
 )
 from app.services.evaluation import runs
+from app.workers.queue import get_queue
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,9 @@ async def lifespan(app: FastAPI):
         logger.exception("could not reconcile stale evaluation runs at startup")
 
     yield
+    # The Redis progress listener, if one was started, before the clients it
+    # forwards to. A no-op without REDIS_URL.
+    await get_queue().close()
     await get_es().close()
     await get_engine().dispose()
 
@@ -80,6 +86,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Added BEFORE CORS so CORS wraps it: a refusal still carries CORS headers,
+    # and the browser reports a 400 instead of an opaque CORS failure.
+    app.add_middleware(RejectNulBytes)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,
@@ -110,6 +119,7 @@ def create_app() -> FastAPI:
     api.include_router(reports.router, tags=["reports"])
     api.include_router(events.router, tags=["events"])
     api.include_router(evaluation.router, tags=["evaluation"])
+    api.include_router(notables.router, tags=["notables"])
     app.include_router(api)
     return app
 

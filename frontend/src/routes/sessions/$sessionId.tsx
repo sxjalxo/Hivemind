@@ -4,6 +4,8 @@ import { ArrowLeft, FileText, Grid3x3, Radar, User } from "lucide-react";
 import { useState } from "react";
 import { AiAnalysisPanel } from "@/components/session/AiAnalysisPanel";
 import { AnalysisStateChip } from "@/components/session/AnalysisStateChip";
+import { AnnotationsPanel } from "@/components/session/AnnotationsPanel";
+import { IdenticalSessionsNotice } from "@/components/session/IdenticalSessionsNotice";
 import { LogViewer } from "@/components/session/LogViewer";
 import { SessionTimeline } from "@/components/session/SessionTimeline";
 import { TechniqueDrawer } from "@/components/mitre/TechniqueDrawer";
@@ -230,6 +232,8 @@ function SessionInvestigationPage() {
         </Panel>
       </div>
 
+      <IdenticalSessionsNotice sessionId={sessionId} />
+
       <AiAnalysisPanel
         sessionId={sessionId}
         honeypotId={session.data.honeypotId}
@@ -299,6 +303,8 @@ function SessionInvestigationPage() {
           </ul>
         )}
       </Panel>
+
+      <AnnotationsPanel sessionId={sessionId} honeypotId={session.data.honeypotId} />
 
       <TechniqueDrawer
         technique={technique}

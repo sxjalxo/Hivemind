@@ -2,6 +2,7 @@ import { Show, SignInButton, SignUpButton, UserButton } from "@clerk/tanstack-re
 import { useQuery } from "@tanstack/react-query";
 import { Menu } from "lucide-react";
 import { GlobalSearchTrigger } from "./GlobalSearch";
+import { NotablesBell } from "./NotablesBell";
 import { TimeRangeSelector } from "./TimeRangeSelector";
 import { StatusDot } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -37,15 +38,14 @@ function AiEngineIndicator() {
 }
 
 /**
- * There is deliberately no notifications bell here.
+ * The notifications bell is back, with a real feed behind it (`NotablesBell`).
  *
  * The original UI build shipped one whose badge read a hardcoded `alertCount =
  * 6` — no caller ever passed the prop — above a button that did nothing. It sat
  * in the top-right of every screen asserting six critical alerts that no
  * telemetry supported, which is the one thing this project claims it never
- * does. Same reasoning that retired the mock account menu below.
- *
- * Re-add it only with a real notables feed behind it.
+ * does. It was removed until `GET /api/notables` existed; every count it shows
+ * now is derived from stored records and labelled with its provenance.
  */
 export function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
   return (
@@ -65,6 +65,7 @@ export function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
       <div className="ml-auto flex shrink-0 items-center gap-2">
         <TimeRangeSelector className="hidden sm:flex" />
         <AiEngineIndicator />
+        <NotablesBell />
         <AccountControls />
       </div>
     </header>

@@ -73,6 +73,14 @@ export function EvidenceList({
                 >
                   {item.sessionId}
                 </Link>
+                <Link
+                  to="/logs"
+                  search={{ event: item.eventId }}
+                  className="font-mono text-[10px] text-muted-foreground underline-offset-2 hover:text-primary hover:underline"
+                  title="Open this event on its own page: a link that can be shared"
+                >
+                  link
+                </Link>
                 <CopyButton
                   value={item.artifact}
                   className="opacity-0 group-hover:opacity-100 focus:opacity-100"

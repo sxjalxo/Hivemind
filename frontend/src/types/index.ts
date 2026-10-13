@@ -1,7 +1,13 @@
 export type RiskLevel = "critical" | "high" | "medium" | "low" | "informational";
 
 /** Where a displayed fact came from — critical for security UX provenance. */
-export type Provenance = "OBSERVED" | "AI INFERENCE" | "CORRELATED" | "STATIC ANALYSIS";
+export type Provenance =
+  | "OBSERVED"
+  | "AI INFERENCE"
+  | "CORRELATED"
+  | "STATIC ANALYSIS"
+  /** Reported by an outside service (AbuseIPDB). Not seen by this honeypot. */
+  | "THIRD PARTY";
 
 export type DataSourceMode = "demo" | "api";
 
@@ -33,4 +39,5 @@ export * from "./analysis";
 export * from "./mitre";
 export * from "./threatIntel";
 export * from "./report";
+export * from "./notable";
 export * from "./evaluation";

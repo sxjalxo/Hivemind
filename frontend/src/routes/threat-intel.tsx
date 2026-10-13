@@ -25,6 +25,8 @@ import {
   SERVICE_ERRORS,
   TableSkeleton,
 } from "@/components/common";
+import { IocExportPanel } from "@/components/intel/IocExportPanel";
+import { VirusTotalCheck } from "@/components/intel/VirusTotalCheck";
 import { Input } from "@/components/ui/input";
 import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
@@ -194,6 +196,8 @@ function ThreatIntelPage() {
           <IndicatorTable indicators={data} />
         )}
       </Panel>
+
+      <IocExportPanel />
     </div>
   );
 }
@@ -213,6 +217,7 @@ function IndicatorTable({ indicators }: { indicators: Indicator[] }) {
                 "First seen",
                 "Last seen",
                 "Sessions",
+                "VirusTotal",
               ].map((heading) => (
                 <th
                   key={heading}
@@ -285,6 +290,9 @@ function IndicatorTable({ indicators }: { indicators: Indicator[] }) {
                     ))}
                   </span>
                 </td>
+                <td className="whitespace-nowrap px-3 py-2">
+                  <VirusTotalCheck indicator={indicator} />
+                </td>
               </tr>
             ))}
           </tbody>
@@ -310,6 +318,9 @@ function IndicatorTable({ indicators }: { indicators: Indicator[] }) {
             <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-muted-foreground">
               <span>First {formatDateTime(indicator.firstSeen)}</span>
               <span>Last {formatDateTime(indicator.lastSeen)}</span>
+              <span className="ml-auto">
+                VirusTotal: <VirusTotalCheck indicator={indicator} />
+              </span>
             </div>
           </li>
         ))}

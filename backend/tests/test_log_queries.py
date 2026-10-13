@@ -1,6 +1,8 @@
 import pytest
 
-from app.es.queries import build_log_query, get_event_by_id, search_logs
+from app.config import get_settings
+from app.es.client import get_es
+from app.es.queries import build_log_query, get_event_by_id, log_facets, search_logs
 from app.models.event import LogQuery
 from app.seed.seeder import seed
 
@@ -104,3 +106,49 @@ async def test_get_event_by_id_resolves_a_known_seed_document() -> None:
 @pytest.mark.asyncio
 async def test_get_event_by_id_returns_none_for_unknown_id() -> None:
     assert await get_event_by_id("does-not-exist") is None
+
+
+# --- filter facets ------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_every_offered_filter_value_finds_events() -> None:
+    """The bug this replaced: dropdowns offering `SSH`, `T1222` and categories the
+    pipeline never emits, each returning zero events. Offer only what matches."""
+    await seed(reset=True)
+    facets = await log_facets()
+    assert facets.protocols and facets.categories
+
+    es = get_es()
+    index = get_settings().es_index
+    fields = {
+        "protocols": "protocol",
+        "categories": "event_category",
+        "techniques": "technique_id",
+        "risks": "risk",
+    }
+    for facet, param in fields.items():
+        for value in getattr(facets, facet):
+            query = build_log_query(LogQuery(**{param: value.value}))
+            count = (await es.count(index=index, query=query))["count"]
+            assert count == value.count > 0, (facet, value)
+
+
+@pytest.mark.asyncio
+async def test_a_value_only_a_denied_sensor_has_is_not_offered() -> None:
+    await seed(reset=True)
+    open_ = await log_facets()
+    every_sensor = {
+        b["key"]
+        for b in (
+            await get_es().search(
+                index=get_settings().es_index,
+                size=0,
+                aggs={"h": {"terms": {"field": "honeypot.id", "size": 100}}},
+            )
+        )["aggregations"]["h"]["buckets"]
+    }
+    hidden = await log_facets(deny_honeypots=every_sensor)
+
+    assert open_.protocols
+    assert hidden.protocols == [] and hidden.categories == []

@@ -18,9 +18,13 @@ unrelated attackers into one meaningless "campaign".
 import hashlib
 from collections import defaultdict
 
+from sqlalchemy import select
+
 from app.config import get_settings
+from app.db.models import Analysis
+from app.db.session import get_session_factory
 from app.es.client import get_es
-from app.models.session import Campaign, CampaignList
+from app.models.session import Campaign, CampaignList, SessionTwins, TwinAnalysis
 from app.services.profiles import normalize_command
 
 _COMMAND_ACTION = "cowrie.command.input"
@@ -45,11 +49,14 @@ def fingerprint(commands: list[str]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()[:12]
 
 
-async def list_campaigns(
-    deny_honeypots: set[str] | None = None,
-    min_sessions: int = 2,
-    limit: int | None = None,
-) -> CampaignList:
+async def _group_sessions(
+    deny_honeypots: set[str] | None,
+) -> tuple[dict[str, list[list[dict]]], int, str | None]:
+    """Every examined session's ordered command events, grouped by fingerprint.
+
+    Returns the groups, how many sessions were examined, and why examination
+    stopped short (None when every session with commands was examined).
+    """
     settings = get_settings()
     base: dict = {"filter": [{"term": {"event.action": _COMMAND_ACTION}}]}
     # Scoped in the query, as `list_sessions` is: a denied sensor's sessions
@@ -114,6 +121,15 @@ async def list_campaigns(
     for events in by_session.values():
         commands = [e.get("process", {}).get("command_line") or "" for e in events]
         groups[fingerprint(commands)].append(events)
+    return groups, len(chosen), reason
+
+
+async def list_campaigns(
+    deny_honeypots: set[str] | None = None,
+    min_sessions: int = 2,
+    limit: int | None = None,
+) -> CampaignList:
+    groups, considered, reason = await _group_sessions(deny_honeypots)
 
     campaigns: list[Campaign] = []
     for fp, members in groups.items():
@@ -154,7 +170,72 @@ async def list_campaigns(
         campaigns = campaigns[:limit]
     return CampaignList(
         campaigns=campaigns,
-        sessions_considered=len(chosen),
+        sessions_considered=considered,
+        complete=reason is None,
+        incomplete_reason=reason,
+    )
+
+
+async def identical_sessions(
+    session_id: str, deny_honeypots: set[str] | None = None
+) -> SessionTwins:
+    """Other sessions that ran this session's exact command sequence, and which of
+    them already have an analysis.
+
+    Deliberately a POINTER, never a copy. Reusing session A's analysis as session
+    B's would make every claim on B cite A's log lines -- the one thing this
+    system promises never happens. So the analyst is shown A's analysis, on A's
+    page, with A's evidence; deciding it also describes B is theirs to make.
+    """
+    from app.services.session_builder import get_session_events  # circular at module level
+
+    commands = [
+        e.process.command_line
+        for e in await get_session_events(session_id)
+        if e.event.action == _COMMAND_ACTION and e.process and e.process.command_line
+    ]
+    if not commands:
+        # No sequence, no twins: an empty sequence matches every login-only session.
+        return SessionTwins(fingerprint=None, twin_count=0, analysed=[], complete=True)
+
+    fp = fingerprint(commands)
+    groups, _, reason = await _group_sessions(deny_honeypots)
+    twins = [events[0]["session"]["id"] for events in groups.get(fp, [])]
+    twins = [t for t in twins if t != session_id]
+
+    analysed: list[TwinAnalysis] = []
+    if twins:
+        async with get_session_factory()() as db:
+            rows = (
+                (
+                    await db.execute(
+                        select(Analysis)
+                        .where(Analysis.session_id.in_(twins), Analysis.status == "completed")
+                        .order_by(Analysis.created_at.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        seen: set[str] = set()
+        for row in rows:  # newest first: keep each twin's latest
+            if row.session_id in seen:
+                continue
+            seen.add(row.session_id)
+            analysed.append(
+                TwinAnalysis(
+                    session_id=row.session_id,
+                    analysis_id=str(row.id),
+                    classification=row.classification,
+                    risk=row.risk,
+                    created_at=row.created_at.isoformat(),
+                )
+            )
+
+    return SessionTwins(
+        fingerprint=fp,
+        twin_count=len(twins),
+        analysed=analysed[:_LIST_CAP],
         complete=reason is None,
         incomplete_reason=reason,
     )

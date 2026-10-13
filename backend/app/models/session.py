@@ -62,3 +62,43 @@ class CampaignList(CamelModel):
     # sessions, never part of one.
     complete: bool
     incomplete_reason: str | None = None
+
+
+
+class TwinAnalysis(CamelModel):
+    session_id: str
+    analysis_id: str
+    classification: str
+    # The model's rating, as on every other surface: an inference.
+    risk: str
+    created_at: str
+
+
+class SessionTwins(CamelModel):
+    """Sessions with the same command sequence as one session.
+
+    `analysed` points at THEIR analyses; nothing is copied onto this session.
+    """
+
+    fingerprint: str | None
+    twin_count: int
+    analysed: list[TwinAnalysis]
+    complete: bool
+    incomplete_reason: str | None = None
+
+
+class AnnotationIn(CamelModel):
+    kind: str  # "tag" | "note"
+    body: str
+
+
+class Annotation(CamelModel):
+    """An analyst's statement about a session -- neither telemetry nor model output."""
+
+    id: str
+    session_id: str
+    kind: str
+    body: str
+    author: str
+    author_label: str | None = None
+    created_at: str

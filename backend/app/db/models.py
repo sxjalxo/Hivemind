@@ -368,3 +368,35 @@ class EvaluationEvidence(SQLModel, table=True):
     probe_result_id: uuid.UUID | None = Field(
         default=None, foreign_key="evaluation_probe_results.id"
     )
+
+
+
+class SessionAnnotation(SQLModel, table=True):
+    """An analyst's tag or note on a session.
+
+    A third kind of statement beside OBSERVED telemetry and AI INFERENCE: what a
+    PERSON concluded. It is stored apart from analyses and evidence and never
+    projected into Elasticsearch, so a note can never be read back as either.
+    """
+
+    __tablename__ = "session_annotations"
+    __table_args__ = (
+        # A tag is a set member: attaching it twice is one tag. Enforced here,
+        # not by a check-then-insert that two concurrent requests both pass.
+        Index(
+            "uq_session_annotations_tag",
+            "session_id",
+            "body",
+            unique=True,
+            postgresql_where="kind = 'tag'",
+        ),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    session_id: str = Field(index=True)
+    kind: str  # "tag" | "note"
+    body: str
+    # Same convention as `Analysis.started_by`; see `app.auth.Actor`.
+    author: str
+    author_label: str | None = None
+    created_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))

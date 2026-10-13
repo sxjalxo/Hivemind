@@ -116,3 +116,23 @@ class Paginated(CamelModel, Generic[T]):
     total: int
     page: int
     page_size: int
+
+
+class FacetValue(CamelModel):
+    value: str
+    count: int
+
+
+class LogFacets(CamelModel):
+    """The values each Log Explorer filter can actually match, with counts.
+
+    The filter dropdowns used to be hardcoded: `SSH` where the index stores
+    `ssh`, `T1222` where it stores `T1222.002`, two event categories the
+    pipeline never emits. Every one of those returned zero events and looked
+    like an empty honeypot. Offering only indexed values makes that impossible.
+    """
+
+    protocols: list[FacetValue]
+    categories: list[FacetValue]
+    techniques: list[FacetValue]
+    risks: list[FacetValue]

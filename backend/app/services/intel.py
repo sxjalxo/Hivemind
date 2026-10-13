@@ -269,3 +269,26 @@ async def list_indicators(
             )
             for row in rows
         ]
+
+
+async def get_indicator(indicator_id: str) -> Indicator | None:
+    """One indicator by id, without its session links. None for an unknown or malformed id."""
+    try:
+        parsed = uuid.UUID(indicator_id)
+    except ValueError:
+        return None
+    async with get_session_factory()() as db:
+        row = await db.get(IndicatorRow, parsed)
+    if row is None:
+        return None
+    return Indicator(
+        id=str(row.id),
+        type=row.type,
+        value=row.value,
+        confidence=row.confidence,
+        first_seen=row.first_seen.isoformat().replace("+00:00", "Z"),
+        last_seen=row.last_seen.isoformat().replace("+00:00", "Z"),
+        session_ids=[],
+        source=row.source,
+        tags=row.tags or [],
+    )

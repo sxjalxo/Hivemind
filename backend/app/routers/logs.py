@@ -3,11 +3,18 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query
 
 from app.auth import denied_honeypots, denies_everything, require_user
-from app.es.queries import search_logs
-from app.models.event import HoneypotEvent, LogQuery, Paginated
+from app.es.queries import log_facets, search_logs
+from app.models.event import HoneypotEvent, LogFacets, LogQuery, Paginated
 from app.routers.limits import MAX_PAGE_LIMIT
 
 router = APIRouter()
+
+
+@router.get("/logs/facets", response_model=LogFacets)
+async def get_log_facets(claims: dict | None = Depends(require_user)) -> LogFacets:
+    if denies_everything(claims):
+        return LogFacets(protocols=[], categories=[], techniques=[], risks=[])
+    return await log_facets(deny_honeypots=denied_honeypots(claims))
 
 
 @router.get("/logs", response_model=Paginated[HoneypotEvent])

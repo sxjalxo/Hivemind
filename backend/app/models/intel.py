@@ -52,3 +52,21 @@ class AttackerProfileOut(CamelModel):
     similarity_complete: bool = True
     similarity_incomplete_reason: str | None = None
     attack_pattern: list[str]
+
+
+
+class IocExport(CamelModel):
+    """An export as a file to save, plus what was left out of it and why.
+
+    JSON around the file rather than the file itself, so the UI can say "3 of 14
+    exported" -- an export that silently dropped most of the list would read as
+    the whole of it.
+    """
+
+    format: str
+    filename: str
+    media_type: str
+    content: str
+    exported: int
+    # reason -> count, e.g. {"type:command": 10, "non-public-ip": 1}
+    excluded: dict[str, int]

@@ -343,7 +343,54 @@ and the lifecycle policy has no delete phase, deliberately: this is the research
 and a delete phase runs on a timer against data nobody is watching. Old indices become
 individually droppable by hand instead.
 
-**A provenance-tagged dashboard** — twenty-two HTTP endpoints, two WebSocket progress
+**Campaigns.** Sessions that ran the identical command sequence are grouped, with IP
+literals and hashes masked, so one dropper replayed from forty addresses reads as one
+campaign of forty rather than forty new rows. The grouping is deterministic and labelled
+`CORRELATED`. A session page also points to identical sessions that already have an
+analysis — a pointer, never a copy, because copying an analysis would make this session's
+claims cite another session's log lines.
+
+**Notables.** The top-bar bell lists what deserves attention in the last seven days, each
+item carrying the provenance of the claim it rests on: a session the model rated high or
+critical (`AI INFERENCE`), the first rule-backed sighting of a technique (`OBSERVED`), a
+campaign of three or more sessions (`CORRELATED`). It is derived on demand from stored
+records, so it cannot drift from them; read state is the viewer's own, kept in the browser.
+
+**Analyst tags and notes** on a session, labelled `ANALYST` — a third kind of statement,
+neither telemetry nor model output, stored apart from both and never projected into the
+index. Writing needs the admin role on that session's honeypot.
+
+**A Log Explorer built for investigation.** Filter options come from the data itself, with
+counts, so no dropdown offers a value that matches nothing. Filter sets can be saved per
+browser, results export to CSV with spreadsheet-formula injection neutralised (honeypot
+data is attacker-controlled), and every evidence row links to its event on its own page —
+a link that can be shared, and that says so plainly if it no longer resolves.
+
+**Indicator export** as a STIX 2.1 bundle, a MISP event or an IP blocklist. Only public IPs,
+URLs and file hashes leave the system — a username or a command in someone's IDS matches
+every ordinary login — and the export says how much it left out.
+
+**Third-party context, kept third-party.** The ingest pipeline places each source address
+in a country (GeoLite2). With keys configured, an attacker page shows AbuseIPDB's
+reputation for the address and each indicator can be checked against VirusTotal. All of it
+is labelled `THIRD PARTY` and feeds nothing else: no risk score, technique or indicator is
+derived from someone else's report. Details in section 6.
+
+**Tooling for the evaluation half.** `scripts/probe_candidates.py` ranks what real attackers
+run against what the evaluator's probes already ask, so the analysis half can feed the
+evaluation half — it reports and never edits the probe set, because the probe set is part
+of the configuration fingerprint. `scripts/mapping_eval.py` measures ATT&CK mapping
+precision and recall, rulebook alone and rulebook plus model, over a labelled corpus.
+`run_degradation_matrix.py --repeat N` reports how much each score moves between runs.
+
+**Operational guard rails.** `scripts/preflight.py` checks a running stack the way a demo
+uses it, and fails on a dashboard that would open empty. Events the strict mapping refuses
+are kept in a dead-letter index and counted on the status page instead of being dropped.
+`SEED_CORPUS_ON_STARTUP=false` keeps demo data out of a deployment collecting real traffic.
+CI builds both images and imports the app inside the backend image, because the
+dependency bugs this project has hit failed at import time, not at build time.
+
+**A provenance-tagged dashboard** — thirty-two HTTP endpoints, two WebSocket progress
 channels, fourteen routes, every AI conclusion expandable into its source event.
 
 ---
@@ -442,8 +489,19 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
 
 ### Known limitations
 
-- **Single-worker deployment.** The job queue and WebSocket fan-out are in-process; running
-  multiple uvicorn workers would require Redis pub/sub.
+- **Progress crosses workers; jobs do not.** With `REDIS_URL` set, analysis and evaluation
+  progress reaches a socket held by any worker (see section 6), but a job still runs in the
+  worker that started it and nothing is replayed: a client that connects after a run ends
+  reads the outcome from the run's `GET`, as before. Without `REDIS_URL` the backend must run
+  as a single worker.
+- **Telnet sessions are labelled SSH.** The ingest pipeline drops Cowrie's own `protocol`
+  field as noise and defaults `network.protocol` to `ssh`, so a session on the Telnet port
+  is indexed as SSH. Fixing it is an ingest change, deliberately not made yet.
+- **Two list routes are slow under concurrency.** The session list and the analysis history
+  assemble each row separately: about 0.25 s for one request, about 4 s with twenty
+  concurrent clients on one worker. See "Load and robustness" in section 6.
+- **Third-party lookups are cached per process.** AbuseIPDB and VirusTotal answers are kept
+  for a day in the worker that fetched them; a restart, or another worker, asks again.
 - **Read scoping is a deny-list, and covers the operational surfaces only.** Sessions,
   logs and analyses are filtered by the caller's role on the honeypot that produced
   them; threat intelligence is deliberately NOT, because it correlates IOCs across
@@ -617,7 +675,7 @@ captures better attacks.
 
 ```
 backend/     FastAPI service — ingest, analysis pipeline, evaluation subsystem
-             22 HTTP endpoints + 2 WebSocket progress channels
+             32 HTTP endpoints + 2 WebSocket progress channels
 frontend/    React + TanStack Router dashboard
 infra/       Elasticsearch index template, ingest pipeline and lifecycle policy,
              Filebeat and Cowrie config
@@ -650,13 +708,13 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `722 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `803 passed` with at most one skip** — there are
 no expected failures.
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `722 passed` or `721 passed,
+with a reason rather than failing, so a clean run is `803 passed` or `802 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.
@@ -664,6 +722,31 @@ marked `observed` — is pinned separately by a deterministic test that needs no
 ```bash
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
 ```
+
+### Load and robustness (measured 2026-10-13)
+
+Stress-tested against the running containers — one uvicorn worker, the demo stack:
+
+| What | Result |
+|---|---|
+| 29 read endpoints, 200 requests each at concurrency 20 | no server errors |
+| 2,000 mixed requests at concurrency 50 | all 200; about 44 requests a second on one worker |
+| 200 progress WebSockets opened at once | all 200 opened, API healthy after |
+| 168 hostile path and query values (traversal, injection strings, 5,000-char ids, unicode) | 200 / 404 / 422 only — none reached a 500 |
+| 50 identical tags posted concurrently | exactly one row: the partial unique index holds under the race |
+| three concurrent AI Analyze calls on one session | one `200`, two `409`: the advisory lock admits exactly one |
+| 2,000 events written to a Cowrie log at once | all 2,000 indexed in under 20 s, none duplicated, all placed by GeoIP, none rejected |
+| 2,000 progress events relayed between two queues over Redis | all delivered, in order, none twice |
+
+It found one real defect, fixed: a NUL byte (`%00`) in a path or query reached Postgres —
+which cannot store one — and returned a 500 from three routes. `app/middleware.py` now
+refuses it for every route with a 400, and an annotation body containing one is a 422.
+
+It also measured a limit rather than a bug: the session list and the analysis history
+assemble their rows one at a time, so they take about a quarter of a second alone but
+around four seconds with twenty clients waiting on one worker. More workers would spread
+that (progress already crosses workers over Redis); batching the assembly would remove it.
+The third-party lookups were deliberately not load-tested: their quotas are real.
 
 ### How provenance works
 
@@ -1058,6 +1141,41 @@ so. Until it has, the geoip processor tags every document `_geoip_database_unava
 in a `tags` field the strict mapping does not have, which would reject every event; the
 pipeline removes exactly those tags and nothing else. The GeoLite2 data is MaxMind's and
 is distributed under CC BY-SA 4.0.
+
+### Third-party reputation (optional)
+
+With `ABUSEIPDB_API_KEY` set, an attacker's profile shows what AbuseIPDB's users have
+reported about the address: their abuse-confidence score, report counts, ISP and usage
+type. It is labelled **THIRD PARTY**, rendered in its own panel, and feeds nothing else:
+no risk score, technique or indicator is derived from it, because it is not something this
+honeypot observed. Only public attacker addresses are sent, and only the address. Answers
+are cached for a day (the free tier allows 1,000 checks a day) and failures never are; the
+key travels only in the request header and appears in no response or log. For the
+containerised backend the key goes in the repo-root `.env`, which compose passes through
+as that single variable.
+
+### VirusTotal (optional)
+
+With `VIRUSTOTAL_API_KEY` set, each hash, URL or public-IP indicator on the Threat
+Intelligence page gets an on-demand **Check** that fetches VirusTotal's existing report:
+engines flagging it, out of how many. Three rules make it safe to expose: the route takes an
+**indicator id**, not a value, so only something this system extracted can be looked up and
+the key is never a general VirusTotal proxy; it is **read-only**, because submitting a URL
+or file publishes it to VirusTotal's community; and **usernames and commands are never
+sent**, since a command line can carry a password typed into the decoy. The free tier is 4
+lookups a minute and 500 a day, so nothing is fetched until clicked, and answers (including
+"no report") are cached for a day.
+
+### Progress across workers (Redis)
+
+The analysis and evaluation progress channels used to be in-process, which pinned the backend
+to one uvicorn worker. With `REDIS_URL` set (compose sets it for the containerised backend and
+runs a `redis` service), progress is also relayed over Redis pub/sub, so a socket held by one
+worker sees a run executing in another. The relay is additive: each process still delivers to
+its own subscribers directly and ignores its own messages coming back from Redis, so a single
+worker behaves exactly as before even with Redis down. Verified with two real processes: all
+seven stage frames crossed with Redis, none without it. Progress remains decoration over the
+authoritative `GET` of a run; nothing is replayed.
 
 ### Security
 

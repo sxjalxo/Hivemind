@@ -165,6 +165,19 @@ class Settings(BaseSettings):
     # `labels.seeded: true`.
     seed_corpus_on_startup: bool = True
 
+    # Redis for cross-worker progress fan-out (app/workers/queue.py). Unset =
+    # in-process only, which requires a single uvicorn worker.
+    redis_url: str | None = None
+
+    # Third-party IP reputation (AbuseIPDB). Unset = feature off: no lookup is
+    # ever made and the attacker page says so. See `app.services.reputation`.
+    abuseipdb_api_key: str | None = None
+    # VirusTotal verdicts for extracted hashes, URLs and public IPs, on demand
+    # from the Threat Intelligence page. Unset = off. See `app.services.virustotal`.
+    virustotal_api_key: str | None = None
+    # How far back AbuseIPDB counts reports (its API accepts 1-365).
+    abuseipdb_max_age_days: int = 90
+
     seed_output_head_lines: int = 20
     seed_output_tail_lines: int = 20
 

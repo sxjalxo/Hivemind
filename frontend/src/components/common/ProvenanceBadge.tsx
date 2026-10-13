@@ -1,4 +1,4 @@
-import { Bot, Eye, GitCompareArrows, Microscope, FlaskConical } from "lucide-react";
+import { Bot, Eye, GitCompareArrows, Microscope, FlaskConical, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Provenance } from "@/types";
 
@@ -22,6 +22,11 @@ const STYLES: Record<Provenance, { className: string; Icon: typeof Eye; hint: st
     className: "border-medium/40 bg-medium/12 text-medium",
     Icon: Microscope,
     hint: "Produced by static inspection of a captured artefact.",
+  },
+  "THIRD PARTY": {
+    className: "border-border-strong bg-muted/60 text-muted-foreground",
+    Icon: Users,
+    hint: "Reported by an outside service from other people's reports. Not observed by this honeypot.",
   },
 };
 

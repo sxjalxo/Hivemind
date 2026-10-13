@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, Globe, MapPin, Radar } from "lucide-react";
 import { AttackPatternGraph, SimilarityList } from "@/components/attacker/AttackPatternGraph";
+import { ReputationPanel } from "@/components/attacker/ReputationPanel";
 import {
   CopyableMono,
   DemoDataBadge,
@@ -109,12 +110,15 @@ function AttackerProfilePage() {
 
           {data.geo === null ? (
             <InlineNotice tone="info" icon={Globe} className="mt-4">
-              Geographic enrichment is not configured on the backend, so location fields are shown
-              as placeholders rather than guessed.
+              The ingest pipeline&apos;s GeoIP lookup could not place this address (private
+              addresses never resolve), so location is shown as unresolved rather than guessed. ASN
+              and organisation are not looked up.
             </InlineNotice>
           ) : null}
         </Panel>
       </div>
+
+      <ReputationPanel ip={data.ip} />
 
       <Panel
         title="Attack Pattern"

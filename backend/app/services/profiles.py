@@ -10,9 +10,10 @@ from app.config import get_settings
 from app.db.models import Analysis, TechniqueMapping
 from app.db.session import get_session_factory
 from app.es.client import get_es
+from app.es.queries import to_event
 from app.models.intel import AttackerProfileOut, DownloadedFile, SimilarAttacker
 from app.services.intel import list_indicators
-from app.services.session_builder import get_session_events, list_sessions
+from app.services.session_builder import list_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,52 @@ async def _run_command_aggregation(settings, ip_limit: int, command_limit: int) 
     )
 
 
+# One search page. An attacker whose sessions together exceed it gets a profile
+# built from the first page, and the truncation is logged, as a session's own
+# event cap is (`session_builder._MAX_SESSION_EVENTS`).
+_MAX_PROFILE_EVENTS = 10_000
+
+
+async def _profile_events(session_ids: list[str]) -> dict[str, list]:
+    """Command and download events for all of an attacker's sessions, in ONE query.
+
+    This used to be `get_session_events` per session -- a round trip each, on top
+    of the ones `list_sessions` already made. Grouped by session afterwards, each
+    group in time order, so the profile reads exactly as it did.
+    """
+    if not session_ids:
+        return {}
+    result = await get_es().search(
+        index=get_settings().es_index,
+        query={
+            "bool": {
+                "filter": [{"terms": {"session.id": session_ids}}],
+                "should": [
+                    {"exists": {"field": "process.command_line"}},
+                    {"term": {"event.action": "cowrie.session.file_download"}},
+                ],
+                "minimum_should_match": 1,
+            }
+        },
+        sort=[{"@timestamp": "asc"}],
+        size=_MAX_PROFILE_EVENTS,
+    )
+    hits = result["hits"]["hits"]
+    total = result["hits"].get("total", {}).get("value", len(hits))
+    if total > len(hits):
+        logger.warning(
+            "attacker profile built from %d of %d events across %d sessions",
+            len(hits),
+            total,
+            len(session_ids),
+        )
+    grouped: dict[str, list] = {}
+    for hit in hits:
+        event = to_event(hit)
+        grouped.setdefault(event.session.id, []).append(event)
+    return grouped
+
+
 async def build_profile(ip: str) -> AttackerProfileOut | None:
     # Not an IP literal means no attacker could have it: answer "unknown"
     # rather than sending Elasticsearch a term query it rejects with a 400.
@@ -161,10 +208,11 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
     commands: list[str] = []
     honeypots: list[str] = []
     downloaded_files: list[DownloadedFile] = []
+    by_session = await _profile_events([s.id for s in sessions])
     for session in sessions:
         if session.honeypot_name not in honeypots:
             honeypots.append(session.honeypot_name)
-        for event in await get_session_events(session.id):
+        for event in by_session.get(session.id, []):
             if event.process and event.process.command_line:
                 commands.append(event.process.command_line)
             elif event.event.action == "cowrie.session.file_download" and event.file:
@@ -259,7 +307,10 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
         technique_ids=technique_ids,
         downloaded_files=downloaded_files,
         indicator_ids=indicator_ids,
-        geo=None,
+        # Country from the GeoIP stage of the ingest pipeline, when it placed
+        # the address. ASN and organisation are not looked up, so they stay
+        # absent rather than guessed.
+        geo=next(({"country": s.country} for s in sessions if s.country), None),
         similarity=similarity[:5],
         similarity_total=similarity_total,
         similarity_complete=similarity_complete,

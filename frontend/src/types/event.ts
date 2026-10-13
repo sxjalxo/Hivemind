@@ -33,3 +33,16 @@ export interface LogQuery {
   page?: number | undefined;
   pageSize?: number | undefined;
 }
+
+export interface FacetValue {
+  value: string;
+  count: number;
+}
+
+/** The values each Log Explorer filter can match, read from the data itself. */
+export interface LogFacets {
+  protocols: FacetValue[];
+  categories: FacetValue[];
+  techniques: FacetValue[];
+  risks: FacetValue[];
+}

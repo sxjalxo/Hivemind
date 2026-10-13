@@ -15,6 +15,7 @@ import {
   SERVICE_ERRORS,
   TableSkeleton,
 } from "@/components/common";
+import { SavedFilters } from "@/components/logs/SavedFilters";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -28,8 +29,8 @@ import { isDemoMode, provider } from "@/services";
 import { downloadText, toCsv } from "@/utils/csv";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
-import type { HoneypotEvent, LogQuery, RiskLevel } from "@/types";
-import { honeypotsQuery, logSearchQuery } from "@/services/queries";
+import type { FacetValue, HoneypotEvent, LogQuery, RiskLevel } from "@/types";
+import { honeypotsQuery, logFacetsQuery, logSearchQuery } from "@/services/queries";
 
 interface LogSearch {
   q?: string | undefined;
@@ -39,6 +40,8 @@ interface LogSearch {
   risk?: string | undefined;
   technique?: string | undefined;
   page?: number | undefined;
+  /** A single event to show above the results: what a shared evidence link opens. */
+  event?: string | undefined;
 }
 
 export const Route = createFileRoute("/logs")({
@@ -54,6 +57,7 @@ export const Route = createFileRoute("/logs")({
       ...(str("risk") ? { risk: str("risk") as string } : {}),
       ...(str("technique") ? { technique: str("technique") as string } : {}),
       ...(Number.isFinite(page) && page > 1 ? { page } : {}),
+      ...(str("event") ? { event: str("event") as string } : {}),
     };
   },
   component: LogExplorerPage,
@@ -121,6 +125,12 @@ function LogExplorerPage() {
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const honeypots = useQuery(honeypotsQuery());
+  // Options come from the data. These were hardcoded -- `SSH` where the index
+  // stores `ssh`, `T1222` where it stores `T1222.002`, categories the pipeline
+  // never emits -- and each one returned zero events.
+  const facets = useQuery(logFacetsQuery());
+  const options = (values: FacetValue[] | undefined) =>
+    (values ?? []).map((f) => ({ value: f.value, label: `${f.value} (${formatNumber(f.count)})` }));
 
   const query: LogQuery = {
     ...(search.q ? { q: search.q } : {}),
@@ -194,6 +204,10 @@ function LogExplorerPage() {
         }
       />
 
+      {search.event ? (
+        <LinkedEvent eventId={search.event} onClose={() => patch({ event: undefined })} />
+      ) : null}
+
       <Panel bodyClassName="p-0">
         <form
           className="border-b border-border p-3"
@@ -227,40 +241,25 @@ function LogExplorerPage() {
               label="Protocol"
               value={search.protocol}
               onChange={(value) => patch({ protocol: value })}
-              options={["SSH", "HTTP", "Telnet", "CAN", "SMB"].map((value) => ({
-                value,
-                label: value,
-              }))}
+              options={options(facets.data?.protocols)}
             />
             <FilterSelect
               label="Event type"
               value={search.category}
               onChange={(value) => patch({ category: value })}
-              options={[
-                "authentication",
-                "process",
-                "network",
-                "file",
-                "session",
-                "intrusion_detection",
-              ].map((value) => ({ value, label: value }))}
+              options={options(facets.data?.categories)}
             />
             <FilterSelect
               label="Risk"
               value={search.risk}
               onChange={(value) => patch({ risk: value })}
-              options={["critical", "high", "medium", "low", "informational"].map((value) => ({
-                value,
-                label: value,
-              }))}
+              options={options(facets.data?.risks)}
             />
             <FilterSelect
               label="Technique"
               value={search.technique}
               onChange={(value) => patch({ technique: value })}
-              options={["T1059", "T1078", "T1082", "T1087", "T1105", "T1222", "T1053"].map(
-                (value) => ({ value, label: value }),
-              )}
+              options={options(facets.data?.techniques)}
             />
           </div>
 
@@ -282,6 +281,14 @@ function LogExplorerPage() {
               {ECS_FIELDS.join("  ")}
             </span>
           </div>
+
+          <SavedFilters
+            current={{ ...search }}
+            onApply={(saved) => {
+              setDraft(typeof saved["q"] === "string" ? saved["q"] : "");
+              void navigate({ search: saved as LogSearch });
+            }}
+          />
         </form>
 
         {isPending ? (
@@ -617,5 +624,68 @@ function EventDetail({ event }: { event: HoneypotEvent }) {
         </pre>
       </div>
     </div>
+  );
+}
+
+/**
+ * The event a shared evidence link points at, resolved through the same
+ * `getEvent` the evidence rows use. A link that no longer resolves says so with
+ * the event id -- a dead pointer is exactly what provenance must never hide.
+ */
+function LinkedEvent({ eventId, onClose }: { eventId: string; onClose: () => void }) {
+  const { data, isPending, isError, error } = useQuery({
+    queryKey: ["event", eventId],
+    queryFn: () => provider.getEvent(eventId),
+    retry: false,
+  });
+  const [copied, setCopied] = useState(false);
+
+  return (
+    <Panel
+      title="Linked event"
+      description={<span className="font-mono">{eventId}</span>}
+      bodyClassName="p-0"
+      actions={
+        <span className="flex items-center gap-1.5">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7"
+            onClick={() => {
+              void navigator.clipboard?.writeText(window.location.href).then(() => setCopied(true));
+            }}
+          >
+            {copied ? "Link copied" : "Copy link"}
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7" onClick={onClose}>
+            Close
+          </Button>
+        </span>
+      }
+    >
+      {isPending ? (
+        <TableSkeleton rows={2} cols={4} />
+      ) : isError ? (
+        <ErrorState
+          title="This event could not be resolved."
+          description={`Event ${eventId} was not found${error instanceof Error ? `: ${error.message}` : ""}. It may have aged out of the index, or the link is wrong.`}
+        />
+      ) : (
+        <>
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-3 pt-3">
+            <Mono tone="muted" className="text-xs">
+              {formatDateTime(data.timestamp)}
+            </Mono>
+            <Mono className="text-xs">{data.event.action}</Mono>
+            {data.process?.commandLine ? (
+              <code className="break-all font-mono text-[12px] text-foreground">
+                $ {data.process.commandLine}
+              </code>
+            ) : null}
+          </div>
+          <EventDetail event={data} />
+        </>
+      )}
+    </Panel>
   );
 }

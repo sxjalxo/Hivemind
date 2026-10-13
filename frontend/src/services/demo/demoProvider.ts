@@ -1,6 +1,8 @@
 import type { DashboardData, DataProvider } from "@/services/provider";
-import type { AnalysisStage, HoneypotEvent, LogQuery, Paginated } from "@/types";
+import type { AnalysisStage, Annotation, HoneypotEvent, LogQuery, Paginated } from "@/types";
 import * as demo from "./dataset";
+
+const demoAnnotations: Annotation[] = [];
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -230,6 +232,73 @@ export const DemoProvider: DataProvider = {
     return demo.honeypots;
   },
 
+  async getNotables() {
+    await delay(220);
+    // Derived from the demo sessions' own model-rated risk, as the backend
+    // derives its feed from stored analyses -- not a separate invented list.
+    return demo.sessions
+      .filter(
+        (s) => s.analysisState === "completed" && (s.risk === "high" || s.risk === "critical"),
+      )
+      .map((s) => ({
+        id: `high_risk_session:${s.id}`,
+        kind: "high_risk_session" as const,
+        provenance: "AI INFERENCE" as const,
+        title: `${s.risk === "critical" ? "Critical" : "High"} risk: ${s.classificationChain.at(-1) ?? "analysed session"}`,
+        detail: `Model-rated ${s.riskScore}/100 for session ${s.id}`,
+        timestamp: s.startedAt,
+        sessionId: s.id,
+      }))
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  },
+
+  // Annotations are typed by the viewer, so demo mode keeps them in memory for
+  // this page -- there is nothing synthetic to pretend about.
+  async getAnnotations(sessionId) {
+    await delay(100);
+    return demoAnnotations.filter((a) => a.sessionId === sessionId);
+  },
+
+  async addAnnotation(sessionId, kind, body) {
+    await delay(100);
+    const text = kind === "tag" ? body.trim().toLowerCase() : body.trim();
+    const existing = demoAnnotations.find(
+      (a) => a.sessionId === sessionId && a.kind === "tag" && kind === "tag" && a.body === text,
+    );
+    if (existing) return existing;
+    const created = {
+      id: `demo-${demoAnnotations.length + 1}`,
+      sessionId,
+      kind,
+      body: text,
+      author: "unauthenticated",
+      authorLabel: null,
+      createdAt: new Date().toISOString(),
+    };
+    demoAnnotations.push(created);
+    return created;
+  },
+
+  async deleteAnnotation(sessionId, annotationId) {
+    await delay(100);
+    const index = demoAnnotations.findIndex(
+      (a) => a.id === annotationId && a.sessionId === sessionId,
+    );
+    if (index >= 0) demoAnnotations.splice(index, 1);
+  },
+
+  async getIdenticalSessions() {
+    await delay(150);
+    // The demo sessions are distinct by construction; claiming twins would be invented.
+    return {
+      fingerprint: null,
+      twinCount: 0,
+      analysed: [],
+      complete: true,
+      incompleteReason: null,
+    };
+  },
+
   async getCampaigns() {
     await delay(220);
     // No invented campaigns. A campaign is a claim that real sessions repeated
@@ -282,6 +351,24 @@ export const DemoProvider: DataProvider = {
     const event = demo.allEvents.find((e) => e.id === eventId);
     if (!event) throw new Error(`unknown demo event ${eventId}`);
     return event;
+  },
+
+  async getLogFacets() {
+    await delay(120);
+    // Counted from the same events queryLogs filters, so every option matches.
+    const count = (values: (string | undefined)[]) => {
+      const counts = new Map<string, number>();
+      for (const v of values) if (v) counts.set(v, (counts.get(v) ?? 0) + 1);
+      return [...counts]
+        .map(([value, n]) => ({ value, count: n }))
+        .sort((a, b) => b.count - a.count);
+    };
+    return {
+      protocols: count(demo.allEvents.map((e) => e.network.protocol)),
+      categories: count(demo.allEvents.map((e) => e.event.category)),
+      techniques: count(demo.allEvents.map((e) => e.mitre?.techniqueId)),
+      risks: count(demo.allEvents.map((e) => e.risk.level)),
+    };
   },
 
   async queryLogs(query): Promise<Paginated<HoneypotEvent>> {
@@ -386,6 +473,25 @@ export const DemoProvider: DataProvider = {
       );
     }
     return items;
+  },
+
+  async getVirusTotalVerdict() {
+    await delay(120);
+    return {
+      source: "VirusTotal",
+      status: "not_configured" as const,
+      detail: "VirusTotal lookups need the backend and a VirusTotal key.",
+    };
+  },
+
+  async getAttackerReputation() {
+    await delay(120);
+    // No invented scores: a reputation is someone else's report, and demo mode has none.
+    return {
+      source: "AbuseIPDB",
+      status: "not_configured" as const,
+      detail: "Third-party reputation lookups need the backend and an AbuseIPDB key.",
+    };
   },
 
   async getAttackerProfile(ip) {

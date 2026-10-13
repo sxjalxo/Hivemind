@@ -84,7 +84,7 @@ infrastructure in containers and the backend and frontend on the host, with relo
 
 | | |
 |---|---|
-| Docker Desktop | runs Cowrie, Filebeat, Elasticsearch, Kibana, Postgres |
+| Docker Desktop | runs Cowrie, Filebeat, Elasticsearch, Kibana, Postgres, Redis |
 | [Ollama](https://ollama.com) | on the host, for GPU access |
 | GPU | 8 GB VRAM is sufficient |
 | Python | 3.12 — only to develop on it; the container carries its own |
@@ -135,6 +135,25 @@ Two things worth knowing before you use it in anger:
   on the status dashboard. That is defensible bound to `127.0.0.1` and nowhere else. See
   [`OVERVIEW.md`](OVERVIEW.md) for how to turn it on.
 
+### Optional: third-party lookups
+
+With keys, attacker pages show AbuseIPDB's reputation for the address, and the Threat
+Intelligence table can check hashes, URLs and public IPs against VirusTotal. Both are
+labelled third-party and feed nothing else. Put the keys in a `.env` file **at the repo
+root** (it is gitignored), then recreate the backend:
+
+```
+ABUSEIPDB_API_KEY=...
+VIRUSTOTAL_API_KEY=...
+```
+
+```bash
+docker compose --profile app up -d backend
+```
+
+The status dashboard shows each as *connected* once its key is read. Without keys both
+features say they are off; nothing else changes.
+
 ---
 
 ## Develop on it
@@ -145,8 +164,8 @@ Two things worth knowing before you use it in anger:
 docker compose up -d
 ```
 
-Brings up Elasticsearch (`:9200`), Kibana (`:5601`), Postgres (`:5432`), Cowrie
-(`:2222` SSH, `:2223` Telnet) and Filebeat. Every port binds to `127.0.0.1` only.
+Brings up Elasticsearch (`:9200`), Kibana (`:5601`), Postgres (`:5432`), Redis (`:6379`),
+Cowrie (`:2222` SSH, `:2223` Telnet) and Filebeat. Every port binds to `127.0.0.1` only.
 
 ### 2. Local model
 
@@ -175,6 +194,10 @@ connects.
 `EVALUATION_TARGET_HOST` matters only for the realism evaluation: it defaults to the
 compose service name `cowrie`, which does not resolve from a backend running on the host.
 
+Set `REDIS_URL=redis://127.0.0.1:6379/0` only to run more than one uvicorn worker: it lets
+a progress socket on one worker see a run on another. A single worker needs nothing. For a
+host-run backend, the optional third-party keys go in `backend/.env`.
+
 ### 4. Frontend
 
 ```bash
@@ -199,6 +222,17 @@ A scripted generator is also available:
 ```bash
 cd backend && .venv/Scripts/python scripts/generate_traffic.py
 ```
+
+### 6. Scripts worth knowing
+
+Run from `backend/` with the venv's Python, as `python -m scripts.<name>`:
+
+| Script | What it does |
+|---|---|
+| `preflight [--warm]` | checks a running stack is ready to demo; `--warm` loads the model first |
+| `probe_candidates` | ranks commands real attackers ran against what the evaluator's probes cover |
+| `mapping_eval [--runs N]` | ATT&CK mapping precision/recall, rulebook alone vs rulebook + model |
+| `run_degradation_matrix [--repeat N]` | evaluates every matrix arm; `--repeat` reports each score's spread |
 
 ---
 

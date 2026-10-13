@@ -44,6 +44,13 @@ htmlcov/
 .env.*
 !.env.example
 
+# Files the dashboard's exports produce. They hold captured attacker data (IPs,
+# URLs, commands) and belong in a downloads folder, not in a public repo -- these
+# patterns catch one saved into the working tree by mistake.
+hivemind-iocs-*.json
+hivemind-blocklist-*.txt
+hivemind-events*.csv
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

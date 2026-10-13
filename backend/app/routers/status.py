@@ -121,6 +121,29 @@ async def get_status() -> list[ServiceStatus]:
             detail=f"{seeded} seeded events" if seeded else "no seeded events",
         ),
         ServiceStatus(
+            id="reputation",
+            name="Reputation (AbuseIPDB)",
+            # Configured or not -- never a live call: this page polls, and a
+            # status check must not spend the lookup quota.
+            state="connected" if settings.abuseipdb_api_key else "disconnected",
+            detail=(
+                "API key configured; lookups on attacker pages"
+                if settings.abuseipdb_api_key
+                else "not configured (optional): set ABUSEIPDB_API_KEY"
+            ),
+        ),
+        ServiceStatus(
+            id="virustotal",
+            name="VirusTotal",
+            # Configured or not, never a live call: the free tier is 4 a minute.
+            state="connected" if settings.virustotal_api_key else "disconnected",
+            detail=(
+                "API key configured; on-demand lookups on Threat Intelligence"
+                if settings.virustotal_api_key
+                else "not configured (optional): set VIRUSTOTAL_API_KEY"
+            ),
+        ),
+        ServiceStatus(
             id="rejected-events",
             name="Rejected events",
             state=rejected_state,

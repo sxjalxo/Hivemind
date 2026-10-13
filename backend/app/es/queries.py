@@ -1,6 +1,6 @@
 from app.config import get_settings
 from app.es.client import get_es
-from app.models.event import HoneypotEvent, LogQuery, Paginated
+from app.models.event import FacetValue, HoneypotEvent, LogFacets, LogQuery, Paginated
 
 _TERM_FIELDS = {
     "honeypot_id": "honeypot.id",
@@ -140,3 +140,35 @@ async def get_event_by_id(event_id: str) -> HoneypotEvent | None:
     )
     hits = result["hits"]["hits"]
     return to_event(hits[0]) if hits else None
+
+
+_FACETS = {
+    "protocols": "network.protocol",
+    "categories": "event.category",
+    "techniques": "mitre.technique_id",
+    "risks": "risk.level",
+}
+
+
+async def log_facets(deny_honeypots: set[str] | None = None) -> LogFacets:
+    """Distinct values, with counts, for each filterable field.
+
+    Scoped like `build_log_query`: a value that exists only on a hidden sensor
+    is not offered, or its presence alone would leak through the dropdown.
+    """
+    query: dict = {"match_all": {}}
+    if deny_honeypots:
+        query = {"bool": {"must_not": [{"terms": {"honeypot.id": sorted(deny_honeypots)}}]}}
+    result = await get_es().search(
+        index=get_settings().es_index,
+        size=0,
+        query=query,
+        aggs={name: {"terms": {"field": field, "size": 100}} for name, field in _FACETS.items()},
+    )
+    aggs = result["aggregations"]
+    return LogFacets(
+        **{
+            name: [FacetValue(value=b["key"], count=b["doc_count"]) for b in aggs[name]["buckets"]]
+            for name in _FACETS
+        }
+    )

@@ -55,6 +55,28 @@ export interface CampaignList {
   incompleteReason: string | null;
 }
 
+export interface TwinAnalysis {
+  sessionId: string;
+  analysisId: string;
+  classification: string;
+  /** The model's rating, an inference like everywhere else. */
+  risk: string;
+  createdAt: string;
+}
+
+/**
+ * Other sessions that ran this session's exact command sequence. `analysed`
+ * points at THEIR analyses, whose evidence is their own events — nothing is
+ * copied onto this session.
+ */
+export interface SessionTwins {
+  fingerprint: string | null;
+  twinCount: number;
+  analysed: TwinAnalysis[];
+  complete: boolean;
+  incompleteReason: string | null;
+}
+
 export interface SessionTimelineEvent {
   id: string;
   timestamp: string;
@@ -110,4 +132,19 @@ export interface AttackerProfile {
   similarityComplete: boolean;
   similarityIncompleteReason: string | null;
   attackPattern: string[];
+}
+
+/**
+ * An analyst's tag or note on a session: what a PERSON concluded. Neither
+ * telemetry nor model output, and rendered as neither.
+ */
+export interface Annotation {
+  id: string;
+  sessionId: string;
+  kind: "tag" | "note";
+  body: string;
+  /** `user:<id>`, `unauthenticated` or `unrecorded` -- see the backend Actor. */
+  author: string;
+  authorLabel?: string | null;
+  createdAt: string;
 }

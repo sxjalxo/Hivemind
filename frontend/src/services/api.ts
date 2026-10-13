@@ -109,6 +109,8 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     throw new ApiError(`${method} ${path} failed (${response.status})`, response.status, payload);
   }
 
+  // 204 No Content has no body to parse; `response.json()` would throw on it.
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -135,14 +137,17 @@ export const endpoints = {
   honeypots: "/api/honeypots",
   sessions: "/api/sessions",
   campaigns: "/api/campaigns",
+  notables: "/api/notables",
   session: (id: string) => `/api/sessions/${id}`,
   event: (id: string) => `/api/events/${encodeURIComponent(id)}`,
   logs: "/api/logs",
+  logFacets: "/api/logs/facets",
   analyze: (sessionId: string) => `/api/analyze/${sessionId}`,
   analysis: (id: string) => `/api/analysis/${id}`,
   analyses: "/api/analysis",
   mitre: "/api/mitre",
   threatIntel: "/api/threat-intelligence",
+  threatIntelExport: "/api/threat-intelligence/export",
   reports: "/api/reports",
   status: "/api/status",
   attacker: (ip: string) => `/api/attackers/${encodeURIComponent(ip)}`,

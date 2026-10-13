@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import logging
 import uuid
 from collections.abc import AsyncIterator, Coroutine
@@ -7,9 +8,11 @@ from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any
 
+import redis.asyncio as aioredis
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.auth import authenticate_websocket
+from app.config import get_settings
 from app.models.analysis import AnalysisProgressEvent
 
 logger = logging.getLogger(__name__)
@@ -47,24 +50,39 @@ def _log_task_exception(job_id: str, task: "asyncio.Task[Any]") -> None:
         logger.error("enqueued job %s failed: %s", job_id, exc, exc_info=exc)
 
 
-class JobQueue:
-    """In-process job queue with per-session progress fan-out.
+# One channel for every progress key; the key travels inside the message.
+_REDIS_CHANNEL = "hivemind:progress"
 
-    Single-process by design: this backend runs as one uvicorn worker.
-    Both `_subscribers` and `_tasks` live only in that process's memory --
-    they are NOT backed by anything durable. That means: a WebSocket
-    subscriber only ever sees events published by an analysis running in
-    the SAME process (fine today, since there's exactly one); the queue
-    cannot be shared across multiple uvicorn workers if this ever scales
-    beyond one; and a process restart silently drops every open
-    subscription and every tracked job id, with no persistence or replay.
-    Moving to multiple workers, or surviving a restart, would require an
-    external broker (e.g. Redis pub/sub) in place of this class.
+
+class JobQueue:
+    """Job queue with per-key progress fan-out, optionally across processes.
+
+    Without `redis_url` this is what it always was: in-process. A WebSocket
+    subscriber sees only events published in the SAME process, so the backend
+    must run as one uvicorn worker.
+
+    With `redis_url`, events ALSO travel over Redis pub/sub, so a socket held by
+    one worker receives progress from a run executing in another. The design is
+    additive on purpose:
+
+    * Publishing still delivers to this process's own subscribers directly, and
+      then publishes to Redis tagged with this process's `origin`. Every
+      process's listener ignores its own origin, so nothing arrives twice.
+    * So a single worker behaves exactly as before even if Redis is down: the
+      local path never depended on it. Redis only ever ADDS delivery.
+    * Progress is decoration over the authoritative `GET` of a run or analysis
+      (see `subscribe`), so a Redis failure is logged and survived, never raised.
+
+    Still not durable: no replay, and a restart drops open subscriptions. Jobs
+    (`_tasks`) stay in the process that started them; only progress is shared.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, redis_url: str | None = None) -> None:
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self._origin = uuid.uuid4().hex
+        self._redis = aioredis.from_url(redis_url) if redis_url else None
+        self._listener: asyncio.Task | None = None
 
     def enqueue(self, job_key: str, coro: Coroutine[Any, Any, Any]) -> str:
         """Fire-and-forget `coro`, tracked by a generated job id.
@@ -112,6 +130,55 @@ class JobQueue:
     async def publish(self, job_key: str, event: AnalysisProgressEvent) -> None:
         for queue in list(self._subscribers.get(job_key, [])):
             await queue.put(event)
+        if self._redis is None:
+            return
+        message = json.dumps(
+            {"origin": self._origin, "key": job_key, "event": event.model_dump(by_alias=True)}
+        )
+        try:
+            await self._redis.publish(_REDIS_CHANNEL, message)
+        except Exception as exc:  # noqa: BLE001 - progress is decoration; see the class docstring
+            logger.warning("progress for %s not relayed to other workers: %s", job_key, exc)
+
+    def _ensure_listener(self) -> None:
+        """Start the one Redis listener this process needs, on first subscription.
+
+        Lazy, so a process that never holds a progress socket never opens a
+        Redis subscription at all.
+        """
+        if self._redis is not None and (self._listener is None or self._listener.done()):
+            self._listener = asyncio.create_task(self._listen())
+
+    async def _listen(self) -> None:
+        """Forward other processes' events to this process's subscribers. Never raises."""
+        while True:
+            try:
+                async with self._redis.pubsub() as pubsub:
+                    await pubsub.subscribe(_REDIS_CHANNEL)
+                    async for message in pubsub.listen():
+                        if message.get("type") != "message":
+                            continue
+                        data = json.loads(message["data"])
+                        if data.get("origin") == self._origin:
+                            continue  # already delivered locally by `publish`
+                        for queue in list(self._subscribers.get(data.get("key"), [])):
+                            # A relayed event arrives as the dict `publish` sent.
+                            queue.put_nowait(data["event"])
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Redis progress listener failed, retrying in 2s: %s", exc)
+                await asyncio.sleep(2)
+
+    async def close(self) -> None:
+        """Stop the listener and the Redis connection. Called once at shutdown."""
+        if self._listener is not None:
+            self._listener.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._listener
+            self._listener = None
+        if self._redis is not None:
+            await self._redis.aclose()
 
     def _unsubscribe(self, job_key: str, queue: "asyncio.Queue") -> None:
         """Drop one subscriber -- and the key itself once it holds none.
@@ -142,6 +209,7 @@ class JobQueue:
         """
         queue: asyncio.Queue = asyncio.Queue()
         self._subscribers.setdefault(job_key, []).append(queue)
+        self._ensure_listener()
         try:
             yield queue
         finally:
@@ -245,7 +313,12 @@ async def stream_progress(
                         nxt.cancel()
                 if closed.done():
                     return
-                await websocket.send_json(nxt.result().model_dump(by_alias=True))
+                item = nxt.result()
+                # Local events are models; events relayed from another worker
+                # over Redis are already the dict `publish` serialised.
+                await websocket.send_json(
+                    item if isinstance(item, dict) else item.model_dump(by_alias=True)
+                )
         except WebSocketDisconnect:
             return
         finally:
@@ -256,4 +329,4 @@ async def stream_progress(
 
 @lru_cache
 def get_queue() -> JobQueue:
-    return JobQueue()
+    return JobQueue(get_settings().redis_url)
