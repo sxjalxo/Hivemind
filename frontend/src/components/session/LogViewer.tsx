@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { formatTime } from "@/utils/format";
+import { formatHttpRequest, formatTime } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { HoneypotEvent } from "@/types";
 
@@ -36,6 +36,7 @@ export function LogViewer({ events }: { events: HoneypotEvent[] }) {
       return [
         event.process?.commandLine,
         event.process?.output,
+        formatHttpRequest(event),
         event.event.action,
         event.user?.name,
       ]
@@ -61,7 +62,7 @@ export function LogViewer({ events }: { events: HoneypotEvent[] }) {
         ? `[${formatTime(event.timestamp)}] $ ${event.process.commandLine}${
             event.process.output ? `\n${event.process.output}` : ""
           }`
-        : `[${formatTime(event.timestamp)}] ${event.event.action}`,
+        : `[${formatTime(event.timestamp)}] ${formatHttpRequest(event) ?? event.event.action}`,
     )
     .join("\n\n");
 
@@ -143,8 +144,8 @@ export function LogViewer({ events }: { events: HoneypotEvent[] }) {
                         />
                       </>
                     ) : (
-                      <span className="min-w-0 flex-1 font-mono text-[13px] text-info">
-                        {event.event.action}
+                      <span className="min-w-0 flex-1 break-all font-mono text-[13px] text-info">
+                        {formatHttpRequest(event) ?? event.event.action}
                       </span>
                     )}
 

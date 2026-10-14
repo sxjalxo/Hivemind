@@ -102,3 +102,26 @@ class Annotation(CamelModel):
     author: str
     author_label: str | None = None
     created_at: str
+
+
+class ReplayFrame(CamelModel):
+    t: float  # seconds since the first recording opened
+    data: str  # terminal output as sent, ANSI escapes included
+
+
+class SessionReplay(CamelModel):
+    """What Cowrie's TTY log recorded for a session, for the terminal replay.
+
+    `status` is "ok", or why there is nothing to play: "not_configured" (this
+    backend cannot see the recordings), "no_recording" (recording was off, or
+    the session has not closed yet), "missing" (the file is gone).
+    `shared` means Cowrie kept another session's recording in place of this
+    one's -- it stores one file per distinct keystroke sequence -- so the
+    output shown may not be what this session saw.
+    """
+
+    status: str
+    frames: list[ReplayFrame] = []
+    duration: float = 0
+    shared: bool = False
+    truncated: bool = False

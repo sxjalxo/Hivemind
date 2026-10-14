@@ -94,6 +94,29 @@ async def install_index_template() -> None:
         priority=body["priority"],
     )
     await _ensure_write_target()
+    await _extend_existing_mappings(body)
+
+
+async def _extend_existing_mappings(body: dict) -> None:
+    """Add any new template fields to the indices that already exist.
+
+    A template only shapes indices created after it, and the mapping is
+    `dynamic: strict`, so a field added to the template would be rejected by
+    the live write index -- every such event dead-lettered -- until the next
+    rollover. Adding fields to a mapping is safe and idempotent; changing an
+    existing field's type is not, and Elasticsearch refuses it. That refusal
+    is logged rather than raised, so a bad template edit cannot keep the API
+    from starting -- the events it affects still land in the dead-letter
+    index, where the status page counts them.
+    """
+    try:
+        await get_es().indices.put_mapping(
+            index=",".join(body["index_patterns"]),
+            properties=body["template"]["mappings"]["properties"],
+            allow_no_indices=True,
+        )
+    except Exception:
+        logger.exception("could not extend the mapping of existing honeypot-events indices")
 
 
 async def bootstrap_es() -> None:

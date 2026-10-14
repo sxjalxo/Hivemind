@@ -5,6 +5,7 @@ import type {
   Annotation,
   CampaignList,
   SessionTwins,
+  SessionReplay,
   EvaluationProgressEvent,
   EvaluationRemediation,
   EvaluationRun,
@@ -59,6 +60,7 @@ export interface DataProvider {
   getSession(id: string): Promise<AttackSession>;
   getCampaigns(): Promise<CampaignList>;
   getIdenticalSessions(id: string): Promise<SessionTwins>;
+  getSessionReplay(id: string): Promise<SessionReplay>;
   getAnnotations(sessionId: string): Promise<Annotation[]>;
   /** A tag already on the session resolves to that same tag, not a duplicate. */
   addAnnotation(sessionId: string, kind: "tag" | "note", body: string): Promise<Annotation>;

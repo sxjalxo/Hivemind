@@ -115,6 +115,7 @@ GET    /api/honeypots
 GET    /api/sessions              GET /api/sessions/{id}
 GET    /api/sessions/{id}/timeline
 GET    /api/sessions/{id}/events
+GET    /api/sessions/{id}/replay            → Cowrie's TTY recording, for the terminal replay
 GET    /api/sessions/{id}/identical         → identical sessions that already have an analysis
 GET    /api/sessions/{id}/annotations       → analyst tags and notes
 POST   /api/sessions/{id}/annotations       → admin on that honeypot; a repeated tag returns the existing one

@@ -6,6 +6,7 @@ import type {
   CampaignList,
   LogFacets,
   SessionTwins,
+  SessionReplay,
   AttackerProfile,
   EvaluationProgressEvent,
   EvaluationRemediation,
@@ -49,6 +50,7 @@ export const FastAPIProvider: DataProvider = {
   getCampaigns: () => request<CampaignList>(endpoints.campaigns),
 
   getIdenticalSessions: (id) => request<SessionTwins>(`${endpoints.session(id)}/identical`),
+  getSessionReplay: (id) => request<SessionReplay>(`${endpoints.session(id)}/replay`),
 
   getAnnotations: (id) => request<Annotation[]>(`${endpoints.session(id)}/annotations`),
 

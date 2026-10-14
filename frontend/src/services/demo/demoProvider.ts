@@ -287,6 +287,12 @@ export const DemoProvider: DataProvider = {
     if (index >= 0) demoAnnotations.splice(index, 1);
   },
 
+  async getSessionReplay() {
+    await delay(150);
+    // No recording exists for invented sessions; inventing one would be worse.
+    return { status: "no_recording", frames: [], duration: 0, shared: false, truncated: false };
+  },
+
   async getIdenticalSessions() {
     await delay(150);
     // The demo sessions are distinct by construction; claiming twins would be invented.

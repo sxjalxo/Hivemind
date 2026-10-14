@@ -77,6 +77,23 @@ export interface SessionTwins {
   incompleteReason: string | null;
 }
 
+/** Cowrie's TTY recording of a session; see backend `app/services/replay.py`. */
+export interface ReplayFrame {
+  /** Seconds since the recording opened. */
+  t: number;
+  /** Terminal output as sent, ANSI escapes included. */
+  data: string;
+}
+
+export interface SessionReplay {
+  status: "ok" | "not_configured" | "no_recording" | "missing";
+  frames: ReplayFrame[];
+  duration: number;
+  /** Cowrie kept another session's recording (same keystrokes) in place of this one's. */
+  shared: boolean;
+  truncated: boolean;
+}
+
 export interface SessionTimelineEvent {
   id: string;
   timestamp: string;
@@ -95,6 +112,7 @@ export interface SessionTimelineEvent {
     | "file"
     | "execution"
     | "tunnel"
+    | "request"
     | "protocol"
     | "other"
     | "disconnect";

@@ -1,4 +1,4 @@
-import type { RiskLevel } from "@/types";
+import type { HoneypotEvent, RiskLevel } from "@/types";
 
 export function riskFromScore(score: number): RiskLevel {
   if (score >= 90) return "critical";
@@ -60,4 +60,12 @@ export async function copyToClipboard(text: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** An HTTP honeypot event as one line, e.g. `GET /.env → 404`; undefined for any other event. */
+export function formatHttpRequest(event: HoneypotEvent): string | undefined {
+  if (!event.url?.path) return undefined;
+  const query = event.url.query ? `?${event.url.query}` : "";
+  const status = event.http?.response?.statusCode;
+  return `${event.http?.request?.method ?? "?"} ${event.url.path}${query}${status ? ` → ${status}` : ""}`;
 }

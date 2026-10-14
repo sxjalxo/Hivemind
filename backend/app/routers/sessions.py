@@ -15,11 +15,12 @@ from app.models.session import (
     AnnotationIn,
     AttackSession,
     CampaignList,
+    SessionReplay,
     SessionTimelineEvent,
     SessionTwins,
 )
 from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
-from app.services import annotations, campaigns, session_builder
+from app.services import annotations, campaigns, replay, session_builder
 
 router = APIRouter()
 
@@ -95,6 +96,17 @@ async def get_identical_sessions(
     if denies_everything(claims):
         return SessionTwins(fingerprint=None, twin_count=0, analysed=[], complete=True)
     return await campaigns.identical_sessions(session_id, deny_honeypots=denied_honeypots(claims))
+
+
+@router.get("/sessions/{session_id}/replay", response_model=SessionReplay)
+async def get_session_replay(
+    session_id: str, claims: dict | None = Depends(require_user)
+) -> SessionReplay:
+    session = await session_builder.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
+    assert_can_read(claims, session.honeypot_id)
+    return await replay.build_replay(session_id)
 
 
 @router.get("/sessions/{session_id}/annotations", response_model=list[Annotation])

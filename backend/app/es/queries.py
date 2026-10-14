@@ -91,6 +91,20 @@ def to_event(hit: dict) -> HoneypotEvent:
                 else None
             ),
             "file": src.get("file"),
+            "url": src.get("url"),
+            "http": (
+                {
+                    "request": src["http"].get("request"),
+                    "response": (
+                        {"statusCode": src["http"]["response"].get("status_code")}
+                        if src["http"].get("response")
+                        else None
+                    ),
+                }
+                if src.get("http")
+                else None
+            ),
+            "userAgent": src.get("user_agent"),
             "honeypot": src.get("honeypot") or {"id": "unknown", "name": "unknown"},
             "session": src.get("session") or {"id": "unknown"},
             "risk": src.get("risk") or {"score": 0, "level": "informational"},

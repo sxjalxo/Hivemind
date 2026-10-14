@@ -350,6 +350,24 @@ campaign of forty rather than forty new rows. The grouping is deterministic and 
 analysis — a pointer, never a copy, because copying an analysis would make this session's
 claims cite another session's log lines.
 
+**Terminal replay.** A session page plays back what the attacker's terminal showed, from
+Cowrie's own TTY recording, labelled `OBSERVED`. It is a plain-text transcript, not a
+terminal emulator: colours are dropped and pauses over two seconds are shortened. Cowrie
+keeps one recording per distinct keystroke sequence, so a session that typed exactly what
+an earlier one did has no recording of its own; the replay detects that from the
+recording's open time and says the output shown is the other session's. Only sessions
+recorded after 2026-10-14 have one, and the recordings volume has no retention yet.
+
+**A web honeypot.** `infra/webpot` is a small HTTP honeypot, deliberately separate from
+Cowrie: a staff sign-in page that records submitted credentials, believable Apache 404s for
+everything scanners probe (`/.env`, `/wp-login.php`, ...), and one JSON line per request in
+Cowrie's shape, so it reaches the same index through the same pipeline as `web-01`.
+Requests from one address are one session until 30 minutes of silence. It executes, stores
+and fetches nothing an attacker sends, runs with no capabilities on a read-only filesystem,
+and is standard library only. It is low-interaction on purpose; SNARE + TANNER is the
+candidate baseline if web-honeypot realism is ever compared. The evaluation half does not
+probe it yet: evaluation targets are Cowrie-shaped until `HoneypotTarget.kind` is split.
+
 **Notables.** The top-bar bell lists what deserves attention in the last seven days, each
 item carrying the provenance of the claim it rests on: a session the model rated high or
 critical (`AI INFERENCE`), the first rule-backed sighting of a technique (`OBSERVED`), a
@@ -390,7 +408,7 @@ are kept in a dead-letter index and counted on the status page instead of being 
 CI builds both images and imports the app inside the backend image, because the
 dependency bugs this project has hit failed at import time, not at build time.
 
-**A provenance-tagged dashboard** — thirty-two HTTP endpoints, two WebSocket progress
+**A provenance-tagged dashboard** — thirty-three HTTP endpoints, two WebSocket progress
 channels, fourteen routes, every AI conclusion expandable into its source event.
 
 ---
@@ -675,7 +693,7 @@ captures better attacks.
 
 ```
 backend/     FastAPI service — ingest, analysis pipeline, evaluation subsystem
-             32 HTTP endpoints + 2 WebSocket progress channels
+             33 HTTP endpoints + 2 WebSocket progress channels
 frontend/    React + TanStack Router dashboard
 infra/       Elasticsearch index template, ingest pipeline and lifecycle policy,
              Filebeat and Cowrie config
@@ -708,13 +726,13 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `838 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `853 passed` with at most one skip** — there are
 no expected failures.
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `838 passed` or `837 passed,
+with a reason rather than failing, so a clean run is `853 passed` or `852 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.

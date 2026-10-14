@@ -7,6 +7,7 @@ import { AnalysisStateChip } from "@/components/session/AnalysisStateChip";
 import { AnnotationsPanel } from "@/components/session/AnnotationsPanel";
 import { IdenticalSessionsNotice } from "@/components/session/IdenticalSessionsNotice";
 import { LogViewer } from "@/components/session/LogViewer";
+import { SessionReplay } from "@/components/session/SessionReplay";
 import { SessionTimeline } from "@/components/session/SessionTimeline";
 import { TechniqueDrawer } from "@/components/mitre/TechniqueDrawer";
 import {
@@ -231,6 +232,8 @@ function SessionInvestigationPage() {
           )}
         </Panel>
       </div>
+
+      <SessionReplay sessionId={sessionId} />
 
       <IdenticalSessionsNotice sessionId={sessionId} />
 

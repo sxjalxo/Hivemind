@@ -165,7 +165,8 @@ docker compose up -d
 ```
 
 Brings up Elasticsearch (`:9200`), Kibana (`:5601`), Postgres (`:5432`), Redis (`:6379`),
-Cowrie (`:2222` SSH, `:2223` Telnet) and Filebeat. Every port binds to `127.0.0.1` only.
+Cowrie (`:2222` SSH, `:2223` Telnet), the web honeypot (`:8088` HTTP) and Filebeat. Every
+port binds to `127.0.0.1` only.
 
 ### 2. Local model
 
@@ -216,7 +217,9 @@ data instead — useful for a UI-only look, and every surface that renders it is
 ssh -p 2222 root@127.0.0.1     # any password is accepted
 ```
 
-Type a few commands, then `exit`. They appear in the Log Explorer within seconds.
+Type a few commands, then `exit`. They appear in the Log Explorer within seconds, and the
+session page can replay the terminal. For web traffic, browse `http://127.0.0.1:8088/` or
+`curl http://127.0.0.1:8088/.env`; requests appear under the `web-01` honeypot.
 A scripted generator is also available:
 
 ```bash

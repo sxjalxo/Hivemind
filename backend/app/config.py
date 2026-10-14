@@ -165,6 +165,10 @@ class Settings(BaseSettings):
     # `labels.seeded: true`.
     seed_corpus_on_startup: bool = True
 
+    # Where Cowrie's TTY recordings are mounted (read-only) for the terminal
+    # replay. Unset = replay off. See `app.services.replay`.
+    cowrie_tty_path: str | None = None
+
     # Redis for cross-worker progress fan-out (app/workers/queue.py). Unset =
     # in-process only, which requires a single uvicorn worker.
     redis_url: str | None = None

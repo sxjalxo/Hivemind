@@ -58,6 +58,30 @@ class FileInfo(CamelModel):
     hash: FileHashInfo | None = None
 
 
+class UrlInfo(CamelModel):
+    """The requested URL of an HTTP honeypot event (infra/webpot)."""
+
+    path: str | None = None
+    query: str | None = None
+
+
+class HttpRequestInfo(CamelModel):
+    method: str | None = None
+
+
+class HttpResponseInfo(CamelModel):
+    status_code: int | None = None
+
+
+class HttpInfo(CamelModel):
+    request: HttpRequestInfo | None = None
+    response: HttpResponseInfo | None = None
+
+
+class UserAgentInfo(CamelModel):
+    original: str | None = None
+
+
 class HoneypotInfo(CamelModel):
     id: str
     name: str
@@ -87,6 +111,9 @@ class HoneypotEvent(CamelModel):
     user: UserInfo | None = None
     process: ProcessInfo | None = None
     file: FileInfo | None = None
+    url: UrlInfo | None = None
+    http: HttpInfo | None = None
+    user_agent: UserAgentInfo | None = None
     honeypot: HoneypotInfo
     session: SessionInfo
     risk: RiskInfo

@@ -47,6 +47,8 @@
     { "rename": { "field": "shasum", "target_field": "file.hash.sha256", "ignore_missing": true } },
     { "rename": { "field": "url", "target_field": "file.url", "ignore_missing": true } },
     { "rename": { "field": "outfile", "target_field": "file.name", "ignore_missing": true } },
+    { "rename": { "field": "path", "target_field": "url.path", "ignore_missing": true, "description": "The HTTP honeypot (infra/webpot). After the url -> file.url rename above, which must never see this object." } },
+    { "rename": { "field": "query", "target_field": "url.query", "ignore_missing": true } },
     {
       "set": {
         "field": "user.name",
@@ -58,7 +60,7 @@
       "script": {
         "lang": "painless",
         "description": "Derive event.category and event.outcome from event.action",
-        "source": "def a = ctx.event?.action; if (a == null) { return; } if (a.contains('session.connect') || a.contains('session.closed') || a.contains('client.')) { ctx.event.category = 'network'; } else if (a.contains('login.')) { ctx.event.category = 'authentication'; ctx.event.outcome = a.contains('success') ? 'success' : 'failure'; } else if (a.contains('command.')) { ctx.event.category = 'process'; ctx.event.outcome = a.contains('failed') ? 'failure' : 'success'; } else if (a.contains('file_download') || a.contains('file_upload')) { ctx.event.category = 'file'; } else { ctx.event.category = 'other'; }"
+        "source": "def a = ctx.event?.action; if (a == null) { return; } if (a.contains('session.connect') || a.contains('session.closed') || a.contains('client.')) { ctx.event.category = 'network'; } else if (a.contains('login.')) { ctx.event.category = 'authentication'; ctx.event.outcome = a.contains('success') ? 'success' : 'failure'; } else if (a.contains('command.')) { ctx.event.category = 'process'; ctx.event.outcome = a.contains('failed') ? 'failure' : 'success'; } else if (a.contains('file_download') || a.contains('file_upload')) { ctx.event.category = 'file'; } else if (a.startsWith('web.')) { ctx.event.category = 'web'; } else { ctx.event.category = 'other'; }"
       }
     },
     {

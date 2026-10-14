@@ -31,6 +31,11 @@ export const sessionQueries = {
       queryKey: ["session-annotations", id],
       queryFn: () => provider.getAnnotations(id),
     }),
+  replay: (id: string) =>
+    queryOptions({
+      queryKey: ["session-replay", id],
+      queryFn: () => provider.getSessionReplay(id),
+    }),
   identical: (id: string) =>
     queryOptions({
       queryKey: ["session-identical", id],

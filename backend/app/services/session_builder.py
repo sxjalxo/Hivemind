@@ -52,6 +52,10 @@ _KIND_BY_ACTION = {
     # would hide the honeypot being used as a proxy.
     "cowrie.direct-tcpip.request": "tunnel",
     "cowrie.direct-tcpip.data": "tunnel",
+    # The HTTP honeypot (infra/webpot): every request, and a credential
+    # submitted to its sign-in form.
+    "web.request": "request",
+    "web.login.failed": "auth",
 }
 
 # Anything this module does not recognise is reported as "other" rather than
@@ -307,6 +311,16 @@ async def honeypots_for_sessions(session_ids: list[str]) -> dict[str, str]:
     return mapping
 
 
+def _detail(kind: str, label: str, action: str, event: HoneypotEvent) -> str | None:
+    # The eventid adds nothing next to a command line, and repeating it under a
+    # label that already IS the eventid renders the same string twice.
+    if kind == "command" or label == action:
+        return None
+    if kind == "request" and event.http and event.http.response:
+        return f"HTTP {event.http.response.status_code}"
+    return action
+
+
 async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:
     events = await _fetch_session_events(session_id)
     timeline: list[SessionTimelineEvent] = []
@@ -320,6 +334,10 @@ async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:
         elif kind == "auth":
             outcome = "succeeded" if action.endswith("success") else "failed"
             label = f"Login {outcome}"
+        elif kind == "request" and event.url:
+            query = f"?{event.url.query}" if event.url.query else ""
+            method = event.http.request.method if event.http and event.http.request else "?"
+            label = f"{method} {event.url.path}{query}"
         elif kind == "connection":
             label = f"Connection from {event.source.ip}"
         elif kind == "disconnect":
@@ -333,10 +351,7 @@ async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:
                 timestamp=event.timestamp,
                 kind=kind,
                 label=label,
-                # The eventid adds nothing next to a command line, and
-                # repeating it under a label that already IS the eventid
-                # renders the same string twice.
-                detail=None if kind == "command" or label == action else action,
+                detail=_detail(kind, label, action, event),
                 severity=event.risk.level,
                 technique_id=event.mitre.technique_id if event.mitre else None,
             )

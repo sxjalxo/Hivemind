@@ -10,6 +10,15 @@ export interface HoneypotEvent {
   network: { protocol: string };
   user?: { name?: string | undefined } | undefined;
   process?: { commandLine?: string | undefined; output?: string | undefined } | undefined;
+  /** HTTP honeypot events only (infra/webpot). */
+  url?: { path?: string | undefined; query?: string | undefined } | undefined;
+  http?:
+    | {
+        request?: { method?: string | undefined } | undefined;
+        response?: { statusCode?: number | undefined } | undefined;
+      }
+    | undefined;
+  userAgent?: { original?: string | undefined } | undefined;
   honeypot: { name: string; id: string };
   session: { id: string };
   risk: { score: number; level: RiskLevel };

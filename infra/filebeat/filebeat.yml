@@ -81,6 +81,26 @@ filebeat.inputs:
             id: matrix-degraded-fs
             name: Matrix arm - degraded filesystem
 
+  # The HTTP honeypot (infra/webpot). It writes Cowrie-shaped lines, so it is
+  # parsed into the same `cowrie` namespace and goes through the same pipeline;
+  # the namespace name is historical, not a claim that this is Cowrie.
+  - type: filestream
+    id: webpot-json
+    enabled: true
+    paths:
+      - /webpot-logs/webpot.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: web-01
+            name: Web HTTP (staff portal)
+
 # Cowrie's JSON is parsed into the nested "cowrie" namespace above (rather than
 # the document root) because Filebeat's own filestream input always attaches a
 # root-level "input" field (input.type: filestream). Cowrie's raw JSON also has
