@@ -708,13 +708,13 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `803 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `838 passed` with at most one skip** — there are
 no expected failures.
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `803 passed` or `802 passed,
+with a reason rather than failing, so a clean run is `838 passed` or `837 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.
@@ -759,7 +759,7 @@ Everything on screen is tagged with where it came from:
 | `CORRELATED` | derived by correlating across more than one session |
 
 An ATT&CK technique is marked **observed** only when a deterministic regex rule matched
-the command — never because a model suggested it. The LLM fills gaps the 13-rule
+the command — never because a model suggested it. The LLM fills gaps the 20-rule
 rulebook cannot explain, and those mappings are labelled inference.
 
 Four gates enforce this:

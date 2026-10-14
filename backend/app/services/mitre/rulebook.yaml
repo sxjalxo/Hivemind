@@ -108,9 +108,60 @@ rules:
     # the anchor in place the lookbehind is now belt-and-suspenders (passwd
     # preceded by "/etc/" can never be in command position anyway) but it is
     # kept for clarity and defense in depth.
-    pattern: '{CMD_START}(?:(?<!/etc/)passwd\b|usermod\b\s+.*-L)'
+    pattern: '{CMD_START}(?:(?<!/etc/)passwd\b|usermod\b\s+.*-L|chpasswd\b)'
 
   - id: T1059.004
     name: Unix Shell
     tactic: Execution
-    pattern: '{CMD_START}(sh|bash|dash|zsh)\s+\S+\.(sh|bash)\b'
+    # A shell given a script to run (`sh x`, with or without a .sh name), or
+    # left at the end of a pipe to run what it is fed (`curl ... | sh`).
+    # `bash -c "..."` is not a hit by itself: -c is the wrapper form that
+    # {CMD_START} already looks through to the command it carries.
+    pattern: '{CMD_START}(?:sh|bash|dash|zsh)\b(?:\s+(?!-[a-z]*c\b)-[a-z]+)*\s+[^\s;&|-]|{CMD_START}(?:sh|bash|dash|zsh)\s*(?:;|$)'
+
+  # Rules added 2026-10-14 (checklist item 9). Deliberately NOT ruled:
+  # dmidecode, /sys/class/dmi and systemd-detect-virt. Those are
+  # virtualisation checks, and whether one is T1082 or sandbox evasion
+  # (T1497.001, outside the pinned catalog) is a judgement on context that a
+  # confidence-1.0 rule cannot make. They stay with the model, which is why
+  # seed-unmapped-01 is built from them.
+  - id: T1016
+    name: System Network Configuration Discovery
+    tactic: Discovery
+    pattern: '{CMD_START}(?:ifconfig|iwconfig|route\b|ip\s+(?:-\S+\s+)*(?:a|addr|address|r|route|link)\b)|/etc/resolv\.conf\b'
+
+  - id: T1018
+    name: Remote System Discovery
+    tactic: Discovery
+    pattern: '{CMD_START}(?:arp\b|ip\s+(?:-\S+\s+)*neigh)|/etc/hosts(?![\w.-])'
+
+  - id: T1087.001
+    name: Local Account Discovery
+    tactic: Discovery
+    pattern: '{CMD_START}(?:getent\s+(?:passwd|group)\b|lastlog\b|last\b|compgen\s+-u)|/etc/group(?![\w.-])'
+
+  - id: T1518
+    name: Software Discovery
+    tactic: Discovery
+    pattern: '{CMD_START}(?:dpkg\s+(?:-l|--list|--get-selections)|rpm\s+-q[a-z]*a|apt\s+list\s+--installed|yum\s+list\s+installed|pip3?\s+(?:list|freeze)|which\s+\S)'
+
+  - id: T1543.002
+    name: Systemd Service
+    tactic: Persistence
+    # Enabling a unit is the persistence step. Writing the unit file is not
+    # ruled: it is usually a printf/echo redirect, which the data-segment
+    # filter drops before matching.
+    pattern: '{CMD_START}systemctl\s+(?:--\S+\s+)*enable\b'
+
+  - id: T1552.004
+    name: Private Keys
+    tactic: Credential Access
+    # Reading, copying or searching for a private key; id_rsa.pub is public.
+    pattern: '{CMD_START}(?:cat|head|tail|less|more|cp|scp|find|locate|base64|xxd|strings|tar|zip)\b[^;&|]*(?:id_(?:rsa|dsa|ecdsa|ed25519)(?![\w.])|\.pem\b|\.ppk\b)'
+
+  - id: T1005
+    name: Data from Local System
+    tactic: Collection
+    # Creating an archive (tar c..., zip -r). The `c` is matched
+    # case-sensitively: `tar -C /dir -xzf a.tgz` extracts, it does not collect.
+    pattern: '{CMD_START}(?:tar\s+(?:-[a-zA-Z]+\s+)*-[a-zA-Z]*(?-i:c)|tar\s+[a-zA-Z]*(?-i:c)[a-zA-Z]*\s|zip\s+(?:-\S+\s+)*-[a-zA-Z]*r)'

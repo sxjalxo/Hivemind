@@ -167,7 +167,7 @@ async def test_dropped_duplicate_does_not_increment_rejected() -> None:
 
 
 CHUNK_A = CompactedCommand(
-    event_id="e-chunk-a", timestamp="2026-08-20T10:00:40Z", command="ip route show default"
+    event_id="e-chunk-a", timestamp="2026-08-20T10:00:40Z", command="systemd-detect-virt"
 )
 CHUNK_B = CompactedCommand(
     event_id="e-chunk-b",
@@ -238,7 +238,7 @@ async def test_cross_chunk_llm_merge_deduplicates_by_event_id(
                 confidence=0.7,
                 ai_explanation="Reads hardware identity.",
                 evidence=[
-                    EvidenceCitation(event_id="e-chunk-a", artifact="ip route"),
+                    EvidenceCitation(event_id="e-chunk-a", artifact="systemd-detect-virt"),
                     EvidenceCitation(event_id="e-chunk-b", artifact="systemctl"),
                 ],
             )
@@ -287,7 +287,7 @@ async def test_non_duplicate_llm_proposal_still_accepted_alongside_a_dropped_dup
 # ---------------------------------------------------------------------------
 
 CHUNK_A1 = CompactedCommand(
-    event_id="e-a1", timestamp="2026-08-20T10:01:00Z", command="ip route show default"
+    event_id="e-a1", timestamp="2026-08-20T10:01:00Z", command="systemd-detect-virt"
 )
 CHUNK_B1 = CompactedCommand(
     event_id="e-b1", timestamp="2026-08-20T10:01:01Z", command="systemctl list-units"

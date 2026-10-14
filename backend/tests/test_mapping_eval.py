@@ -44,4 +44,4 @@ def test_every_label_is_in_the_pinned_catalog_and_every_case_id_is_unique():
     assert [c.id for c in cases] == list(dict.fromkeys(c.id for c in cases))
     outside = [(c.id, t) for c in cases for t in c.expected if t not in catalog]
     assert outside == []
-    assert {c.origin for c in cases} == {"seed", "heldout"}
+    assert {c.origin for c in cases} <= {"seed", "tuned", "heldout"}

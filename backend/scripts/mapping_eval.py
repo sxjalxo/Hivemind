@@ -10,8 +10,9 @@ needs Ollama (or a BYOK key with --byok) and nothing else.
 
 Two things the output keeps apart, because merging them would flatter the system:
 
-* `seed` cases are what the rules were written against; `heldout` cases are not.
-  Rule recall on seed cases is high by construction.
+* `seed` cases are what the rules were written against, and `tuned` cases were read
+  while rules were added; only `heldout` cases are not. Rule recall on the first two
+  is high by construction.
 * Rules are deterministic, so their score is one number. The model's is reported
   across runs as mean, min and max -- one run's score is an anecdote.
 

