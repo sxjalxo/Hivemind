@@ -400,3 +400,24 @@ class SessionAnnotation(SQLModel, table=True):
     author: str
     author_label: str | None = None
     created_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
+
+class ClaimRejection(SQLModel, table=True):
+    """A claim the model made that a gate refused, and why (checklist item 16).
+
+    Not a claim: nothing here is shown as a finding, projected into
+    Elasticsearch or counted as evidence. It is the audit trail behind
+    `Analysis.rejected_claims`, written in the same transaction. `text` is the
+    model's own wording, capped, and can echo attacker input; it is stored as
+    data and only ever rendered as text.
+    """
+
+    __tablename__ = "claim_rejections"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    analysis_id: uuid.UUID = Field(foreign_key="analyses.id", index=True, ondelete="CASCADE")
+    stage: str  # "mapping" | "evidence_barrier"
+    kind: str  # a ParentType value
+    reason: str  # "unknown_technique" | "citations_not_offered" | "citations_unresolved"
+    technique_id: str | None = None
+    text: str | None = None
+    cited_event_ids: list[str] = Field(default_factory=list, sa_column=Column(ARRAY(String)))

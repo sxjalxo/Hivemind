@@ -726,13 +726,13 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `853 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `857 passed` with at most one skip** — there are
 no expected failures.
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `853 passed` or `852 passed,
+with a reason rather than failing, so a clean run is `857 passed` or `856 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.
@@ -785,8 +785,10 @@ Four gates enforce this:
 - **Schema validation** — a model response naming a technique outside the pinned ATT&CK
   catalog, or citing an event that was never shown to it, is rejected.
 - **The evidence write barrier** — no derived claim is stored without at least one
-  resolvable pointer to a real Elasticsearch document. Rejections are counted, not
-  silently dropped.
+  resolvable pointer to a real Elasticsearch document. Rejections are not silently
+  dropped: each one is kept apart from the findings with its reason, the event ids it
+  cited and the model's own wording, and the session page lists them under "claims
+  refused" so a refusal can be checked. A refused claim is never shown as a finding.
 - **A database constraint, not just application code** — in the evaluation schema a
   deferred constraint trigger rejects, at commit time, any finding that reaches the
   database without evidence. A finding and its evidence must be written in one

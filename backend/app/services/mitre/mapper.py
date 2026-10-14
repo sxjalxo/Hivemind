@@ -4,6 +4,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from app.db.models import ParentType
 from app.services.chunking import (
     MAX_ITEM_CHARS,
     SESSION_TOKEN_BUDGET,
@@ -14,9 +15,10 @@ from app.services.chunking import (
 )
 from app.services.compaction import CompactedCommand
 from app.services.llm.base import LLMClient, LLMValidationError
-from app.services.llm.schemas import EvidenceCitation, TechniqueProposals
+from app.services.llm.schemas import EvidenceCitation, TechniqueProposal, TechniqueProposals
 from app.services.mitre.catalog import CatalogEntry, load_catalog
 from app.services.mitre.rules import apply_rules
+from app.services.persistence import RejectedClaim
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +42,19 @@ class MappedTechnique(BaseModel):
 class MappingResult(BaseModel):
     techniques: list[MappedTechnique]
     rejected: int
+    # One per `rejected`, saying why; persisted with the analysis.
+    rejections: list[RejectedClaim] = []
+
+
+def _rejection(proposal: TechniqueProposal, reason: str) -> RejectedClaim:
+    return RejectedClaim(
+        stage="mapping",
+        kind=ParentType.TECHNIQUE_MAPPING.value,
+        reason=reason,
+        technique_id=proposal.technique_id,
+        text=proposal.ai_explanation,
+        cited_event_ids=[c.event_id for c in proposal.evidence],
+    )
 
 
 @dataclass
@@ -225,6 +240,7 @@ async def map_techniques(
 
     catalog = load_catalog()
     rejected = 0
+    rejections: list[RejectedClaim] = []
     # Every chunk's proposals are collected first and merged once at the end.
     # Merging incrementally is what made the result order-dependent.
     llm_proposals: dict[str, list[_LlmProposal]] = {}
@@ -246,6 +262,7 @@ async def map_techniques(
             if entry is None:
                 logger.warning("rejected hallucinated technique %s", proposal.technique_id)
                 rejected += 1
+                rejections.append(_rejection(proposal, "unknown_technique"))
                 continue
 
             grounded = [c for c in proposal.evidence if c.event_id in offered_ids]
@@ -254,6 +271,7 @@ async def map_techniques(
                     "rejected %s: cited event ids were never offered", proposal.technique_id
                 )
                 rejected += 1
+                rejections.append(_rejection(proposal, "citations_not_offered"))
                 continue
 
             if entry.id in ruled_ids:
@@ -314,4 +332,4 @@ async def map_techniques(
         if merged is not None:
             mapped.append(merged)
 
-    return MappingResult(techniques=mapped, rejected=rejected)
+    return MappingResult(techniques=mapped, rejected=rejected, rejections=rejections)

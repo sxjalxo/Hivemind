@@ -67,6 +67,17 @@ class RecommendedActionOut(CamelModel):
     rationale: str
 
 
+class RejectedClaimOut(CamelModel):
+    """A claim the model made that a gate refused. Never a finding."""
+
+    stage: str
+    kind: str
+    reason: str
+    technique_id: str | None = None
+    text: str | None = None
+    cited_event_ids: list[str] = []
+
+
 class SessionAnalysis(CamelModel):
     id: str
     session_id: str
@@ -89,6 +100,11 @@ class SessionAnalysis(CamelModel):
     suspicious_indicators: list[SeverityEvidence]
     recommended_actions: list[RecommendedActionOut]
     techniques: list[TechniqueMappingOut]
+    # How many claims the gates refused, and why. Defaults because stored
+    # report snapshots predate both; analyses written before 2026-10-14 have
+    # the count but no reasons, which were never stored.
+    rejected_claims: int = 0
+    rejections: list[RejectedClaimOut] = []
 
 
 class LiveAnalysisMetrics(CamelModel):

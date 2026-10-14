@@ -11,6 +11,7 @@ import {
 import { useState } from "react";
 import { AnalysisProgress } from "./AnalysisProgress";
 import { EvidenceList } from "./EvidenceList";
+import { RejectedClaims } from "./RejectedClaims";
 import {
   ConfidenceBar,
   DemoDataBadge,
@@ -302,6 +303,8 @@ function AnalysisResult({
           </p>
         </SubSection>
       ) : null}
+
+      <RejectedClaims count={analysis.rejectedClaims ?? 0} rejections={analysis.rejections ?? []} />
 
       <SubSection title="Recommended Actions" icon={ListChecks}>
         <ol className="space-y-2">

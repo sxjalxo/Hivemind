@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.db.models import (
     Analysis,
+    ClaimRejection,
     EvidenceRef,
     ObservedBehavior,
     ParentType,
@@ -105,6 +106,22 @@ def _require_aware_datetimes(
                 )
 
 
+# A refused claim's own wording is model output that can echo attacker input;
+# enough of it to recognise the claim, not a place to store a payload.
+REJECTED_TEXT_LIMIT = 500
+
+
+class RejectedClaim(BaseModel):
+    """A claim a gate refused, and why. Written as a `ClaimRejection` row."""
+
+    stage: str
+    kind: str
+    reason: str
+    technique_id: str | None = None
+    text: str | None = None
+    cited_event_ids: list[str] = []
+
+
 class Claim(BaseModel):
     """A derived claim awaiting the evidence barrier.
 
@@ -129,6 +146,7 @@ async def persist_analysis(
     session_id: str,
     event_timestamps: dict[str, datetime],
     prior_rejected: int = 0,
+    rejections: list[RejectedClaim] | None = None,
 ) -> int:
     """Write an analysis and every grounded claim in one transaction.
 
@@ -151,6 +169,11 @@ async def persist_analysis(
     they are advice about what to do next, not a claim about what happened,
     so they are written unconditionally and never counted as rejected.
 
+    ``rejections`` are the claims refused before this call (the ATT&CK
+    mapper's gates); they are written as ``ClaimRejection`` rows with the
+    ones the barrier refuses here, so every counted rejection has a row
+    saying why.
+
     Returns the number of claims rejected during this call. The analysis's
     stored ``rejected_claims`` is set to ``prior_rejected`` plus that count,
     so the value accumulates across the phases that call this function.
@@ -164,6 +187,7 @@ async def persist_analysis(
     _require_aware_datetimes(analysis, claims, event_timestamps)
 
     rejected = 0
+    refused = list(rejections or [])
     factory = get_session_factory()
 
     async with factory() as db:
@@ -188,6 +212,16 @@ async def persist_analysis(
             except UngroundedClaimError as exc:
                 logger.warning("%s", exc)
                 rejected += 1
+                refused.append(
+                    RejectedClaim(
+                        stage="evidence_barrier",
+                        kind=claim.kind.value,
+                        reason="citations_unresolved",
+                        technique_id=claim.payload.get("technique_id"),
+                        text=claim.payload.get("label") or claim.payload.get("ai_explanation"),
+                        cited_event_ids=[c.event_id for c in claim.evidence],
+                    )
+                )
                 continue
 
             model = _MODEL_BY_KIND[claim.kind]
@@ -209,6 +243,19 @@ async def persist_analysis(
 
         for action in actions:
             db.add(RecommendedAction(analysis_id=analysis.id, **action))
+
+        for item in refused:
+            db.add(
+                ClaimRejection(
+                    analysis_id=analysis.id,
+                    stage=item.stage,
+                    kind=item.kind,
+                    reason=item.reason,
+                    technique_id=item.technique_id,
+                    text=item.text[:REJECTED_TEXT_LIMIT] if item.text else None,
+                    cited_event_ids=item.cited_event_ids[:50],
+                )
+            )
 
         analysis.rejected_claims = prior_rejected + rejected
         db.add(analysis)

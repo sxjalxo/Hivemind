@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.auth import Actor
 from app.db.models import (
     Analysis,
+    ClaimRejection,
     EvidenceRef,
     ObservedBehavior,
     ParentType,
@@ -24,6 +25,7 @@ from app.models.analysis import (
     LabelledEvidence,
     LiveAnalysisMetrics,
     RecommendedActionOut,
+    RejectedClaimOut,
     SessionAnalysis,
     SeverityEvidence,
     TechniqueMappingOut,
@@ -186,7 +188,13 @@ async def run_analysis(session_id: str, actor: Actor | None = None) -> uuid.UUID
     )
 
     await persist_analysis(
-        analysis, claims, actions, session_id, event_timestamps, prior_rejected=rejected
+        analysis,
+        claims,
+        actions,
+        session_id,
+        event_timestamps,
+        prior_rejected=rejected,
+        rejections=mapping.rejections,
     )
 
     # Denormalized projection onto Elasticsearch, written only after the
@@ -485,6 +493,18 @@ async def _hydrate(db, analysis: Analysis) -> SessionAnalysis:
         .all()
     )
 
+    rejections = (
+        (
+            await db.execute(
+                select(ClaimRejection)
+                .where(ClaimRejection.analysis_id == analysis.id)
+                .order_by(ClaimRejection.stage, ClaimRejection.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
     techniques = []
     for mapping in mappings:
         refs = await refs_for(ParentType.TECHNIQUE_MAPPING, mapping.id)
@@ -537,6 +557,18 @@ async def _hydrate(db, analysis: Analysis) -> SessionAnalysis:
             for a in actions
         ],
         techniques=techniques,
+        rejected_claims=analysis.rejected_claims,
+        rejections=[
+            RejectedClaimOut(
+                stage=r.stage,
+                kind=r.kind,
+                reason=r.reason,
+                technique_id=r.technique_id,
+                text=r.text,
+                cited_event_ids=r.cited_event_ids or [],
+            )
+            for r in rejections
+        ],
     )
 
 

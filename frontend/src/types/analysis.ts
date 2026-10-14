@@ -40,6 +40,17 @@ export interface TechniqueMapping {
 }
 
 /** Mirrors POST /api/analyze/{session_id} and GET /api/analysis/{id} */
+/** A claim a gate refused, and why. Never a finding. */
+export interface RejectedClaim {
+  stage: "mapping" | "evidence_barrier";
+  kind: string;
+  reason: string;
+  techniqueId?: string | null | undefined;
+  /** The model's own wording, capped; may echo attacker input. */
+  text?: string | null | undefined;
+  citedEventIds: string[];
+}
+
 export interface SessionAnalysis {
   id: string;
   sessionId: string;
@@ -65,6 +76,9 @@ export interface SessionAnalysis {
   suspiciousIndicators: { label: string; severity: RiskLevel; evidence: EvidenceRef[] }[];
   recommendedActions: { priority: "P1" | "P2" | "P3"; action: string; rationale: string }[];
   techniques: TechniqueMapping[];
+  /** Absent on demo data and on report snapshots older than the field. */
+  rejectedClaims?: number | undefined;
+  rejections?: RejectedClaim[] | undefined;
 }
 
 export interface LiveAnalysisState {
