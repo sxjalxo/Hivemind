@@ -36,6 +36,19 @@ def _target(**overrides) -> "fingerprints.Target":
     return fingerprints.Target(**{**base, **overrides})
 
 
+def _without_empty_overrides(target: "fingerprints.Target") -> dict:
+    """The target as every digest before checklist 24 saw it.
+
+    A target with no capability overrides must fingerprint exactly as it did
+    before the field existed, or every stored run would stop comparing with
+    every new one. Spelled out here rather than calling the module's own
+    helper, so the test is not checking the code against itself.
+    """
+    payload = dataclasses.asdict(target)
+    assert payload.pop("overrides") == ()
+    return payload
+
+
 def _apparatus(**overrides) -> "fingerprints.Apparatus":
     """The default measurement apparatus, overridden field by field."""
     base = {
@@ -725,7 +738,7 @@ async def test_live_honeypot_fingerprint_is_real_and_stable() -> None:
         {
             "image": image,
             "config": _host_config_sha256(),
-            "target": dataclasses.asdict(LIVE_TARGET),
+            "target": _without_empty_overrides(LIVE_TARGET),
         }
     )
 
@@ -835,6 +848,9 @@ def test_the_target_carries_no_credential() -> None:
         # whose traffic was captured rather than how. Moved here from
         # `Apparatus`; see the note there.
         "capture_container",
+        # Capabilities the operator switched off (checklist 24): what the
+        # deployment can do, never how to log into it.
+        "overrides",
     }
     # The property, not just the current field list: any future field
     # whose name looks like a credential fails here too.
@@ -1070,7 +1086,7 @@ def test_the_uninspectable_fingerprint_carries_nulls_not_empty_strings() -> None
         {
             "image": None,
             "config": None,
-            "target": dataclasses.asdict(generic),
+            "target": _without_empty_overrides(generic),
         }
     )
     assert fingerprints._uninspectable_fingerprint(generic) == expected
@@ -1079,3 +1095,26 @@ def test_the_uninspectable_fingerprint_carries_nulls_not_empty_strings() -> None
         {"image": "", "config": "", "target": dataclasses.asdict(generic)}
     )
     json.dumps(dataclasses.asdict(generic))  # the payload must stay serialisable
+
+
+@pytest.mark.asyncio
+async def test_a_cowrie_without_container_access_fingerprints_without_docker(
+    monkeypatch,
+) -> None:
+    """Checklist 24: a remote Cowrie is Cowrie, but there is no container here
+    to read an image id or cowrie.cfg from -- and it must not collide with a
+    local Cowrie at the same address."""
+
+    async def _must_not_spawn(argv):  # pragma: no cover - asserts absence
+        raise AssertionError(f"docker was invoked for a target without container access: {argv}")
+
+    monkeypatch.setattr(container, "_spawn", _must_not_spawn)
+
+    remote = await fingerprints.honeypot_fingerprint(
+        _target(container_name=None, overrides=(("container_access", False),))
+    )
+    as_generic = await fingerprints.honeypot_fingerprint(
+        _target(kind="generic", container_name=None)
+    )
+    assert remote.startswith("sha256:")
+    assert remote != as_generic

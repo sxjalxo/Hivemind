@@ -105,7 +105,7 @@ async def run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
         return ChainRun(results=[], module_status=ModuleStatus.SKIPPED, detail="no chains configured")
 
     refused = [chain.id for chain in loaded if chain.destructive]
-    if not target.simulates_commands:
+    if not (target.simulates_commands and target.resettable):
         # The chains are only safe because Cowrie emulates every command.
         # Against a real host their steps are what they read as: an SSH
         # directory deleted, an attacker key appended to authorized_keys, a
@@ -117,15 +117,27 @@ async def run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
         # `not_observed` for a missing technique, justified by "the commands
         # WERE executed" -- which is exactly what did not happen here, so the
         # justification fails and the facts must not be manufactured.
+        #
+        # A Cowrie that cannot be reset (one on a remote VM) is refused too,
+        # for a different reason: the steps are harmless there, but the files
+        # and recordings they leave cannot be cleared, so the next run would
+        # observe this one's residue and the two would not be comparable.
+        why = (
+            "their steps have real side effects on a host that runs them"
+            if not target.simulates_commands
+            else "the files and recordings they leave cannot be cleared on this "
+            "target (no container access), so the next run would observe them"
+        )
         loaded = tuple(chain for chain in loaded if not chain.destructive)
         if not loaded:
             return ChainRun(
                 results=[],
                 module_status=ModuleStatus.SKIPPED,
                 detail=(
-                    f"target does not simulate commands (kind={target.kind!r}), so "
-                    f"chain(s) {', '.join(refused)} were NOT executed: their steps have "
-                    f"real side effects on a host that runs them. No non-destructive "
+                    f"target kind={target.kind!r} "
+                    f"{'cannot be reset' if target.simulates_commands else 'does not simulate commands'}"
+                    f", so chain(s) {', '.join(refused)} were NOT executed: {why}. "
+                    f"No non-destructive "
                     f"chain is configured, so attack_possibilities is left unestablished "
                     f"rather than scored from chains that never ran."
                 ),

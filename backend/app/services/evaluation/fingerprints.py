@@ -73,6 +73,21 @@ class Target:
     # cannot be pointed at another -- see the note in `Apparatus`, which is
     # where it used to live and why it moved.
     capture_container: str | None = None
+    # Capabilities set explicitly on the target (`HoneypotTarget.capabilities`),
+    # as sorted (name, value) pairs. Left out of the digest when empty, so
+    # every target that sets none -- every target before checklist item 24 --
+    # fingerprints exactly as it always did; a remote Cowrie with
+    # `container_access: false` fingerprints apart from a local one.
+    overrides: tuple[tuple[str, bool], ...] = ()
+
+
+def _target_payload(target: Target) -> dict:
+    payload = asdict(target)
+    if not payload["overrides"]:
+        del payload["overrides"]
+    else:
+        payload["overrides"] = dict(payload["overrides"])
+    return payload
 
 
 @dataclass(frozen=True)
@@ -476,7 +491,7 @@ def _uninspectable_fingerprint(target: Target) -> str:
     swallow -- so unlike the Cowrie path there is no failure to convert into
     a `FingerprintError`.
     """
-    return _digest({"image": None, "config": None, "target": asdict(target)})
+    return _digest({"image": None, "config": None, "target": _target_payload(target)})
 
 
 async def honeypot_fingerprint(
@@ -526,7 +541,7 @@ async def honeypot_fingerprint(
     fingerprint identically. The config is therefore hashed by the
     container's own interpreter; see `container.CONTAINER_PYTHON`.
     """
-    if target.kind != "cowrie":
+    if target.kind != "cowrie" or dict(target.overrides).get("container_access") is False:
         return _uninspectable_fingerprint(target)
 
     name = target.container_name
@@ -560,4 +575,4 @@ async def honeypot_fingerprint(
     # same defect the budget comment describes -- two runs against
     # materially different targets hashing identically until somebody
     # remembers to edit this line.
-    return _digest({"image": image, "config": config, "target": asdict(target)})
+    return _digest({"image": image, "config": config, "target": _target_payload(target)})

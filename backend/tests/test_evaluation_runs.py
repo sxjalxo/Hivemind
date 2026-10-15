@@ -1579,6 +1579,38 @@ async def test_destructive_chains_are_refused_against_a_non_simulating_target(
 
 
 @pytest.mark.asyncio
+async def test_destructive_chains_are_refused_against_a_cowrie_that_cannot_be_reset(
+    monkeypatch,
+) -> None:
+    """Checklist 24. A remote Cowrie emulates `rm -rf /root/.ssh` harmlessly,
+    but the files and recordings a destructive chain leaves cannot be cleared
+    without container access, so the next run would observe this one's."""
+
+    async def _must_not_open(*args, **kwargs):  # pragma: no cover - asserts absence
+        raise AssertionError("an SSH session was opened for a destructive chain")
+
+    monkeypatch.setattr(chain_runner.agent_module, "_open_session", _must_not_open)
+
+    chain_run = await runs._run_chains(
+        runs.EvaluationTarget(
+            host="203.0.113.5",
+            port=2222,
+            username="root",
+            password="x",
+            kind="cowrie",
+            resettable=False,
+        ),
+        "remote-cowrie",
+    )
+
+    assert chain_run.module_status == "skipped"
+    assert "cannot be reset" in chain_run.detail
+    for chain in chain_runner.chains_module.load_chains():
+        if chain.destructive:
+            assert chain.id in chain_run.detail
+
+
+@pytest.mark.asyncio
 async def test_an_evaluation_target_defaults_to_the_conservative_kind() -> None:
     """A forgotten field must not be what decides whether we destroy a host."""
     target = runs.EvaluationTarget(host="h", port=22, username="root", password="x")

@@ -338,10 +338,17 @@ existed to record) or `unrecorded` (predates the trail). The three stay distinct
 would let a gap in the history read as an anonymous action — the same reasoning that
 keeps `undetermined` out of `fixed`.
 
-**Bounded growth, nothing deleted.** Captured telemetry rolls over at 5 GB or 30 days
-and the lifecycle policy has no delete phase, deliberately: this is the research output,
-and a delete phase runs on a timer against data nobody is watching. Old indices become
-individually droppable by hand instead.
+**Bounded growth, nothing deleted unattended.** Captured telemetry rolls over at 5 GB or
+30 days and the lifecycle policy has no delete phase, deliberately: this is the research
+output, and a delete phase runs on a timer against data nobody is watching. Retention is
+an operator's command instead — `docker compose --profile tools run --rm prune
+--older-than 90d`, a dry run unless `--apply`. It drops a rolled-over index only when no
+analysis, evaluation, report, annotation or indicator in Postgres points at an event in
+it, so no stored claim is left citing an event that is gone; it never drops the write
+index or a single event. It also retires rotated raw logs (already shipped to the index)
+and TTY recordings no referenced session names. Postgres is never pruned: it is small,
+and it is the record of what the system concluded. The web honeypot rotates its log
+daily, as Cowrie does, so there are whole days to retire.
 
 **Campaigns.** Sessions that ran the identical command sequence are grouped, with IP
 literals and hashes masked, so one dropper replayed from forty addresses reads as one
@@ -731,13 +738,13 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `862 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `876 passed` with at most one skip** — there are
 no expected failures.
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `862 passed` or `861 passed,
+with a reason rather than failing, so a clean run is `876 passed` or `875 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.
@@ -1244,6 +1251,18 @@ simulate commands. All three shipped chains are destructive, so a generic target
 `kind` defaults to `cowrie`, but every field that makes a target dangerous defaults the
 safe way — a target with no `container_name` is rejected rather than guessed at, and the
 internal `EvaluationTarget` defaults to `generic`.
+
+**A Cowrie that is not here.** `kind` says what the software is; `capabilities` says what
+this deployment cannot do. A Cowrie on a remote VM still emulates every command and its
+log can reach the index, but there is no container to `docker exec` into, so it is
+declared `{"kind": "cowrie", "capabilities": {"container_access": false}}`: no reset
+attempt, and a fingerprint of where it is that does not collide with a local Cowrie at
+the same address. Capabilities can only be switched OFF — a generic target claiming to
+emulate commands is refused, because that claim is what would run the chains for real.
+Destructive chains need emulation AND a reset, since the files and recordings they leave
+would otherwise reach the next run, so a remote Cowrie runs none of them yet; a remote
+reset is what will lift that. Targets that set no capabilities fingerprint exactly as
+they did before the field existed.
 
 ### Running the degradation matrix
 

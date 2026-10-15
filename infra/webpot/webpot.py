@@ -44,6 +44,20 @@ NOT_FOUND = """<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
 <address>{server} Server at {host} Port 80</address></body></html>"""
 
 
+def rotate(path: str, now: datetime) -> None:
+    """Move a previous day's log aside as `<path>.YYYY-MM-DD`, as Cowrie does.
+
+    Without it the log only ever grows; with it, `scripts/prune.py` can retire
+    whole days that Filebeat has already shipped.
+    """
+    try:
+        day = datetime.fromtimestamp(os.path.getmtime(path), UTC).date()
+    except FileNotFoundError:
+        return
+    if day < now.date():
+        os.replace(path, f"{path}.{day.isoformat()}")
+
+
 class Sessions:
     """One session id per source IP, renewed after SESSION_GAP_S of silence."""
 
@@ -121,8 +135,10 @@ class Handler(BaseHTTPRequestHandler):
             user_agent=self.headers.get("User-Agent") if self.headers else None,
             **fields,
         )
-        with self._write_lock, open(LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(line) + "\n")
+        with self._write_lock:
+            rotate(LOG_PATH, datetime.now(UTC))
+            with open(LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(line) + "\n")
 
     def _send(self, status: int, body: str) -> None:
         data = body.encode("utf-8")

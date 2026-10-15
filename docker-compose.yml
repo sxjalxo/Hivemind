@@ -125,6 +125,23 @@ services:
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 
+  prune:
+    # Retention, run by an operator and never on a timer (backend/scripts/prune.py):
+    #   docker compose --profile tools run --rm prune --older-than 90d [--apply]
+    # A dry run unless --apply. The `tools` profile keeps it out of every `up`.
+    # It mounts the log volumes read-write because deleting is its job; the
+    # backend itself keeps its read-only view of the recordings.
+    profiles: ["tools"]
+    build: ./backend
+    entrypoint: ["python", "-m", "scripts.prune"]
+    volumes:
+      - cowrie-logs:/prune/cowrie-logs
+      - cowrie-logs-hardened:/prune/cowrie-logs-hardened
+      - cowrie-logs-degraded-sanity:/prune/cowrie-logs-degraded-sanity
+      - cowrie-logs-degraded-fs:/prune/cowrie-logs-degraded-fs
+      - webpot-logs:/prune/webpot-logs
+      - cowrie-tty:/prune/cowrie-tty
+
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.15.3
     user: root

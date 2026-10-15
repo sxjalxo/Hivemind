@@ -236,6 +236,7 @@ Run from `backend/` with the venv's Python, as `python -m scripts.<name>`:
 | `probe_candidates` | ranks commands real attackers ran against what the evaluator's probes cover |
 | `mapping_eval [--runs N]` | ATT&CK mapping precision/recall, rulebook alone vs rulebook + model |
 | `run_degradation_matrix [--repeat N]` | evaluates every matrix arm; `--repeat` reports each score's spread |
+| `prune --older-than 90d [--apply]` | retention, dry run by default; run it in the stack as `docker compose --profile tools run --rm prune ...` so it can reach the log volumes |
 
 ---
 

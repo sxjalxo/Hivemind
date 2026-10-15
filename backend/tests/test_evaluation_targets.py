@@ -6,6 +6,7 @@ arbitrary host.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import HoneypotTarget, Settings
 from app.services.evaluation import targets
@@ -204,3 +205,39 @@ def test_a_cowrie_target_keeps_the_shared_default() -> None:
     target = HoneypotTarget(host="cowrie", container_name="hivemind-cowrie-1")
 
     assert target.ssh_password == "hivemind-evaluation"
+
+
+# --- checklist 24: a Cowrie whose deployment lacks a capability -----------
+
+
+def test_a_remote_cowrie_simulates_and_logs_but_has_no_container() -> None:
+    """Cowrie on a cloud VM: commands are still emulated and its log reaches
+    the index, but there is nothing here to `docker exec` into."""
+    remote = HoneypotTarget(host="203.0.113.5", capabilities={"container_access": False})
+
+    assert remote.simulates_commands is True
+    assert remote.has_own_event_log is True
+    assert remote.has_container_access is False
+    assert remote.capability_overrides() == {"container_access": False}
+
+
+def test_a_plain_cowrie_sets_no_overrides() -> None:
+    """So its honeypot fingerprint is exactly what it was before the split."""
+    assert HoneypotTarget(host="h", container_name="c").capability_overrides() == {}
+
+
+def test_a_generic_target_cannot_claim_cowrie_capabilities() -> None:
+    """Only Cowrie is known to emulate commands; a real host claiming it is the
+    configuration that would run `rm -rf /root/.ssh` for real."""
+    with pytest.raises(ValidationError, match="cannot claim simulates_commands"):
+        HoneypotTarget(
+            kind="generic",
+            host="192.0.2.10",
+            ssh_password="hunter2",
+            capabilities={"simulates_commands": True},
+        )
+
+
+def test_a_misspelt_capability_is_refused_not_ignored() -> None:
+    with pytest.raises(ValidationError):
+        HoneypotTarget(host="h", container_name="c", capabilities={"containeraccess": False})

@@ -4,7 +4,7 @@ import secrets
 import time
 
 import paramiko
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from app.db.models import FactStatus, ModuleStatus
 from app.services.evaluation.outcomes import ModuleOutcome
@@ -34,14 +34,19 @@ class EvaluationTarget(BaseModel):
     # `rm -rf /root/.ssh` runs for real, and the cost of the two mistakes is
     # not remotely symmetric.
     kind: str = "generic"
+    # The three capabilities, resolved from `HoneypotTarget` (checklist 24).
+    # Unset follows `kind`, whose default above is the conservative one.
+    simulates_commands: bool | None = None
+    has_own_event_log: bool | None = None
+    # Residue a run leaves (downloads, tty recordings) can be cleared.
+    resettable: bool | None = None
 
-    @property
-    def simulates_commands(self) -> bool:
-        return self.kind == "cowrie"
-
-    @property
-    def has_own_event_log(self) -> bool:
-        return self.kind == "cowrie"
+    @model_validator(mode="after")
+    def _unset_capabilities_follow_kind(self) -> "EvaluationTarget":
+        for name in ("simulates_commands", "has_own_event_log", "resettable"):
+            if getattr(self, name) is None:
+                setattr(self, name, self.kind == "cowrie")
+        return self
 
 
 class AgentBudget(BaseModel):

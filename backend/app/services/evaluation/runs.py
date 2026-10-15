@@ -1166,6 +1166,9 @@ async def start_run(
         username=configured.ssh_username,
         password=configured.ssh_password,
         kind=configured.kind,
+        simulates_commands=configured.simulates_commands,
+        has_own_event_log=configured.has_own_event_log,
+        resettable=configured.has_container_access,
     )
     budget = AgentBudget(
         max_commands=settings.evaluation_agent_max_commands,
@@ -1198,7 +1201,7 @@ async def start_run(
             else ""
         ),
     )
-    if configured.kind == "cowrie":
+    if configured.has_container_access:
         await _reset_target(container)
     else:
         # Nothing to clear, rather than "we gave up on clearing".
@@ -1206,18 +1209,18 @@ async def start_run(
         # Reset exists because a previous run leaves residue -- downloaded
         # files and tty recordings -- and run B must not observe run A's
         # leftovers. Every one of those artefacts is created by a chain step,
-        # and `_run_chains` refuses to execute a destructive chain against a
-        # target that does not simulate commands. A run that writes nothing
-        # leaves nothing behind, so the precondition holds by construction
-        # here instead of by deletion.
+        # and `_run_chains` runs a destructive chain only against a target
+        # that simulates commands AND can be reset -- so a target without
+        # container access (a generic host, or a Cowrie on a remote VM) gets
+        # none. A run that writes nothing leaves nothing behind, so the
+        # precondition holds by construction here instead of by deletion.
         #
         # This is load-bearing on that refusal. If a destructive chain ever
-        # becomes runnable against a generic target, this branch is wrong and
-        # comparability across two such runs is gone, silently -- there is no
-        # `docker exec` into a bare host to clear anything with.
+        # becomes runnable against an unresettable target, this branch is
+        # wrong and comparability across two such runs is gone, silently.
         logger.info(
-            "run for honeypot %s targets kind=%s: skipping container reset, "
-            "which has nothing to clear because no chain with side effects runs there",
+            "run for honeypot %s targets kind=%s without container access: skipping "
+            "the reset, which has nothing to clear because no chain with side effects runs there",
             honeypot_id,
             configured.kind,
         )
@@ -1232,6 +1235,7 @@ async def start_run(
             ssh_port=target.port,
             ssh_username=target.username,
             capture_container=configured.capture_container,
+            overrides=tuple(sorted(configured.capability_overrides().items())),
         )
     )
     config_fp = _evaluation_config_fingerprint(

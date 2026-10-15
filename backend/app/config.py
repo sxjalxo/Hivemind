@@ -5,6 +5,27 @@ from pydantic import BaseModel, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+class TargetCapabilities(BaseModel):
+    """What a deployment can NOT do that its `kind` normally can (checklist 24).
+
+    Each field is unset by default and then follows `kind`. Setting one to
+    False removes that capability; setting one to True on a non-Cowrie target
+    is refused, because only Cowrie is known to emulate commands and write the
+    command log, and claiming either for a real host is the dangerous
+    direction.
+
+    The case this exists for is Cowrie on a remote VM: it simulates commands
+    and its log reaches our index, but there is no container here to
+    `docker exec` into, so it cannot be reset or have its cowrie.cfg digested.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    container_access: bool | None = None
+    commands_logged: bool | None = None
+    simulates_commands: bool | None = None
+
+
 class HoneypotTarget(BaseModel):
     """One honeypot the evaluation subsystem may be pointed at.
 
@@ -40,15 +61,14 @@ class HoneypotTarget(BaseModel):
     thing an operator has to describe accurately -- and `generic` is what
     they get if they describe nothing.
 
-    ponytail: one field covers all three because today they move together.
-    A Cowrie running the `proxy` backend forwards commands to a real host --
-    it would be Cowrie-introspectable but NOT simulating. Declare such a
-    deployment `generic`: it loses container reset and the cfg digest, which
-    is the safe direction. Split `kind` into separate capability flags if
-    that configuration ever becomes real here.
+    `kind` says what the software IS. Where a Cowrie deployment cannot do one
+    of the three -- a remote VM has no container here; a Cowrie running the
+    `proxy` backend forwards commands to a real host -- `capabilities` turns
+    that one off, and only off. See `TargetCapabilities`.
     """
 
     kind: Literal["cowrie", "generic"] = "cowrie"
+    capabilities: TargetCapabilities = TargetCapabilities()
     host: str
     ssh_port: int = 2222
     ssh_username: str = "root"
@@ -72,12 +92,26 @@ class HoneypotTarget(BaseModel):
     capture_container: str | None = None
 
     @model_validator(mode="after")
-    def _cowrie_needs_a_container(self) -> "HoneypotTarget":
-        if self.kind == "cowrie" and not self.container_name:
+    def _capabilities_only_subtract(self) -> "HoneypotTarget":
+        if self.kind != "cowrie":
+            claimed = [name for name, value in self.capabilities if value]
+            if claimed:
+                raise ValueError(
+                    f"a {self.kind!r} target cannot claim {', '.join(claimed)}: only "
+                    f"Cowrie is known to emulate commands and write the command log, "
+                    f"and claiming either for a real host is what would make the "
+                    f"attack chains run for real"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _container_access_needs_a_container(self) -> "HoneypotTarget":
+        if self.has_container_access and not self.container_name:
             raise ValueError(
                 "a 'cowrie' target needs container_name: reset and the honeypot "
-                "fingerprint both work by `docker exec` into it. Set it, or "
-                "declare the target kind 'generic' if it is not a container."
+                "fingerprint both work by `docker exec` into it. Set it, or set "
+                "capabilities.container_access to false if there is no container "
+                "here (a remote VM)."
             )
         return self
 
@@ -108,20 +142,31 @@ class HoneypotTarget(BaseModel):
             )
         return self
 
+    def _capability(self, name: str) -> bool:
+        value = getattr(self.capabilities, name)
+        return self.kind == "cowrie" if value is None else value
+
     @property
     def simulates_commands(self) -> bool:
-        """Whether a command sent here has real side effects.
+        """Whether a command sent here has NO real side effects.
 
-        False means the attack chains' destructive steps must not run. See
-        `kind` -- this is a derivation, not a second knob, so the two can
-        never be configured into disagreement.
+        False means the attack chains' destructive steps must not run.
         """
-        return self.kind == "cowrie"
+        return self._capability("simulates_commands")
 
     @property
     def has_own_event_log(self) -> bool:
         """Whether this target writes the Cowrie events chain read-back needs."""
-        return self.kind == "cowrie"
+        return self._capability("commands_logged")
+
+    @property
+    def has_container_access(self) -> bool:
+        """Whether reset and the cowrie.cfg digest can `docker exec` into it."""
+        return self._capability("container_access")
+
+    def capability_overrides(self) -> dict[str, bool]:
+        """The capabilities set explicitly, for the honeypot fingerprint."""
+        return {name: value for name, value in self.capabilities if value is not None}
 
 
 class Settings(BaseSettings):
