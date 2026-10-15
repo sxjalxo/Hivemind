@@ -178,6 +178,7 @@ async def list_sessions(
     limit: int | None = None,
     deny_honeypots: set[str] | None = None,
     attacker_ip: str | None = None,
+    offset: int = 0,
 ) -> list[AttackSession]:
     """Find session ids matching the filters, then assemble each one.
 
@@ -230,7 +231,11 @@ async def list_sessions(
     if must_not:
         bool_query["must_not"] = must_not
 
-    wanted = _MAX_SESSION_BUCKETS if limit is None else min(limit, _MAX_SESSION_BUCKETS)
+    # A page is the newest `offset + limit` sessions with the first `offset`
+    # dropped: the aggregation is ordered by first event, which no cursor can
+    # resume from, and it is cheap next to `get_session` below -- only the
+    # page itself is assembled.
+    wanted = _MAX_SESSION_BUCKETS if limit is None else offset + limit
     result = await get_es().search(
         index=get_settings().es_index,
         query={"bool": bool_query},
@@ -256,12 +261,13 @@ async def list_sessions(
     aggregation = result["aggregations"]["sessions"]
     buckets = aggregation["buckets"]
     buckets.sort(key=lambda b: b["first_seen"]["value"], reverse=True)
+    buckets = buckets[offset:]
 
-    # Anything the cap left behind. Silence here read as a short fleet rather
-    # than a truncated answer -- and the caller cannot tell the two apart from
-    # the response, which is a list either way.
+    # Anything the internal cap left behind. Silence here read as a short fleet
+    # rather than a truncated answer. A paged caller is not truncated -- the
+    # rest is the next page -- so only the unpaged internal read warns.
     dropped = aggregation.get("sum_other_doc_count", 0)
-    if dropped:
+    if dropped and limit is None:
         logger.warning(
             "session list truncated at %d: %d further events belong to sessions "
             "outside this page",

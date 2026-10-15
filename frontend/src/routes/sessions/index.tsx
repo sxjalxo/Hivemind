@@ -7,6 +7,7 @@ import {
   DemoDataBadge,
   EmptyState,
   ErrorState,
+  LoadMore,
   MitreBadge,
   Mono,
   PageHeader,
@@ -25,7 +26,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { isDemoMode } from "@/services";
+import { isDemoMode, provider } from "@/services";
+import { usePagedList } from "@/hooks/usePagedList";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatDuration } from "@/utils/format";
 import type { AttackSession, RiskLevel } from "@/types";
@@ -63,7 +65,10 @@ function SessionsPage() {
     ...(risk !== "all" ? { risk } : {}),
     ...(query.trim() ? { q: query.trim() } : {}),
   };
-  const { data, isPending, isError, refetch } = useQuery(sessionQueries.list(params));
+  const { data, isPending, isError, refetch, hasMore, loadMore, isLoadingMore } = usePagedList(
+    [...sessionQueries.list(params).queryKey, "paged"],
+    (offset) => provider.getSessions({ ...params, offset }),
+  );
 
   return (
     <div className="space-y-5">
@@ -73,7 +78,7 @@ function SessionsPage() {
         meta={
           <>
             <span className="label-caps">
-              {isPending ? "Loading" : `${data?.length ?? 0} sessions`}
+              {isPending ? "Loading" : `${data?.length ?? 0}${hasMore ? "+" : ""} sessions`}
             </span>
             {isDemoMode ? <DemoDataBadge /> : null}
           </>
@@ -129,14 +134,17 @@ function SessionsPage() {
             description={SERVICE_ERRORS.api.description}
             onRetry={() => void refetch()}
           />
-        ) : data.length === 0 ? (
+        ) : !data || data.length === 0 ? (
           <EmptyState
             icon={Activity}
             title="No attacker sessions match these filters."
             description="Clear the search or widen the severity filter to see more sessions."
           />
         ) : (
-          <SessionsTable sessions={data} />
+          <>
+            <SessionsTable sessions={data} />
+            <LoadMore hasMore={hasMore} loading={isLoadingMore} onClick={loadMore} />
+          </>
         )}
       </Panel>
     </div>

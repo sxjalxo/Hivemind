@@ -319,6 +319,8 @@ export const DemoProvider: DataProvider = {
 
   async getSessions(params) {
     await delay(220);
+    // The demo lists fit on one page; a later page is empty, not a repeat.
+    if (params?.offset) return [];
     let items = demo.sessions;
     if (params?.risk) items = items.filter((s) => s.risk === params.risk);
     if (params?.honeypotId) items = items.filter((s) => s.honeypotId === params.honeypotId);
@@ -409,8 +411,9 @@ export const DemoProvider: DataProvider = {
     return analysis;
   },
 
-  async getAnalysisHistory() {
+  async getAnalysisHistory(params) {
     await delay(200);
+    if (params?.offset) return [];
     return demo.analysisHistory;
   },
 
@@ -470,6 +473,7 @@ export const DemoProvider: DataProvider = {
 
   async getIndicators(params) {
     await delay(200);
+    if (params?.offset) return [];
     let items = demo.indicators;
     if (params?.type) items = items.filter((i) => i.type === params.type);
     if (params?.q) {
@@ -507,8 +511,9 @@ export const DemoProvider: DataProvider = {
     return profile;
   },
 
-  async getReports() {
+  async getReports(params) {
     await delay(200);
+    if (params?.offset) return [];
     return demo.reports;
   },
 

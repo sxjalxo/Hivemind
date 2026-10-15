@@ -18,6 +18,7 @@ import {
   DemoDataBadge,
   EmptyState,
   ErrorState,
+  LoadMore,
   Mono,
   PageHeader,
   Panel,
@@ -28,7 +29,8 @@ import {
 import { IocExportPanel } from "@/components/intel/IocExportPanel";
 import { VirusTotalCheck } from "@/components/intel/VirusTotalCheck";
 import { Input } from "@/components/ui/input";
-import { isDemoMode } from "@/services";
+import { isDemoMode, provider } from "@/services";
+import { usePagedList } from "@/hooks/usePagedList";
 import { formatDateTime } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Indicator, IndicatorType } from "@/types";
@@ -77,7 +79,10 @@ function ThreatIntelPage() {
     ...(activeType ? { type: activeType } : {}),
     ...(query.trim() ? { q: query.trim() } : {}),
   };
-  const { data, isPending, isError, error, refetch } = useQuery(indicatorsQuery(params));
+  const { data, isPending, isError, error, refetch, hasMore, loadMore, isLoadingMore } =
+    usePagedList([...indicatorsQuery(params).queryKey, "paged"], (offset) =>
+      provider.getIndicators({ ...params, offset }),
+    );
 
   // Counts come from the unfiltered set so the type rail never collapses to zero.
   const all = useQuery(indicatorsQuery());
@@ -101,7 +106,7 @@ function ThreatIntelPage() {
         meta={
           <>
             <span className="label-caps">
-              {isPending ? "Loading" : `${data?.length ?? 0} indicators`}
+              {isPending ? "Loading" : `${data?.length ?? 0}${hasMore ? "+" : ""} indicators`}
             </span>
             {isDemoMode ? <DemoDataBadge /> : null}
           </>
@@ -186,14 +191,17 @@ function ThreatIntelPage() {
             error={error}
             onRetry={() => void refetch()}
           />
-        ) : data.length === 0 ? (
+        ) : !data || data.length === 0 ? (
           <EmptyState
             icon={ShieldAlert}
             title="No indicators match these filters."
             description="Clear the search or pick a different indicator type."
           />
         ) : (
-          <IndicatorTable indicators={data} />
+          <>
+            <IndicatorTable indicators={data} />
+            <LoadMore hasMore={hasMore} loading={isLoadingMore} onClick={loadMore} />
+          </>
         )}
       </Panel>
 

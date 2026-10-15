@@ -153,6 +153,7 @@ def _analysis(session_id: str, classification: str):
     from app.db.models import Analysis
 
     return Analysis(
+        started_by="unrecorded",
         id=uuid.uuid4(),
         session_id=session_id,
         model="test-fixture",

@@ -1,12 +1,4 @@
-import type { HoneypotEvent, RiskLevel } from "@/types";
-
-export function riskFromScore(score: number): RiskLevel {
-  if (score >= 90) return "critical";
-  if (score >= 70) return "high";
-  if (score >= 40) return "medium";
-  if (score >= 15) return "low";
-  return "informational";
-}
+import type { HoneypotEvent } from "@/types";
 
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
@@ -45,12 +37,6 @@ export function formatBytes(bytes: number | null | undefined): string {
 
 export function formatPct(value: number): string {
   return `${Math.round(value * 100)}%`;
-}
-
-export function truncateMiddle(value: string, max = 24): string {
-  if (value.length <= max) return value;
-  const half = Math.floor((max - 1) / 2);
-  return `${value.slice(0, half)}…${value.slice(-half)}`;
 }
 
 export async function copyToClipboard(text: string): Promise<boolean> {

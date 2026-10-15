@@ -541,6 +541,7 @@ async def test_an_llm_sourced_mapping_is_never_marked_observed() -> None:
     async with factory() as db:
         db.add(
             Analysis(
+                started_by="unrecorded",
                 id=analysis_id,
                 session_id=session_id,
                 model="test-fixture",

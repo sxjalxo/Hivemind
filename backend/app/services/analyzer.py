@@ -579,39 +579,65 @@ async def load_analysis(analysis_id: uuid.UUID) -> SessionAnalysis | None:
 
 
 async def load_history(
-    limit: int | None = None, deny_honeypots: set[str] | None = None
+    limit: int | None = None,
+    deny_honeypots: set[str] | None = None,
+    offset: int = 0,
 ) -> list[SessionAnalysis]:
-    """Newest analyses first, hydrated.
+    """Newest analyses first, hydrated. `offset` and `limit` count VISIBLE rows.
 
-    `limit` is None for internal callers and set by the route. It bounds the
-    rows read AND the `_hydrate` per row that follows them, which is the
-    expensive half: this list grows with every analysis ever run.
+    `limit` is None for internal callers and set by the route. Only the
+    returned page is hydrated -- the expensive half, since this list grows
+    with every analysis ever run.
+
+    A scoped caller's rows are filtered by honeypot, and `analyses` has no
+    honeypot column to filter ON (the sensor is a property of the session,
+    which lives in Elasticsearch). So rows are read in batches and filtered
+    until the page is full, rather than one `limit` of rows filtered after
+    the fact: that returned short pages, and a short page cannot be told apart
+    from the end of the list. A session whose events have aged out is omitted
+    too: an id that cannot be placed on a sensor cannot be shown to a scoped
+    caller.
     """
+    statement = select(Analysis).order_by(Analysis.created_at.desc(), Analysis.id)
     async with get_session_factory()() as db:
-        statement = select(Analysis).order_by(Analysis.created_at.desc())
-        if limit is not None:
-            statement = statement.limit(limit)
-        rows = (await db.execute(statement)).scalars().all()
-        analyses = [await _hydrate(db, row) for row in rows]
+        if not deny_honeypots:
+            if limit is not None:
+                statement = statement.offset(offset).limit(limit)
+            elif offset:
+                statement = statement.offset(offset)
+            rows = (await db.execute(statement)).scalars().all()
+        else:
+            rows = await _visible_rows(db, statement, deny_honeypots, offset, limit)
+        return [await _hydrate(db, row) for row in rows]
 
-    if not deny_honeypots:
-        return analyses
 
-    # Filtered after the page is read, because `analyses` has no honeypot
-    # column to filter ON -- the sensor is a property of the session, which
-    # lives in Elasticsearch. The consequence is honest and worth naming: a
-    # scoped page can come back SHORTER than `limit`. The alternatives were
-    # a migration to denormalise the honeypot onto every analysis, or an
-    # unbounded `NOT IN` of every denied session id -- neither of which this
-    # change is. A session whose events have aged out is omitted too: an id
-    # that cannot be placed on a sensor cannot be shown to a scoped caller.
-    owners = await honeypots_for_sessions([a.session_id for a in analyses])
-    return [
-        analysis
-        for analysis in analyses
-        if owners.get(analysis.session_id) not in deny_honeypots
-        and analysis.session_id in owners
-    ]
+# How many rows a scoped read fetches per round while filling a page.
+_SCOPE_BATCH = 200
+
+
+async def _visible_rows(
+    db, statement, deny_honeypots: set[str], offset: int, limit: int | None
+) -> list[Analysis]:
+    rows: list[Analysis] = []
+    skipped = 0
+    read = 0
+    while limit is None or len(rows) < limit:
+        batch = (
+            (await db.execute(statement.offset(read).limit(_SCOPE_BATCH))).scalars().all()
+        )
+        read += len(batch)
+        owners = await honeypots_for_sessions([a.session_id for a in batch])
+        for row in batch:
+            owner = owners.get(row.session_id)
+            if owner is None or owner in deny_honeypots:
+                continue
+            if skipped < offset:
+                skipped += 1
+            elif limit is None or len(rows) < limit:
+                rows.append(row)
+        if len(batch) < _SCOPE_BATCH:
+            break
+    return rows
 
 
 async def latest_for_session(session_id: str) -> SessionAnalysis | None:

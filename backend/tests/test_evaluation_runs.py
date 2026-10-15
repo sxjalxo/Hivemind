@@ -831,6 +831,7 @@ async def test_a_stale_running_run_is_reconciled_instead_of_locking_the_honeypot
     async with get_session_factory()() as db:
         db.add(
             EvaluationRun(
+                started_by="unrecorded",
                 id=run_id,
                 honeypot_id=honeypot,
                 status="running",
@@ -871,6 +872,7 @@ async def test_a_run_that_could_still_be_in_progress_is_never_reconciled(started
     async with get_session_factory()() as db:
         db.add(
             EvaluationRun(
+                started_by="unrecorded",
                 id=run_id,
                 honeypot_id=honeypot,
                 status="running",
@@ -1148,6 +1150,7 @@ async def test_the_startup_sweep_clears_a_fresh_row_the_in_run_sweep_must_not(st
     async with get_session_factory()() as db:
         db.add(
             EvaluationRun(
+                started_by="unrecorded",
                 id=run_id,
                 honeypot_id=honeypot,
                 status="running",
@@ -1189,6 +1192,7 @@ async def test_the_startup_sweep_does_not_disturb_a_finished_run(started) -> Non
     async with get_session_factory()() as db:
         db.add(
             EvaluationRun(
+                started_by="unrecorded",
                 id=run_id,
                 honeypot_id=honeypot,
                 status="completed",
@@ -1585,15 +1589,13 @@ async def test_an_evaluation_target_defaults_to_the_conservative_kind() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The per-characteristic evaluator status, through the REAL comparison path.
+# Evaluator verdicts through the REAL comparison path (checklist item 20).
 #
-# `lifecycle.state` is unit-tested against hand-built `RunFacts` in
-# test_evaluation_lifecycle.py. That pins the RULE and proves nothing about
-# the WIRING: `comparison._run_facts` is the only production caller that
-# builds the map, and dropping its `evaluator_status_by_characteristic=`
-# keyword leaves every one of those unit tests green. These drive an
-# `evaluator:` key through `compare_runs` -- real runs, real database, real
-# `_run_facts` -- so the connection itself is load bearing.
+# An `evaluator:` key never enters the defect lifecycle -- one verdict per
+# characteristic per run means it always matches itself. The comparison
+# reports the ratings side by side instead, and these drive that through
+# `compare_runs` with real runs and a real database, so a characteristic the
+# evaluator did not assess cannot read as an improvement.
 # ---------------------------------------------------------------------------
 
 _EVAL_CHARACTERISTIC = "basic_commands"
@@ -1633,6 +1635,12 @@ def _agent_covering_two_characteristics():
         )
 
     return _agent
+
+
+def _reassessment(comparison, characteristic):
+    return next(
+        (r for r in comparison.reassessments if r.characteristic == characteristic), None
+    )
 
 
 def _evaluator_outcomes(*, unavailable_for: tuple[str, ...] = ()):
@@ -1688,13 +1696,12 @@ def _evaluating(monkeypatch, *, unavailable_for: tuple[str, ...] = ()) -> None:
 async def test_an_unassessed_characteristic_does_not_compare_as_fixed(
     monkeypatch, started
 ) -> None:
-    """The bug, end to end, through the path production actually uses.
+    """End to end, through the path production actually uses.
 
-    Base rates the characteristic, so `evaluator:basic_commands` is present.
-    Head assesses it not at all while rating `file_system` -- so the run
-    aggregates to `completed`, and reading that aggregate said "the evaluator
-    had nothing to say", turning a characteristic nobody looked at into a
-    repair.
+    Base rates the characteristic. Head assesses it not at all while rating
+    `file_system` -- so the run aggregates to `completed`, the shape that once
+    turned a characteristic nobody looked at into a repair. Now it is no
+    lifecycle entry at all, and its re-assessment says the head did not rate it.
     """
     _evaluating(monkeypatch)
     base = await started()
@@ -1716,11 +1723,15 @@ async def test_an_unassessed_characteristic_does_not_compare_as_fixed(
     )
     assert row.evaluator_status == "unavailable"
 
-    entry = _entry(await runs.compare_runs(base, head), _EVAL_KEY)
+    comparison = await runs.compare_runs(base, head)
+    assert _entry(comparison, _EVAL_KEY) is None
 
-    assert entry is not None
-    assert entry.status == "undetermined"
-    assert entry.is_slot is True
+    reassessed = _reassessment(comparison, _EVAL_CHARACTERISTIC)
+    assert reassessed is not None
+    assert (reassessed.base_rating, reassessed.head_rating) == (0.4, None)
+    assert reassessed.head_status == "unavailable"
+    assert reassessed.base_verdict.finding == f"{_EVAL_CHARACTERISTIC} reads thin"
+    assert reassessed.head_verdict is None
 
 
 @pytest.mark.asyncio
@@ -1730,8 +1741,8 @@ async def test_an_assessed_characteristic_is_still_reported_normally(
     """The precision cuts both ways, or it is a blanket refusal.
 
     Same path, same stubs, with the characteristic actually assessed in both
-    runs. It must still resolve on its own merits rather than being swept into
-    `undetermined` along with the unassessed case.
+    runs. Both ratings and both verdicts must come through, so the two can be
+    compared, rather than being treated like the unassessed case.
     """
     _evaluating(monkeypatch)
     base = await started()
@@ -1743,7 +1754,10 @@ async def test_an_assessed_characteristic_is_still_reported_normally(
     )
     assert row.evaluator_status == "completed"
 
-    entry = _entry(await runs.compare_runs(base, head), _EVAL_KEY)
+    comparison = await runs.compare_runs(base, head)
+    assert _entry(comparison, _EVAL_KEY) is None
 
-    assert entry is not None
-    assert entry.status == "persisting"
+    reassessed = _reassessment(comparison, _EVAL_CHARACTERISTIC)
+    assert (reassessed.base_rating, reassessed.head_rating) == (0.4, 0.4)
+    assert (reassessed.base_status, reassessed.head_status) == ("completed", "completed")
+    assert reassessed.head_verdict.evidence

@@ -1,4 +1,4 @@
-import { API_BASE_URL, endpoints, request, wsProtocols } from "./api";
+import { API_BASE_URL, LIST_PAGE, endpoints, request, wsProtocols } from "./api";
 import type { AnalysisProgressEvent, DashboardData, DataProvider, Unsubscribe } from "./provider";
 import type {
   AttackSession,
@@ -42,7 +42,13 @@ export const FastAPIProvider: DataProvider = {
 
   getSessions: (params) =>
     request<AttackSession[]>(endpoints.sessions, {
-      query: { risk: params?.risk, honeypotId: params?.honeypotId, q: params?.q },
+      query: {
+        risk: params?.risk,
+        honeypotId: params?.honeypotId,
+        q: params?.q,
+        offset: params?.offset,
+        limit: LIST_PAGE,
+      },
     }),
 
   getSession: (id) => request<AttackSession>(endpoints.session(id)),
@@ -99,7 +105,10 @@ export const FastAPIProvider: DataProvider = {
 
   getAnalysis: (id) => request<SessionAnalysis>(endpoints.analysis(id)),
 
-  getAnalysisHistory: () => request<SessionAnalysis[]>(endpoints.analyses),
+  getAnalysisHistory: (params) =>
+    request<SessionAnalysis[]>(endpoints.analyses, {
+      query: { offset: params?.offset, limit: LIST_PAGE },
+    }),
 
   /**
    * Live stage channel for a running analysis.
@@ -147,7 +156,9 @@ export const FastAPIProvider: DataProvider = {
     request<MitreCoverage>(endpoints.mitre, { query: { sessionId: params?.sessionId } }),
 
   getIndicators: (params) =>
-    request<Indicator[]>(endpoints.threatIntel, { query: { type: params?.type, q: params?.q } }),
+    request<Indicator[]>(endpoints.threatIntel, {
+      query: { type: params?.type, q: params?.q, offset: params?.offset, limit: LIST_PAGE },
+    }),
 
   exportIndicators: (format) =>
     request<IocExport>(endpoints.threatIntelExport, { query: { format } }),
@@ -159,7 +170,10 @@ export const FastAPIProvider: DataProvider = {
   getVirusTotalVerdict: (id) =>
     request<VirusTotalVerdict>(`${endpoints.threatIntel}/${encodeURIComponent(id)}/virustotal`),
 
-  getReports: () => request<ThreatReport[]>(endpoints.reports),
+  getReports: (params) =>
+    request<ThreatReport[]>(endpoints.reports, {
+      query: { offset: params?.offset, limit: LIST_PAGE },
+    }),
 
   createReport: (sessionId) =>
     request<ThreatReport>(endpoints.reports, { method: "POST", body: { sessionId } }),

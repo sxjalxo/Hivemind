@@ -9,6 +9,7 @@ import {
   DemoDataBadge,
   EmptyState,
   ErrorState,
+  LoadMore,
   Mono,
   PageHeader,
   Panel,
@@ -26,7 +27,8 @@ import {
 } from "@/components/ui/select";
 import { useAnalysisRun } from "@/hooks/useAnalysisRun";
 import { useAdminForSession } from "@/hooks/useAdminFor";
-import { isDemoMode } from "@/services";
+import { isDemoMode, provider } from "@/services";
+import { usePagedList } from "@/hooks/usePagedList";
 import { formatDateTime } from "@/utils/format";
 import type { AnalysisState, SessionAnalysis } from "@/types";
 import { analysisQueries, sessionQueries } from "@/services/queries";
@@ -43,7 +45,9 @@ const STATUS_TO_CHIP: Record<SessionAnalysis["status"], AnalysisState> = {
 };
 
 function AnalysisPage() {
-  const history = useQuery(analysisQueries.history());
+  const history = usePagedList([...analysisQueries.history().queryKey, "paged"], (offset) =>
+    provider.getAnalysisHistory({ offset }),
+  );
   const sessions = useQuery(sessionQueries.list());
   const navigate = useNavigate();
 
@@ -62,7 +66,9 @@ function AnalysisPage() {
         meta={
           <>
             <span className="label-caps">
-              {history.isPending ? "Loading" : `${history.data?.length ?? 0} runs`}
+              {history.isPending
+                ? "Loading"
+                : `${history.data?.length ?? 0}${history.hasMore ? "+" : ""} runs`}
             </span>
             {isDemoMode ? <DemoDataBadge /> : null}
           </>
@@ -149,14 +155,21 @@ function AnalysisPage() {
             error={history.error}
             onRetry={() => void history.refetch()}
           />
-        ) : history.data.length === 0 ? (
+        ) : !history.data || history.data.length === 0 ? (
           <EmptyState
             icon={Bot}
             title="No analyses have been run yet."
             description="Analyse a session to populate this history."
           />
         ) : (
-          <HistoryTable analyses={history.data} />
+          <>
+            <HistoryTable analyses={history.data} />
+            <LoadMore
+              hasMore={history.hasMore}
+              loading={history.isLoadingMore}
+              onClick={history.loadMore}
+            />
+          </>
         )}
       </Panel>
     </div>

@@ -318,14 +318,6 @@ export interface FindingLifecycle {
    */
   attributable: boolean;
   /**
-   * An evaluator entry is a SLOT, not a flaw. There is one evaluator verdict
-   * per characteristic per run, so its key always matches itself: `persisting`
-   * means the evaluator still had something to say about that characteristic,
-   * NOT that the same flaw is still there -- the critique may describe an
-   * entirely different problem. Label it; do not claim the flaw persists.
-   */
-  isSlot: boolean;
-  /**
    * Which run the text and evidence below were read from. A `fixed` entry has
    * no row in the head run at all, so they come from the base run.
    */
@@ -523,6 +515,23 @@ export interface RunComparison {
    * carries a finding either side can identify.
    */
   findings: FindingLifecycle[];
+  /**
+   * The evaluator's verdict per characteristic, base beside head. Evaluator
+   * verdicts are never lifecycle entries: one per characteristic per run means
+   * the key always matches itself, so there is no "fixed" -- only a rating.
+   */
+  reassessments?: EvaluatorReassessment[] | undefined;
+}
+
+export interface EvaluatorReassessment {
+  characteristic: EvaluationCharacteristic;
+  /** Null: not rated in that run; the status says why. Compare only when both are set. */
+  baseRating: number | null;
+  headRating: number | null;
+  baseStatus: string;
+  headStatus: string;
+  baseVerdict: EvaluationFinding | null;
+  headVerdict: EvaluationFinding | null;
 }
 
 /** Default `limit` for `GET /api/evaluations` when the client sends none. */

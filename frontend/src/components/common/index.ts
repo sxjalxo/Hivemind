@@ -11,6 +11,7 @@ export {
   EmptyState,
   ErrorState,
   InlineNotice,
+  LoadMore,
   TableSkeleton,
   SERVICE_ERRORS,
 } from "./StateViews";

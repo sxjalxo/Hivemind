@@ -3,7 +3,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models.intel import Indicator, IocExport
-from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
+from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_OFFSET, MAX_PAGE_LIMIT
 from app.services import virustotal
 from app.services.intel import get_indicator, list_indicators
 from app.services.ioc_export import build_export
@@ -16,8 +16,9 @@ async def get_indicators(  # noqa: A002
     type: str | None = None,
     q: str | None = None,
     limit: int = Query(DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+    offset: int = Query(0, ge=0, le=MAX_OFFSET),
 ) -> list[Indicator]:
-    return await list_indicators(type_=type, q=q, limit=limit)
+    return await list_indicators(type_=type, q=q, limit=limit, offset=offset)
 
 
 @router.get("/threat-intelligence/export", response_model=IocExport)

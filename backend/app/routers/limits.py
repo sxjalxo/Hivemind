@@ -28,3 +28,10 @@ DEFAULT_PAGE_LIMIT = 100
 
 # What one response may ever carry.
 MAX_PAGE_LIMIT = 500
+
+# How far into a list `offset` may reach (checklist item 18). A list is read
+# newest first and a caller pages by asking for the next `offset` while pages
+# come back full. The bound is Elasticsearch's own default result window, and
+# it caps the cost of a deep page: the session list aggregates `offset + limit`
+# sessions to return `limit` of them.
+MAX_OFFSET = 10_000

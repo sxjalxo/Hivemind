@@ -156,3 +156,6 @@ export const endpoints = {
   evaluationCompare: "/api/evaluations/compare",
   evaluationRemediation: (id: string) => `/api/evaluations/${encodeURIComponent(id)}/remediation`,
 } as const;
+
+/** One page of a bounded list, sent explicitly so the client never relies on the server default. */
+export const LIST_PAGE = 100;

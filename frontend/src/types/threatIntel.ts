@@ -12,11 +12,6 @@ export interface Indicator {
   tags: string[];
 }
 
-export interface ThreatIntelSummary {
-  indicators: Indicator[];
-  countsByType: Record<IndicatorType, number>;
-}
-
 export type IocExportFormat = "stix" | "misp" | "blocklist";
 
 /**

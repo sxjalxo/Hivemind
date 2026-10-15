@@ -29,20 +29,27 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# ponytail: one install layer, so every source edit reinstalls the
-# dependencies too. Splitting them needs a lock file or a duplicated
-# dependency list in this Dockerfile, and a duplicated list drifts from
-# pyproject.toml silently -- which costs more than a slow rebuild. Add a lock
-# file first if image build time starts to matter.
+# Dependencies are installed BEFORE the source is copied, against a stub
+# `app` package, so editing code reuses the cached install layer -- only a
+# change to pyproject.toml re-downloads anything. Until 2026-10-15 the source
+# came first, so every edit re-fetched every package from PyPI, and a slow
+# PyPI then failed the build (twice that week, as a misleading
+# `ResolutionImpossible`). This needs neither a lock file nor a dependency
+# list copied out of pyproject.toml, which would drift from it silently.
 #
-# `-e` matches the documented dev install exactly. pyproject.toml declares no
-# build-system or package discovery, so a non-editable `pip install .` would
-# be relying on setuptools auto-discovery to pick `app` out of a tree that
-# also holds `tests` and `scripts`.
+# It works because the install is editable: `-e` records WHERE `app` lives
+# (/app/app), not its contents, so the real source copied over the stub is
+# what imports. `scripts` is not installed at all; it is imported from the
+# working directory, as on a dev machine (`python -m scripts.preflight`).
+#
+# `-e` also matches the documented dev install exactly. pyproject.toml
+# declares no build-system or package discovery, so a non-editable
+# `pip install .` would be relying on setuptools auto-discovery to pick `app`
+# out of a tree that also holds `tests` and `scripts`.
 COPY pyproject.toml alembic.ini ./
+RUN mkdir app && touch app/__init__.py && pip install --no-cache-dir -e .
 COPY app ./app
 COPY scripts ./scripts
-RUN pip install --no-cache-dir -e .
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

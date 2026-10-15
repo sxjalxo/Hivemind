@@ -31,6 +31,7 @@ import {
 import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import type {
+  EvaluatorReassessment,
   EvaluationCategoryScore,
   FindingLifecycleStatus,
   EvaluationRun,
@@ -276,6 +277,14 @@ function ComparisonView({ comparison }: { comparison: RunComparison }) {
       >
         <FindingLifecycleList comparison={comparison} />
       </Panel>
+
+      <Panel
+        title="Evaluator verdicts"
+        description="The evaluator rates every characteristic it can see, so its verdicts have no 'fixed' — each is shown beside the other run's. Ratings are compared only when both runs have one."
+        bodyClassName="p-0"
+      >
+        <ReassessmentList reassessments={comparison.reassessments ?? []} />
+      </Panel>
     </div>
   );
 }
@@ -310,8 +319,8 @@ function FindingLifecycleList({ comparison }: { comparison: RunComparison }) {
     return (
       <p className="px-4 py-6 text-[13px] text-muted-foreground">
         Neither run reported a finding that can be identified across runs. A run produces findings
-        when a probe, a service or an attack chain comes back not observed — or when the evaluator
-        had something to say.
+        when a probe, a service or an attack chain comes back not observed. The evaluator&apos;s
+        verdicts are compared separately, below.
       </p>
     );
   }
@@ -327,14 +336,6 @@ function FindingLifecycleList({ comparison }: { comparison: RunComparison }) {
             >
               {entry.status}
             </span>
-            {entry.isSlot ? (
-              <span
-                title="The evaluator writes one verdict per characteristic per run, so this key always matches itself. 'Persisting' means the evaluator still had something to say about this characteristic — its critique may describe an entirely different problem."
-                className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
-              >
-                evaluator slot
-              </span>
-            ) : null}
             {!entry.attributable ? (
               <span
                 title="The evaluation configuration changed between these two runs, so this status is not attributable to the honeypot. A probe removed from the probe set makes its finding vanish and look repaired."
@@ -361,6 +362,60 @@ function FindingLifecycleList({ comparison }: { comparison: RunComparison }) {
                 shown from the base run
               </span>
             ) : null}
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const NOT_RATED: Record<string, string> = {
+  unavailable: "not rated: the evaluator was not available",
+  evaluator_failed: "not rated: the evaluator failed",
+  not_scored: "not scored in this run",
+  unrecorded: "not rated (run predates per-characteristic status)",
+};
+
+function ReassessmentList({ reassessments }: { reassessments: EvaluatorReassessment[] }) {
+  if (reassessments.length === 0) {
+    return (
+      <p className="px-4 py-6 text-[13px] text-muted-foreground">
+        The evaluator rated nothing in either run.
+      </p>
+    );
+  }
+  return (
+    <ul className="divide-y divide-border">
+      {reassessments.map((r) => (
+        <li key={r.characteristic} className="px-4 py-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-medium text-foreground/90">
+              {characteristicLabel(r.characteristic)}
+            </span>
+            <ScorePill value={r.baseRating} absent={false} />
+            <span className="text-muted-foreground">→</span>
+            <ScorePill value={r.headRating} absent={false} />
+            {r.baseRating === null || r.headRating === null ? (
+              <span className="italic text-muted-foreground">
+                {NOT_RATED[r.baseRating === null ? r.baseStatus : r.headStatus] ??
+                  "not rated in one run"}{" "}
+                — not comparable
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-1.5 grid gap-2 text-[13px] leading-snug sm:grid-cols-2">
+            {(["base", "head"] as const).map((side) => {
+              const verdict = side === "base" ? r.baseVerdict : r.headVerdict;
+              return (
+                <div key={side}>
+                  <span className="label-caps">{side}</span>
+                  <p className="text-muted-foreground">
+                    {verdict ? verdict.finding : "no verdict"}
+                    {verdict ? ` (${verdict.evidence.length} evidence)` : ""}
+                  </p>
+                </div>
+              );
+            })}
           </div>
         </li>
       ))}

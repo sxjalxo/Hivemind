@@ -179,10 +179,9 @@ class FindingLifecycleOut(CamelModel):
     vanished may mean WE STOPPED ASKING rather than that it was repaired. The
     entry is still reported; it is simply marked.
 
-    `is_slot` marks an evaluator entry. There is one evaluator verdict per
-    characteristic per run, so its key always matches itself: `persisting`
-    means the evaluator still had something to say about that characteristic,
-    NOT that the same flaw is still there. Clients must render it as a slot.
+    Evaluator verdicts are never entries here: one verdict per characteristic
+    per run means the key always matches itself, so it could only ever read
+    `persisting`. They are compared as ratings in `RunComparison.reassessments`.
 
     `from_run_id` says which run the text and evidence were read from. For
     `fixed` there is no row in head at all, so they come from base.
@@ -191,7 +190,6 @@ class FindingLifecycleOut(CamelModel):
     key: str
     status: str
     attributable: bool
-    is_slot: bool
     from_run_id: str
     characteristic: str | None = None
     severity: str | None = None
@@ -199,6 +197,25 @@ class FindingLifecycleOut(CamelModel):
     finding: str | None = None
     recommendation: str | None = None
     evidence: list[EvidenceOut] = []
+
+
+class EvaluatorReassessmentOut(CamelModel):
+    """The evaluator's verdict on one characteristic, base beside head.
+
+    A rating, not a defect: the evaluator rates every characteristic it can
+    see, so there is no "fixed" -- only a rating that moved, or did not.
+    `None` is "not rated in that run", and `*_status` says why (the
+    per-characteristic evaluator status, or `not_scored` for no row at all).
+    Clients compare ratings only when both are present.
+    """
+
+    characteristic: str
+    base_rating: float | None = None
+    head_rating: float | None = None
+    base_status: str
+    head_status: str
+    base_verdict: FindingOut | None = None
+    head_verdict: FindingOut | None = None
 
 
 class ChainStepOut(CamelModel):
@@ -357,3 +374,5 @@ class RunComparison(CamelModel):
     # regressed, new, persisting, undetermined, fixed. Empty when neither run
     # has a finding either side can identify.
     findings: list[FindingLifecycleOut] = []
+    # One per characteristic the evaluator rated in either run.
+    reassessments: list[EvaluatorReassessmentOut] = []

@@ -21,6 +21,7 @@ from app.db.models import EvaluationRun
 from app.db.session import get_session_factory
 from app.models.evaluation import (
     EvaluationRunOut,
+    EvaluatorReassessmentOut,
     FindingLifecycleOut,
     RunComparison,
 )
@@ -61,13 +62,51 @@ def _run_facts(run: EvaluationRunOut) -> lifecycle.RunFacts:
     return lifecycle.RunFacts(
         run_id=run.id,
         status=run.status,
-        evaluator_status=run.evaluator_status,
         finding_keys=frozenset(f.finding_key for f in run.findings),
         fact_status_by_key=by_key,
-        evaluator_status_by_characteristic={
-            score.characteristic: score.evaluator_status for score in run.category_scores
-        },
     )
+
+
+def _reassessments(
+    base: EvaluationRunOut, head: EvaluationRunOut
+) -> list[EvaluatorReassessmentOut]:
+    """The evaluator's verdict on each characteristic, base beside head.
+
+    Not a defect lifecycle -- see `lifecycle`'s module note. A rating is
+    compared only when BOTH runs have one: a characteristic one run did not
+    assess has no rating there, and reading that as a change would be the
+    "absence is not evidence" error in a new place. Its own status says why.
+    """
+    scores = {
+        run.id: {s.characteristic: s for s in run.category_scores} for run in (base, head)
+    }
+    verdicts = {
+        run.id: {f.characteristic: f for f in run.findings if f.source == "evaluator"}
+        for run in (base, head)
+    }
+    characteristics = {
+        c
+        for run in (base, head)
+        for c, s in scores[run.id].items()
+        if s.evaluator_rating is not None or c in verdicts[run.id]
+    }
+
+    out: list[EvaluatorReassessmentOut] = []
+    for characteristic in sorted(characteristics):
+        before = scores[base.id].get(characteristic)
+        after = scores[head.id].get(characteristic)
+        out.append(
+            EvaluatorReassessmentOut(
+                characteristic=characteristic,
+                base_rating=before.evaluator_rating if before else None,
+                head_rating=after.evaluator_rating if after else None,
+                base_status=before.evaluator_status if before else "not_scored",
+                head_status=after.evaluator_status if after else "not_scored",
+                base_verdict=verdicts[base.id].get(characteristic),
+                head_verdict=verdicts[head.id].get(characteristic),
+            )
+        )
+    return out
 
 
 def _parsed_timestamp(value: str) -> datetime:
@@ -146,7 +185,6 @@ def _lifecycle_entries(
                 key=entry.key,
                 status=entry.status,
                 attributable=attributable,
-                is_slot=entry.is_slot,
                 from_run_id=entry.from_run,
                 characteristic=source_row.characteristic if source_row else None,
                 severity=source_row.severity if source_row else None,
@@ -219,4 +257,5 @@ async def compare_runs(base_id: uuid.UUID, head_id: uuid.UUID) -> RunComparison:
         differences=differences,
         deltas=deltas,
         findings=_lifecycle_entries(base, head, history, attributable),
+        reassessments=_reassessments(base, head),
     )

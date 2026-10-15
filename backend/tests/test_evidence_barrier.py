@@ -30,6 +30,7 @@ TIMESTAMPS = {"e-wget": NOW, "e-uname": NOW}
 
 def _analysis(session_id: str = "seed-botnet-01") -> Analysis:
     return Analysis(
+        started_by="unrecorded",
         id=uuid.uuid4(),
         session_id=session_id,
         model="llama3.1:8b",

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import assert_can_read, denied_honeypots, denies_everything, require_user
 from app.models.analysis import SessionAnalysis
-from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
+from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_OFFSET, MAX_PAGE_LIMIT
 from app.services.analyzer import load_analysis, load_history
 from app.services.session_builder import honeypots_for_sessions
 
@@ -14,11 +14,14 @@ router = APIRouter()
 @router.get("/analysis", response_model=list[SessionAnalysis])
 async def get_analysis_history(
     limit: int = Query(DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+    offset: int = Query(0, ge=0, le=MAX_OFFSET),
     claims: dict | None = Depends(require_user),
 ) -> list[SessionAnalysis]:
     if denies_everything(claims):
         return []
-    return await load_history(limit=limit, deny_honeypots=denied_honeypots(claims))
+    return await load_history(
+        limit=limit, offset=offset, deny_honeypots=denied_honeypots(claims)
+    )
 
 
 @router.get("/analysis/{analysis_id}", response_model=SessionAnalysis)

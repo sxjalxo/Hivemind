@@ -19,7 +19,7 @@ from app.models.session import (
     SessionTimelineEvent,
     SessionTwins,
 )
-from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT
+from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_OFFSET, MAX_PAGE_LIMIT
 from app.services import annotations, campaigns, replay, session_builder
 
 router = APIRouter()
@@ -37,6 +37,7 @@ async def get_sessions(
     honeypotId: str | None = None,  # noqa: N803 - query param is camelCase
     q: str | None = None,
     limit: int = Query(DEFAULT_PAGE_LIMIT, ge=1, le=MAX_PAGE_LIMIT),
+    offset: int = Query(0, ge=0, le=MAX_OFFSET),
     claims: dict | None = Depends(require_user),
 ) -> list[AttackSession]:
     if denies_everything(claims):
@@ -46,6 +47,7 @@ async def get_sessions(
         honeypot_id=honeypotId,
         q=q,
         limit=limit,
+        offset=offset,
         deny_honeypots=denied_honeypots(claims),
     )
 

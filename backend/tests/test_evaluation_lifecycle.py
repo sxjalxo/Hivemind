@@ -21,22 +21,12 @@ UNKNOWN = "unknown"
 KEY = "probe:os_release:os.identity"
 
 
-def _facts(
-    *,
-    run_id="r",
-    status="completed",
-    evaluator_status="unavailable",
-    findings=(),
-    facts=None,
-    evaluator_by_characteristic=None,
-):
+def _facts(*, run_id="r", status="completed", findings=(), facts=None):
     return lifecycle.RunFacts(
         run_id=run_id,
         status=status,
-        evaluator_status=evaluator_status,
         finding_keys=frozenset(findings),
         fact_status_by_key=dict(facts or {}),
-        evaluator_status_by_characteristic=dict(evaluator_by_characteristic or {}),
     )
 
 
@@ -159,45 +149,19 @@ def test_an_undetermined_historical_run_does_not_make_a_defect_regressed() -> No
 EVAL_KEY = "evaluator:file_system"
 
 
-def test_an_evaluator_finding_vanishing_with_no_key_is_undetermined() -> None:
-    """The case that would otherwise fabricate six fixes at once.
+@pytest.mark.parametrize(
+    ("base_findings", "head_findings"),
+    [([EVAL_KEY], [EVAL_KEY]), ([EVAL_KEY], []), ([], [EVAL_KEY])],
+)
+def test_an_evaluator_key_never_enters_the_lifecycle(base_findings, head_findings) -> None:
+    """One verdict per characteristic per run, including for a characteristic
+    rated realistic, so the key always matches itself: it could only ever say
+    `persisting`, and its disappearance means the evaluator did not run, never
+    that something was fixed. Ratings are compared in `comparison` instead."""
+    base = _facts(run_id="b", findings=[*base_findings, KEY], facts={KEY: NOT_OBSERVED})
+    head = _facts(run_id="h", findings=[*head_findings, KEY], facts={KEY: NOT_OBSERVED})
 
-    Running one evaluation with a BYOK key and the next without is routine --
-    the key is optional. Without this rule every evaluator finding from the
-    first run reports as fixed, produced by nothing but an absent API key.
-    """
-    base = _facts(run_id="b", evaluator_status="completed", findings=[EVAL_KEY])
-    head = _facts(run_id="h", evaluator_status="unavailable")
-
-    assert lifecycle.resolve(base, head, history=[])[0].status == "undetermined"
-
-
-def test_an_evaluator_finding_gone_while_the_evaluator_ran_is_fixed() -> None:
-    base = _facts(run_id="b", evaluator_status="completed", findings=[EVAL_KEY])
-    head = _facts(run_id="h", evaluator_status="completed")
-
-    assert lifecycle.resolve(base, head, history=[])[0].status == "fixed"
-
-
-def test_an_evaluator_entry_is_flagged_as_a_slot() -> None:
-    """One verdict per characteristic per run means the key always matches
-    itself. "Still present" says the evaluator had something to say, not that
-    the same flaw persists -- the prose may describe a different problem
-    entirely, and the UI must not claim otherwise."""
-    base = _facts(run_id="b", evaluator_status="completed", findings=[EVAL_KEY])
-    head = _facts(run_id="h", evaluator_status="completed", findings=[EVAL_KEY])
-
-    entry = lifecycle.resolve(base, head, history=[])[0]
-
-    assert entry.status == "persisting"
-    assert entry.is_slot is True
-
-
-def test_a_deterministic_entry_is_not_a_slot() -> None:
-    base = _facts(run_id="b", findings=[KEY], facts={KEY: NOT_OBSERVED})
-    head = _facts(run_id="h", findings=[KEY], facts={KEY: NOT_OBSERVED})
-
-    assert lifecycle.resolve(base, head, history=[])[0].is_slot is False
+    assert [e.key for e in lifecycle.resolve(base, head, history=[])] == [KEY]
 
 
 # --- ordering --------------------------------------------------------------
@@ -246,99 +210,9 @@ def test_entries_come_back_worst_news_first() -> None:
     ]
 
 
-@pytest.mark.parametrize("bad", ["", "nocolon", ":leading"])
+@pytest.mark.parametrize("bad", ["", "nocolon", ":leading", "evaluator:"])
 def test_a_malformed_key_is_not_treated_as_an_evaluator_slot(bad) -> None:
     base = _facts(run_id="b", findings=[bad])
     head = _facts(run_id="h", findings=[bad])
 
-    entry = lifecycle.resolve(base, head, history=[])[0]
-
-    assert entry.is_slot is False
-
-
-# --- the per-characteristic evaluator status, and the hole it closes -------
-
-MIXED_KEY = "evaluator:attack_possibilities"
-
-
-def test_a_mixed_run_does_not_report_an_unassessed_characteristic_as_fixed() -> None:
-    """The hole this column was added to close.
-
-    `_aggregate_evaluator_status` is `any FAILED -> FAILED; else any
-    COMPLETED -> COMPLETED`. So a run where one characteristic got a verdict
-    and another gathered no evidence aggregates to COMPLETED. Resolving the
-    unassessed one against that aggregate says `absent` -- "the evaluator had
-    nothing to say" -- and base=present + head=absent resolves to `fixed`.
-
-    Nothing was fixed. The characteristic was never looked at.
-    """
-    head = _facts(
-        run_id="head",
-        evaluator_status="completed",  # the lossy aggregate
-        evaluator_by_characteristic={
-            "os_identity": "completed",
-            "attack_possibilities": "unavailable",  # the truth for this one
-        },
-    )
-    assert lifecycle.state(head, MIXED_KEY) == "undetermined"
-
-
-def test_a_mixed_run_still_reports_an_assessed_characteristic_as_absent() -> None:
-    """The precision must cut both ways, or it is just a blanket refusal."""
-    head = _facts(
-        run_id="head",
-        evaluator_status="completed",
-        evaluator_by_characteristic={
-            "os_identity": "completed",
-            "attack_possibilities": "completed",
-        },
-    )
-    assert lifecycle.state(head, MIXED_KEY) == "absent"
-
-
-def test_an_unrecorded_characteristic_falls_back_to_the_run_level_rule() -> None:
-    """Rows predating the column keep today's behaviour, no worse and no better."""
-    head = _facts(
-        run_id="head",
-        evaluator_status="completed",
-        evaluator_by_characteristic={"attack_possibilities": "unrecorded"},
-    )
-    assert lifecycle.state(head, MIXED_KEY) == "absent"
-
-    silent = _facts(
-        run_id="head",
-        evaluator_status="evaluator_failed",
-        evaluator_by_characteristic={"attack_possibilities": "unrecorded"},
-    )
-    assert lifecycle.state(silent, MIXED_KEY) == "undetermined"
-
-
-def test_a_characteristic_with_no_row_at_all_is_undetermined() -> None:
-    """Never scored and never rated is never established.
-
-    `scoring` omits `attack_possibilities` entirely when no chain ran, so a
-    run against a target that refuses every destructive chain writes NO
-    category row for it -- not a row saying `unavailable`, no row. Falling
-    through to the aggregate resolves that `absent`, and `absent` is the one
-    value that becomes `fixed`. Same bug, narrower shape.
-    """
-    head = _facts(
-        run_id="head",
-        evaluator_status="completed",
-        evaluator_by_characteristic={"os_identity": "completed"},
-    )
-    assert lifecycle.state(head, MIXED_KEY) == "undetermined"
-
-
-def test_an_empty_map_still_falls_back_to_the_run_level_rule() -> None:
-    """No per-characteristic data at all is a different claim from a gap.
-
-    An empty map means the run has no category rows, or predates the column.
-    That is exactly the case the fallback exists for -- treating it as "never
-    established" would turn every historic `fixed` into `undetermined`.
-    """
-    head = _facts(run_id="head", evaluator_status="completed")
-    assert lifecycle.state(head, MIXED_KEY) == "absent"
-
-    silent = _facts(run_id="head", evaluator_status="unavailable")
-    assert lifecycle.state(silent, MIXED_KEY) == "undetermined"
+    assert [e.key for e in lifecycle.resolve(base, head, history=[])] == [bad]

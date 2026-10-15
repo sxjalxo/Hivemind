@@ -3,8 +3,16 @@ from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
-from app.db.models import Analysis, EvidenceRef, ParentType, TechniqueMapping
+from app.db.models import (
+    Analysis,
+    EvaluationCategoryScore,
+    EvaluationRun,
+    EvidenceRef,
+    ParentType,
+    TechniqueMapping,
+)
 from app.db.session import get_session_factory
 
 
@@ -26,6 +34,7 @@ async def test_analysis_with_grounded_technique_round_trips() -> None:
     async with factory() as db:
         db.add(
             Analysis(
+                started_by="unrecorded",
                 id=analysis_id,
                 session_id="seed-botnet-01",
                 model="llama3.1:8b",
@@ -94,3 +103,62 @@ async def test_analysis_with_grounded_technique_round_trips() -> None:
         if analysis:
             await db.delete(analysis)
         await db.commit()
+
+
+# Checklist item 21: these three columns record who ran something and why a
+# rating is what it is. None has a default, in the database or in Python, so a
+# write that forgets one must fail -- not quietly file itself as `unrecorded`,
+# which reads as a recorded fact. Nothing here is committed.
+
+
+def _analysis_without_actor() -> Analysis:
+    return Analysis(
+        id=uuid.uuid4(),
+        session_id="test-no-default",
+        model="m",
+        analysis_type="session_behavior",
+        status="completed",
+        created_at=datetime.now(timezone.utc),
+        duration_seconds=1,
+        classification="c",
+        confidence=0.5,
+        risk_score=1,
+        risk="low",
+        behavior_summary="b",
+        model_tier="local",
+        prompt_version="v1",
+    )
+
+
+def _run(**extra) -> EvaluationRun:
+    return EvaluationRun(
+        id=uuid.uuid4(),
+        honeypot_id="test-no-default",
+        status="completed",
+        started_at=datetime.now(timezone.utc),
+        agent_model="m",
+        evaluator_status="unavailable",
+        honeypot_fingerprint="sha256:a",
+        evaluation_config_fingerprint="sha256:b",
+        **extra,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("which", ["analysis", "run", "category_score"])
+async def test_a_write_that_forgets_who_or_why_fails_instead_of_defaulting(which) -> None:
+    async with get_session_factory()() as db:
+        try:
+            if which == "analysis":
+                db.add(_analysis_without_actor())
+            elif which == "run":
+                db.add(_run())
+            else:
+                run = _run(started_by="unrecorded")
+                db.add(run)
+                await db.flush()
+                db.add(EvaluationCategoryScore(run_id=run.id, characteristic="file_system"))
+            with pytest.raises(IntegrityError):
+                await db.flush()
+        finally:
+            await db.rollback()

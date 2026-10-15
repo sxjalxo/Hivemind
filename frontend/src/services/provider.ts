@@ -56,6 +56,7 @@ export interface DataProvider {
     risk?: string;
     honeypotId?: string;
     q?: string;
+    offset?: number;
   }): Promise<AttackSession[]>;
   getSession(id: string): Promise<AttackSession>;
   getCampaigns(): Promise<CampaignList>;
@@ -84,7 +85,7 @@ export interface DataProvider {
 
   analyzeSession(sessionId: string, signal?: AbortSignal): Promise<SessionAnalysis>;
   getAnalysis(id: string): Promise<SessionAnalysis>;
-  getAnalysisHistory(): Promise<SessionAnalysis[]>;
+  getAnalysisHistory(params?: { offset?: number }): Promise<SessionAnalysis[]>;
 
   /**
    * Optional live progress channel for a running analysis.
@@ -115,7 +116,7 @@ export interface DataProvider {
 
   getMitreCoverage(params?: { sessionId?: string }): Promise<MitreCoverage>;
 
-  getIndicators(params?: { type?: string; q?: string }): Promise<Indicator[]>;
+  getIndicators(params?: { type?: string; q?: string; offset?: number }): Promise<Indicator[]>;
 
   /**
    * Optional: indicators as STIX 2.1, a MISP event or an IP blocklist. Absent
@@ -128,7 +129,7 @@ export interface DataProvider {
   /** By indicator id: only indicators this system extracted can be looked up. */
   getVirusTotalVerdict(indicatorId: string): Promise<VirusTotalVerdict>;
 
-  getReports(): Promise<ThreatReport[]>;
+  getReports(params?: { offset?: number }): Promise<ThreatReport[]>;
   createReport(sessionId: string): Promise<ThreatReport>;
 
   /**

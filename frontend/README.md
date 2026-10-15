@@ -145,6 +145,10 @@ WS     /api/analyze/{session_id}/progress
 WS     /api/evaluations/{run_id}/progress
 ```
 
+The session, analysis, indicator and report lists take `limit` (≤ 500) and `offset`
+(≤ 10,000). `usePagedList` (`src/hooks/`) reads them a page at a time and stops at the
+first short page; every page is full until the last, which is what makes that safe.
+
 Log Explorer filters map onto ECS field names (`source.ip`, `event.action`,
 `process.command_line`, `session.id`, `risk.score`, `mitre.technique`, …) so they
 translate directly into Elasticsearch queries on the backend.
@@ -166,9 +170,10 @@ soften:
 - **`undetermined` is never rendered as `fixed`.** A finding is absent from a run either
   because the fact came back `observed` or because it was never established, and the
   second is not good news. It is its own row, with a tooltip saying which happened.
-- **`isSlot` marks an evaluator entry.** There is one evaluator verdict per characteristic
-  per run, so its key always matches itself — `persisting` means the evaluator still had
-  something to say about that characteristic, not that the same flaw is still there.
+- **Evaluator verdicts are not in `findings`.** There is one per characteristic per run,
+  including for a characteristic rated realistic, so the key always matches itself and
+  could never read `fixed`. `RunComparison.reassessments` puts each characteristic's
+  rating and critique beside the other run's; compare ratings only when both are set.
 - **`attributable: false` means the evaluation configuration moved**, so a defect that
   vanished may mean we stopped asking. Render the status, never as a bare claim about the
   honeypot.

@@ -20,6 +20,7 @@ NOW = datetime.now(UTC)
 
 def _analysis(session_id: str, risk: str, created: datetime, classification: str) -> Analysis:
     return Analysis(
+        started_by="unrecorded",
         id=uuid.uuid4(),
         session_id=session_id,
         model="test-fixture",

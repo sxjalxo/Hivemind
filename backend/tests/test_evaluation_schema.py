@@ -22,6 +22,7 @@ async def test_a_run_round_trips_with_both_fingerprints() -> None:
     async with get_session_factory()() as db:
         db.add(
             EvaluationRun(
+                started_by="unrecorded",
                 id=run_id,
                 honeypot_id="cowrie-01",
                 status=RunStatus.COMPLETED,
@@ -76,6 +77,7 @@ async def test_two_findings_cannot_share_a_key_within_one_run() -> None:
     async with get_session_factory()() as db:
         db.add(
             EvaluationRun(
+                started_by="unrecorded",
                 id=run_id,
                 honeypot_id="cowrie-key-test",
                 status=RunStatus.COMPLETED,
@@ -154,6 +156,7 @@ async def test_the_same_key_in_two_different_runs_is_allowed() -> None:
         for run_id in run_ids:
             db.add(
                 EvaluationRun(
+                    started_by="unrecorded",
                     id=run_id,
                     honeypot_id="cowrie-key-test",
                     status=RunStatus.COMPLETED,

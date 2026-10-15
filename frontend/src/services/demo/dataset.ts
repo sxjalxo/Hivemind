@@ -10,6 +10,7 @@ import type {
   AttackerProfile,
   EvaluationRemediation,
   EvaluationRun,
+  EvaluatorReassessment,
   EvaluationRunSummary,
   FindingLifecycle,
   FindingLifecycleStatus,
@@ -1658,7 +1659,31 @@ export function compareEvaluationRuns(base: EvaluationRun, head: EvaluationRun):
     differences,
     deltas,
     findings: compareFindings(base, head, differences),
+    reassessments: compareVerdicts(base, head),
   };
+}
+
+/** Mirrors the backend's `_reassessments`: ratings side by side, never a lifecycle. */
+function compareVerdicts(base: EvaluationRun, head: EvaluationRun): EvaluatorReassessment[] {
+  const verdict = (run: EvaluationRun, c: string) =>
+    run.findings.find((f) => f.source === "evaluator" && f.characteristic === c) ?? null;
+  const rated = (run: EvaluationRun) =>
+    run.categoryScores
+      .filter((s) => s.evaluatorRating !== null || verdict(run, s.characteristic))
+      .map((s) => s.characteristic);
+  return [...new Set([...rated(base), ...rated(head)])].sort().map((characteristic) => {
+    const before = base.categoryScores.find((s) => s.characteristic === characteristic);
+    const after = head.categoryScores.find((s) => s.characteristic === characteristic);
+    return {
+      characteristic,
+      baseRating: before?.evaluatorRating ?? null,
+      headRating: after?.evaluatorRating ?? null,
+      baseStatus: before?.evaluatorStatus ?? "not_scored",
+      headStatus: after?.evaluatorStatus ?? "not_scored",
+      baseVerdict: verdict(base, characteristic),
+      headVerdict: verdict(head, characteristic),
+    };
+  });
 }
 
 /**
@@ -1686,9 +1711,10 @@ function compareFindings(
 
   const entries: FindingLifecycle[] = [];
   for (const key of new Set([...baseRows.keys(), ...headRows.keys()])) {
+    // Evaluator verdicts are compared as ratings (`compareVerdicts`), never here.
+    if (key.startsWith("evaluator:")) continue;
     const headRow = headRows.get(key);
     const baseRow = baseRows.get(key);
-    const isSlot = key.startsWith("evaluator:");
 
     let status: FindingLifecycleStatus;
     if (headRow) {
@@ -1706,7 +1732,6 @@ function compareFindings(
       key,
       status,
       attributable,
-      isSlot,
       fromRunId: headRow ? head.id : base.id,
       characteristic: row.characteristic,
       severity: row.severity,

@@ -8,6 +8,7 @@ import {
   DemoDataBadge,
   EmptyState,
   ErrorState,
+  LoadMore,
   LoadingState,
   Mono,
   PageHeader,
@@ -25,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import { useAdminForSession } from "@/hooks/useAdminFor";
 import { provider, isDemoMode } from "@/services";
+import { usePagedList } from "@/hooks/usePagedList";
 import { formatDateTime } from "@/utils/format";
 import { copyToClipboard } from "@/utils/format";
 import { reportToMarkdown } from "@/utils/reportExport";
@@ -49,7 +51,9 @@ function ReportsPage() {
   const navigate = useNavigate({ from: "/reports" });
   const queryClient = useQueryClient();
 
-  const reports = useQuery(reportsQuery());
+  const reports = usePagedList([...reportsQuery().queryKey, "paged"], (offset) =>
+    provider.getReports({ offset }),
+  );
   const sessions = useQuery(sessionQueries.list());
   const [generated, setGenerated] = useState<ThreatReport | null>(null);
   const [target, setTarget] = useState(search.session ?? "");
@@ -87,7 +91,9 @@ function ReportsPage() {
         meta={
           <>
             <span className="label-caps">
-              {reports.isPending ? "Loading" : `${reports.data?.length ?? 0} reports`}
+              {reports.isPending
+                ? "Loading"
+                : `${reports.data?.length ?? 0}${reports.hasMore ? "+" : ""} reports`}
             </span>
             {isDemoMode ? <DemoDataBadge /> : null}
           </>
@@ -137,7 +143,7 @@ function ReportsPage() {
               description={SERVICE_ERRORS.api.description}
               onRetry={() => void reports.refetch()}
             />
-          ) : reports.data.length === 0 && !generated ? (
+          ) : (reports.data?.length ?? 0) === 0 && !generated ? (
             <EmptyState icon={FileText} title="No reports yet." description="Generate one above." />
           ) : (
             <ul className="space-y-1">
@@ -173,6 +179,11 @@ function ReportsPage() {
                 ))}
             </ul>
           )}
+          <LoadMore
+            hasMore={reports.hasMore}
+            loading={reports.isLoadingMore}
+            onClick={reports.loadMore}
+          />
         </Panel>
 
         <Panel

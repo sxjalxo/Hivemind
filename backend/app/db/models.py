@@ -47,7 +47,8 @@ class Analysis(SQLModel, table=True):
     # or `unrecorded` for rows predating the column. An analysis costs a full
     # LLM pipeline on the one GPU and writes claims that the UI presents as
     # findings, so "who asked for this" is worth being able to answer.
-    started_by: str = Field(default="unrecorded", index=True)
+    # No default, here or in the database: see `EvaluationRun.started_by`.
+    started_by: str = Field(index=True)
     started_by_label: str | None = None
 
 
@@ -234,8 +235,12 @@ class EvaluationRun(SQLModel, table=True):
     # action. The `unrecorded` spelling follows the `legacy:` convention
     # `finding_key` already uses for rows that predate a feature.
     #
-    # NOT NULL, so a row cannot exist without SOME answer.
-    started_by: str = Field(default="unrecorded", index=True)
+    # NOT NULL with no default, in the database AND here, so a write that
+    # forgets to say who ran it fails at INSERT instead of quietly filing
+    # itself as `unrecorded` -- a gap in the record dressed as a recorded fact.
+    # (Until 2026-10-15 the Python side defaulted it, which covered the raw
+    # SQL path only; checklist item 21.)
+    started_by: str = Field(index=True)
     # The actor's email as the token asserted it AT THE TIME, for a human
     # reading the history. Deliberately a separate column from `started_by`:
     # an email can be changed or reassigned, a Clerk user id cannot, so the
@@ -310,19 +315,10 @@ class EvaluationCategoryScore(SQLModel, table=True):
     # `EvaluatorOutcome.status`, and the evaluator can never return it. Same
     # reasoning, and same spelling, as `EvaluationRun.started_by`.
     #
-    # No `server_default` in the migration, so raw SQL that forgets this
-    # column fails loudly rather than silently filing itself as `unrecorded`.
-    #
-    # That guard covers the SQL path ONLY. The Python default below means an
-    # ORM-constructed row that omits the keyword gets `unrecorded` silently --
-    # a gap in the record dressed as a recorded fact, which is the one thing
-    # this column exists to prevent. Both `_persist` write sites pass an
-    # explicit value (see `runs._resolved_evaluator_outcome`), so the hole is
-    # unreachable today; it is documented rather than closed because dropping
-    # the default would diverge from `EvaluationRun.started_by`, which is the
-    # same pattern with the same latent weakness. Close both together or
-    # neither.
-    evaluator_status: str = Field(default="unrecorded", index=True)
+    # No default in the migration or here, so a write that forgets this
+    # column fails at INSERT rather than silently filing itself as
+    # `unrecorded` -- same as `EvaluationRun.started_by` (checklist item 21).
+    evaluator_status: str = Field(index=True)
     # Free text, bounded on write, never parsed. NULL means "no reason was
     # recorded", which is not the same as "there was no reason".
     evaluator_detail: str | None = None

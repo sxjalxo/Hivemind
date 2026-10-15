@@ -40,9 +40,6 @@ export const NO_COMPOSITE_NOTE =
 /** Rendered wherever a null score would otherwise be mistaken for a zero. */
 export const NOT_ESTABLISHED = "not established";
 
-/** Rendered where a characteristic is absent from a run's categoryScores. */
-export const NOT_MEASURED = "not measured";
-
 export const EVALUATION_STAGE_LABELS: Record<EvaluationStage, string> = {
   starting_capture: "Starting packet capture",
   scanning_services: "Scanning services",
@@ -165,12 +162,6 @@ export const SEVERITY_AS_RISK: Record<EvaluationFindingSeverity, RiskLevel> = {
   medium: "medium",
   low: "low",
 };
-
-/** A 0-1 score as a percentage string, or null when nothing was established. */
-export function formatScorePct(score: number | null): string | null {
-  if (score === null) return null;
-  return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`;
-}
 
 /**
  * A delta of two 0-1 scores, expressed in percentage points so it is never

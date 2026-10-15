@@ -16,6 +16,7 @@ from app.db.session import get_session_factory
 
 async def _make_run(db) -> uuid.UUID:
     run = EvaluationRun(
+        started_by="unrecorded",
         honeypot_id="cowrie-01",
         status="completed",
         started_at=datetime.now(UTC),

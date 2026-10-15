@@ -119,6 +119,7 @@ async def created():
         async with get_session_factory()() as db:
             db.add(
                 EvaluationRun(
+                    started_by="unrecorded",
                     id=run_id,
                     honeypot_id=honeypot_id,
                     status=status,
@@ -137,6 +138,7 @@ async def created():
             await db.flush()
             db.add(
                 EvaluationCategoryScore(
+                    evaluator_status="unrecorded",
                     run_id=run_id,
                     characteristic="filesystem_realism",
                     deterministic_score=0.5,

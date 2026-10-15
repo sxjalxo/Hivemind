@@ -1,11 +1,11 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.auth import denied_honeypots, denies_everything, require_user
 from app.es.queries import log_facets, search_logs
 from app.models.event import HoneypotEvent, LogFacets, LogQuery, Paginated
-from app.routers.limits import MAX_PAGE_LIMIT
+from app.routers.limits import MAX_OFFSET, MAX_PAGE_LIMIT
 
 router = APIRouter()
 
@@ -50,6 +50,15 @@ async def get_logs(
     unreliable introspection entirely, so every parameter name that appears
     in `/openapi.json` matches what the frontend actually sends.
     """
+    # Elasticsearch reads no further than `from + size` = 10,000 into a result
+    # set and answers a deeper page with an error, which surfaced as a bare
+    # 500. Refused here instead, naming the bound, like every other over-large
+    # ask; narrow the time range or filters to reach older events.
+    if page * page_size > MAX_OFFSET:
+        raise HTTPException(
+            status_code=422,
+            detail=f"page * pageSize may not exceed {MAX_OFFSET}; narrow the filters instead",
+        )
     query = LogQuery(
         q=q,
         honeypot_id=honeypot_id,

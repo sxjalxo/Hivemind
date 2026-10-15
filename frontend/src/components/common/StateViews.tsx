@@ -161,3 +161,24 @@ export function TableSkeleton({ rows = 6, cols = 5 }: { rows?: number; cols?: nu
     </div>
   );
 }
+
+/** The next page of a bounded list; renders nothing once the list is complete. */
+export function LoadMore({
+  hasMore,
+  loading,
+  onClick,
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  if (!hasMore) return null;
+  return (
+    <div className="flex justify-center pt-3">
+      <Button variant="outline" size="sm" disabled={loading} onClick={onClick}>
+        {loading ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
+        {loading ? "Loading" : "Load more"}
+      </Button>
+    </div>
+  );
+}
