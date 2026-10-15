@@ -213,3 +213,20 @@ async def test_a_public_address_is_placed_in_a_country() -> None:
     src = await _simulate({**COWRIE_COMMAND_EVENT, "src_ip": "8.8.8.8"})
 
     assert src["source"]["country"] == "US"
+
+
+@pytest.mark.asyncio
+async def test_a_telnet_event_keeps_its_protocol() -> None:
+    """Cowrie stamps every event with `protocol`. It used to be removed as
+    noise, so the `ssh` default below it labelled every telnet session ssh."""
+    telnet = await _simulate({**COWRIE_COMMAND_EVENT, "protocol": "telnet", "dst_port": 2223})
+    assert telnet["network"]["protocol"] == "telnet"
+    assert "protocol" not in telnet
+
+    nested = await _simulate({"cowrie": {**COWRIE_COMMAND_EVENT, "protocol": "telnet"}})
+    assert nested["network"]["protocol"] == "telnet"
+
+
+@pytest.mark.asyncio
+async def test_an_event_without_a_protocol_still_defaults_to_ssh() -> None:
+    assert (await _simulate(COWRIE_COMMAND_EVENT))["network"]["protocol"] == "ssh"

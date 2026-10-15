@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.models.intel import Indicator, IocExport
 from app.routers.limits import DEFAULT_PAGE_LIMIT, MAX_OFFSET, MAX_PAGE_LIMIT
 from app.services import virustotal
-from app.services.intel import get_indicator, list_indicators
+from app.services.intel import get_indicator, indicator_counts, list_indicators
 from app.services.ioc_export import build_export
 
 router = APIRouter()
@@ -19,6 +19,13 @@ async def get_indicators(  # noqa: A002
     offset: int = Query(0, ge=0, le=MAX_OFFSET),
 ) -> list[Indicator]:
     return await list_indicators(type_=type, q=q, limit=limit, offset=offset)
+
+
+@router.get("/threat-intelligence/counts", response_model=dict[str, int])
+async def get_indicator_counts() -> dict[str, int]:
+    # Unscoped and unpaged, like the list it summarises: the type rail must
+    # count every indicator, not the page on screen.
+    return await indicator_counts()
 
 
 @router.get("/threat-intelligence/export", response_model=IocExport)

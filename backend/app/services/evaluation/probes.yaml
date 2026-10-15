@@ -1,4 +1,4 @@
-version: "2"
+version: "3"
 
 # How a probe's claim about `os.identity` is read out of its raw output.
 #
@@ -15,6 +15,16 @@ version: "2"
 # "Debian GNU/Linux 12 (bookworm)" from an os-release both reduce to `debian`.
 _os_distro: &os_distro '\b(debian|ubuntu|centos|fedora|alpine|arch|red\s*hat|rhel|suse|gentoo)\b'
 
+# How a probe's claim about `host.name` is read: a bare hostname (what
+# `hostname` and `/etc/hostname` print), or the name on /etc/hosts' 127.0.1.1
+# line, which is where Debian puts the machine's own name. Added in version 3
+# with the `hosts_file` probe: stock Cowrie's /etc/hosts still says `nas3`
+# whatever the decoy is called, and no probe looked. One shared pattern because
+# every probe for one fact must read it the same way (see `load_probes`). Other
+# /etc/hosts lines (`127.0.0.1 localhost`, comments, IPv6) never match, and a
+# file with no 127.0.1.1 line has no claim and is simply not cross-checked.
+_host_name: &host_name '(?m)^(?:127\.0\.1\.1[ \t]+)?([a-z0-9][\w.-]*)[ \t\r]*$'
+
 probes:
   - id: uname
     characteristic: basic_commands
@@ -30,10 +40,17 @@ probes:
     characteristic: sanity
     command: "hostname"
     establishes: host.name
+    extract: *host_name
   - id: hostname_file
     characteristic: sanity
     command: "cat /etc/hostname"
     establishes: host.name
+    extract: *host_name
+  - id: hosts_file
+    characteristic: sanity
+    command: "cat /etc/hosts"
+    establishes: host.name
+    extract: *host_name
   - id: whoami
     characteristic: basic_commands
     command: "whoami"

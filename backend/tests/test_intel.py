@@ -774,3 +774,15 @@ async def test_an_attacker_outside_the_newest_session_page_still_has_a_profile(
 
 async def test_a_non_ip_attacker_id_is_unknown_not_a_server_error() -> None:
     assert await build_profile("not-an-ip") is None
+
+
+@pytest.mark.asyncio
+async def test_type_counts_cover_every_indicator_not_one_page() -> None:
+    """The Threat Intelligence type rail used to tally the first page of the
+    list, so it undercounted past one page."""
+    from collections import Counter
+
+    from app.services.intel import indicator_counts
+
+    every = await list_indicators()
+    assert await indicator_counts() == dict(Counter(i.type for i in every))

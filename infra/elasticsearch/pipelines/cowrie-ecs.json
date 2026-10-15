@@ -8,6 +8,7 @@
         "source": "if (ctx.containsKey('cowrie')) { for (entry in ctx.cowrie.entrySet()) { ctx[entry.getKey()] = entry.getValue(); } ctx.remove('cowrie'); }"
       }
     },
+    { "rename": { "field": "protocol", "target_field": "network.protocol", "ignore_missing": true, "description": "Cowrie stamps every event with ssh or telnet. This used to be removed as noise, so every telnet session was labelled ssh by the default below." } },
     { "set": { "field": "network.protocol", "value": "ssh", "override": false } },
     { "rename": { "field": "src_ip", "target_field": "source.ip", "ignore_missing": true } },
     { "rename": { "field": "src_port", "target_field": "source.port", "ignore_missing": true } },
@@ -75,7 +76,7 @@
     {
       "remove": {
         "description": "Known-noise Cowrie fields with no mapped ECS home. Live for both the direct/_simulate path (root-level docs, e.g. backend/tests/test_ingest_pipeline.py) and the Filebeat path (flattened from 'cowrie.*' by the script processor above). 'uuid'/'width'/'height'/'duration_ms' were the fields that originally tripped strict_dynamic_mapping_exception under live Cowrie traffic; 'duplicate'/'name'/'value'/'size' are additional known-noise fields from cowrie.session.file_download/file_upload, cowrie.client.var, and cowrie.log.closed. Deliberately NOT included: 'error' (written by Filebeat's ndjson parser on a malformed log line) — that must keep failing loudly via strict_dynamic_mapping_exception rather than being suppressed here.",
-        "field": ["message", "sensor", "protocol", "system", "isError", "src_host", "duration", "duration_ms", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex", "uuid", "width", "height", "duplicate", "name", "value", "size"],
+        "field": ["message", "sensor", "system", "isError", "src_host", "duration", "duration_ms", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex", "uuid", "width", "height", "duplicate", "name", "value", "size"],
         "ignore_missing": true
       }
     }

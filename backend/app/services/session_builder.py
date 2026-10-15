@@ -104,27 +104,43 @@ def _assemble(session_id: str, events: list[HoneypotEvent]) -> AttackSession:
     analysis exists. An unanalyzed session never shows invented values.
     """
     first, last = events[0], events[-1]
-    commands = [e for e in events if e.event.action == _COMMAND_ACTION]
-    username = next(
-        (e.user.name for e in events if e.user and e.user.name),
-        None,
+    return _build(
+        session_id,
+        first,
+        last.timestamp,
+        command_count=sum(1 for e in events if e.event.action == _COMMAND_ACTION),
+        username=next((e.user.name for e in events if e.user and e.user.name), None),
+        closed=any(e.event.action == "cowrie.session.closed" for e in events),
+        destination_port=next(
+            (e.destination.port for e in events if e.destination.port), None
+        ),
     )
-    closed = any(e.event.action == "cowrie.session.closed" for e in events)
 
+
+def _build(
+    session_id: str,
+    first: HoneypotEvent,
+    last_timestamp: str,
+    *,
+    command_count: int,
+    username: str | None,
+    closed: bool,
+    destination_port: int | None,
+) -> AttackSession:
+    """One session row from its parts -- shared by the per-session and the
+    batched path, so the two cannot describe a session differently."""
     return AttackSession(
         id=session_id,
         attacker_ip=first.source.ip,
         source_port=first.source.port,
-        destination_port=next(
-            (e.destination.port for e in events if e.destination.port), None
-        ),
+        destination_port=destination_port,
         honeypot_id=first.honeypot.id,
         honeypot_name=first.honeypot.name,
         protocol=first.network.protocol,
         started_at=first.timestamp,
-        ended_at=last.timestamp if closed else None,
-        duration_seconds=int((_parse(last.timestamp) - _parse(first.timestamp)).total_seconds()),
-        command_count=len(commands),
+        ended_at=last_timestamp if closed else None,
+        duration_seconds=int((_parse(last_timestamp) - _parse(first.timestamp)).total_seconds()),
+        command_count=command_count,
         risk_score=0,
         risk="informational",
         classification_chain=[],
@@ -152,23 +168,117 @@ async def get_session(session_id: str) -> AttackSession | None:
 
     analysis = await latest_for_session(session_id)
     if analysis:
-        session.analysis_state = "completed"
-        # `risk` and `risk_score` are the MODEL's, copied onto the session --
-        # there is no deterministic scorer, and `_assemble` leaves them 0 /
-        # "informational" until an analysis exists. They are not evidence-gated
-        # (see `compaction.build_prompt`) and move between runs of one session,
-        # so anything rendering them must label them as inference. The session
-        # page once captioned this value "scored from recorded session
-        # behaviour before any LLM interpretation", which was exactly backwards.
-        session.risk = analysis.risk
-        session.risk_score = analysis.risk_score
-        session.mitre_technique_ids = [t.technique_id for t in analysis.techniques]
-        seen: list[str] = []
-        for technique in analysis.techniques:
-            if technique.tactic not in seen:
-                seen.append(technique.tactic)
-        session.classification_chain = seen
+        _apply_analysis(
+            session,
+            analysis.risk,
+            analysis.risk_score,
+            [(t.technique_id, t.tactic) for t in analysis.techniques],
+        )
     return session
+
+
+def _apply_analysis(
+    session: AttackSession, risk: str, risk_score: int, techniques: list[tuple[str, str]]
+) -> None:
+    """Overlay the latest analysis's verdict onto a session row.
+
+    `risk` and `risk_score` are the MODEL's, copied onto the session -- there
+    is no deterministic scorer, and `_build` leaves them 0 / "informational"
+    until an analysis exists. They are not evidence-gated (see
+    `compaction.build_prompt`) and move between runs of one session, so
+    anything rendering them must label them as inference. The session page
+    once captioned this value "scored from recorded session behaviour before
+    any LLM interpretation", which was exactly backwards.
+    """
+    session.analysis_state = "completed"
+    session.risk = risk
+    session.risk_score = risk_score
+    session.mitre_technique_ids = [technique_id for technique_id, _ in techniques]
+    seen: list[str] = []
+    for _, tactic in techniques:
+        if tactic not in seen:
+            seen.append(tactic)
+    session.classification_chain = seen
+
+
+async def _assemble_many(session_ids: list[str]) -> dict[str, AttackSession]:
+    """Session rows for a whole page in one aggregation plus two SQL queries.
+
+    The list used to call `get_session` per row: a full event read per
+    session, plus a fully hydrated analysis (every claim's evidence) just to
+    read its risk and technique ids. Twenty concurrent list requests then took
+    ~4.5 s on one worker. This asks Elasticsearch for exactly the parts
+    `_build` needs, per session, and the analysis overlay for the page at once.
+
+    One difference from `get_session`, in the right direction: the per-session
+    read stops at `_MAX_SESSION_EVENTS`, so for a session longer than that its
+    command count and end time described only the first page. These do not.
+    """
+    if not session_ids:
+        return {}
+    by_time = [{"@timestamp": "asc"}]
+
+    def first_with(field: str, exclude_zero: bool = False) -> dict:
+        query: dict = {"bool": {"filter": [{"exists": {"field": field}}]}}
+        if exclude_zero:
+            query["bool"]["must_not"] = [{"term": {field: 0}}]
+        return {
+            "filter": query,
+            "aggs": {"hit": {"top_hits": {"size": 1, "sort": by_time, "_source": [field]}}},
+        }
+
+    result = await get_es().search(
+        index=get_settings().es_index,
+        size=0,
+        query={"terms": {"session.id": session_ids}},
+        aggs={
+            "sessions": {
+                "terms": {"field": "session.id", "size": len(session_ids)},
+                "aggs": {
+                    "first": {"top_hits": {"size": 1, "sort": by_time}},
+                    "last": {
+                        "top_hits": {
+                            "size": 1,
+                            "sort": [{"@timestamp": "desc"}],
+                            "_source": ["@timestamp"],
+                        }
+                    },
+                    "commands": {"filter": {"term": {"event.action": _COMMAND_ACTION}}},
+                    "closed": {"filter": {"term": {"event.action": "cowrie.session.closed"}}},
+                    "user": first_with("user.name"),
+                    "port": first_with("destination.port", exclude_zero=True),
+                },
+            }
+        },
+    )
+
+    def hit(agg: dict) -> dict | None:
+        hits = agg["hits"]["hits"]
+        return hits[0]["_source"] if hits else None
+
+    sessions: dict[str, AttackSession] = {}
+    for bucket in result["aggregations"]["sessions"]["buckets"]:
+        first = to_event(bucket["first"]["hits"]["hits"][0])
+        user = hit(bucket["user"]["hit"])
+        port = hit(bucket["port"]["hit"])
+        sessions[bucket["key"]] = _build(
+            bucket["key"],
+            first,
+            hit(bucket["last"])["@timestamp"],
+            command_count=bucket["commands"]["doc_count"],
+            username=user["user"]["name"] if user else None,
+            closed=bucket["closed"]["doc_count"] > 0,
+            destination_port=port["destination"]["port"] if port else None,
+        )
+
+    # Local import for the same reason as in `get_session`.
+    from app.services.analyzer import latest_verdicts
+
+    for session_id, (risk, risk_score, techniques) in (
+        await latest_verdicts(list(sessions))
+    ).items():
+        _apply_analysis(sessions[session_id], risk, risk_score, techniques)
+    return sessions
 
 
 async def list_sessions(
@@ -275,12 +385,8 @@ async def list_sessions(
             dropped,
         )
 
-    sessions: list[AttackSession] = []
-    for bucket in buckets:
-        session = await get_session(bucket["key"])
-        if session:
-            sessions.append(session)
-    return sessions
+    assembled = await _assemble_many([bucket["key"] for bucket in buckets])
+    return [assembled[b["key"]] for b in buckets if b["key"] in assembled]
 
 
 async def honeypots_for_sessions(session_ids: list[str]) -> dict[str, str]:

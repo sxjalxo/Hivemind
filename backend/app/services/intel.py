@@ -295,3 +295,16 @@ async def get_indicator(indicator_id: str) -> Indicator | None:
         source=row.source,
         tags=row.tags or [],
     )
+
+
+async def indicator_counts() -> dict[str, int]:
+    """Indicators per type, over the WHOLE table.
+
+    The Threat Intelligence type rail used to tally the first page of the list,
+    so past one page it undercounted every type. One GROUP BY instead.
+    """
+    async with get_session_factory()() as db:
+        rows = await db.execute(
+            select(IndicatorRow.type, func.count()).group_by(IndicatorRow.type)
+        )
+        return {type_: count for type_, count in rows.all()}

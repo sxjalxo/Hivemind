@@ -116,8 +116,9 @@ def test_an_unreadable_claim_is_dropped_rather_than_compared() -> None:
 
 
 def test_a_fact_whose_probes_declare_no_extract_still_compares_raw() -> None:
-    # host.name's two probes both print a bare hostname, so nothing needed
-    # changing there and nothing may have silently changed.
+    # Without extracts, two probes are compared on their raw output. (Since
+    # probe set v3 host.name's probes DO declare one, to read /etc/hosts too;
+    # see the hosts_file tests below.)
     assert len(find_contradictions(_hostnames("med-ws-04", "svr04"))) == 1
     assert find_contradictions(_hostnames("med-ws-04", "med-ws-04")) == []
 
@@ -141,3 +142,42 @@ def test_the_shipped_probe_set_agrees_on_every_fact_it_establishes() -> None:
         if probe.establishes:
             forms.setdefault(probe.establishes, set()).add(probe.extract is not None)
     assert all(len(declared) == 1 for declared in forms.values()), forms
+
+
+def _stock_hostnames(hosts_file: str) -> list[Observation]:
+    return [
+        _obs("hostname_cmd", "host.name", "med-ws-04"),
+        _obs("hostname_file", "host.name", "med-ws-04"),
+        _obs("hosts_file", "host.name", hosts_file),
+    ]
+
+
+STOCK_HOSTS = (
+    "127.0.0.1\tlocalhost\n127.0.1.1\tnas3\n\n"
+    "# The following lines are desirable for IPv6 capable hosts\n"
+    "::1     localhost ip6-localhost ip6-loopback\n"
+)
+
+
+def test_a_hosts_file_naming_another_machine_is_a_contradiction() -> None:
+    """Stock Cowrie's /etc/hosts says `nas3` whatever the decoy is called --
+    seen in a terminal replay on 2026-10-14, invisible to probe set v2."""
+    from app.services.evaluation.sanity import probe_extracts
+
+    found = find_contradictions(_stock_hostnames(STOCK_HOSTS), probe_extracts())
+    assert {c.probe_ids for c in found} == {
+        ("hostname_cmd", "hosts_file"),
+        ("hostname_file", "hosts_file"),
+    }
+    assert all(any("nas3" in value for value in c.values) for c in found)
+
+
+def test_a_consistent_hosts_file_or_one_without_a_127_0_1_1_line_is_not() -> None:
+    from app.services.evaluation.sanity import probe_extracts
+
+    agreeing = STOCK_HOSTS.replace("nas3", "med-ws-04")
+    assert find_contradictions(_stock_hostnames(agreeing), probe_extracts()) == []
+    # No 127.0.1.1 line: the file makes no claim about the name, and an
+    # unreadable claim is never counted as agreement OR disagreement.
+    nameless = "127.0.0.1 localhost\n::1 localhost\n"
+    assert find_contradictions(_stock_hostnames(nameless), probe_extracts()) == []

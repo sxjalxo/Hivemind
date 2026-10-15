@@ -415,7 +415,7 @@ are kept in a dead-letter index and counted on the status page instead of being 
 CI builds both images and imports the app inside the backend image, because the
 dependency bugs this project has hit failed at import time, not at build time.
 
-**A provenance-tagged dashboard** — thirty-three HTTP endpoints, two WebSocket progress
+**A provenance-tagged dashboard** — thirty-four HTTP endpoints, two WebSocket progress
 channels, fourteen routes, every AI conclusion expandable into its source event.
 
 ---
@@ -519,12 +519,10 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
   worker that started it and nothing is replayed: a client that connects after a run ends
   reads the outcome from the run's `GET`, as before. Without `REDIS_URL` the backend must run
   as a single worker.
-- **Telnet sessions are labelled SSH.** The ingest pipeline drops Cowrie's own `protocol`
-  field as noise and defaults `network.protocol` to `ssh`, so a session on the Telnet port
-  is indexed as SSH. Fixing it is an ingest change, deliberately not made yet.
-- **Two list routes are slow under concurrency.** The session list and the analysis history
-  assemble each row separately: about 0.25 s for one request, about 4 s with twenty
-  concurrent clients on one worker. See "Load and robustness" in section 6.
+- **Telnet events indexed before 2026-10-15 are labelled SSH.** The pipeline used to drop
+  Cowrie's own `protocol` field as noise and default `network.protocol` to `ssh`. It now
+  keeps it, so new telnet sessions read `telnet`; the older ones stay as they were indexed
+  unless relabelled by hand (they are the events on destination port 2223).
 - **Third-party lookups are cached per process.** AbuseIPDB and VirusTotal answers are kept
   for a day in the worker that fetched them; a restart, or another worker, asks again.
 - **Read scoping is a deny-list, and covers the operational surfaces only.** Sessions,
@@ -573,6 +571,11 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
   a claim nobody could read is not evidence of agreement. The remaining limitation is that
   the distribution list in the pattern is finite: a honeypot claiming a distribution not
   named there has its `os.identity` cross-check silently skipped rather than failed.
+  The same mechanism caught a defect the probe set could not see: stock Cowrie's
+  `/etc/hosts` names the machine `nas3` on its `127.0.1.1` line whatever the decoy is
+  called. Probe set v3 adds a `hosts_file` probe for `host.name`, so all three hostname
+  probes share one extract (a bare name, or the `127.0.1.1` entry); the contradiction is
+  reported with a generated `/etc/hosts`, and the hardened matrix arm now carries one.
 - **Prompt-injection fencing is a mitigation, not a guarantee.** Honeypot commands are
   attacker-authored, and an attacker who suspects analysis can write instructions into a
   command line. Attacker text is fenced and labelled as data, but the schema gates and the
@@ -705,7 +708,7 @@ captures better attacks.
 
 ```
 backend/     FastAPI service — ingest, analysis pipeline, evaluation subsystem
-             33 HTTP endpoints + 2 WebSocket progress channels
+             34 HTTP endpoints + 2 WebSocket progress channels
 frontend/    React + TanStack Router dashboard
 infra/       Elasticsearch index template, ingest pipeline and lifecycle policy,
              Filebeat and Cowrie config
@@ -738,13 +741,13 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `876 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `883 passed` with at most one skip** — there are
 no expected failures.
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `876 passed` or `875 passed,
+with a reason rather than failing, so a clean run is `883 passed` or `882 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.
@@ -772,10 +775,17 @@ It found one real defect, fixed: a NUL byte (`%00`) in a path or query reached P
 which cannot store one — and returned a 500 from three routes. `app/middleware.py` now
 refuses it for every route with a 400, and an annotation body containing one is a 422.
 
-It also measured a limit rather than a bug: the session list and the analysis history
-assemble their rows one at a time, so they take about a quarter of a second alone but
-around four seconds with twenty clients waiting on one worker. More workers would spread
-that (progress already crosses workers over Redis); batching the assembly would remove it.
+It also measured a limit, since removed: the session list and the analysis history
+assembled their rows one at a time, so they took about a quarter of a second alone and
+around four seconds with twenty clients waiting on one worker. Both now assemble a whole
+page at once -- one aggregation for the sessions, one query per table for the analyses --
+and return identical output. Re-measured 2026-10-15 at limit 100:
+
+| Route | Alone | 20 concurrent (median) |
+|---|---|---|
+| `/api/sessions` | 0.30 s -> 0.02 s | 4.50 s -> 0.58 s |
+| `/api/analysis` | 0.22 s -> 0.05 s | 2.69 s -> 0.34 s |
+
 The third-party lookups were deliberately not load-tested: their quotas are real.
 
 ### How provenance works

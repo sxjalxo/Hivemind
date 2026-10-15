@@ -471,6 +471,13 @@ export const DemoProvider: DataProvider = {
     };
   },
 
+  async getIndicatorCounts() {
+    await delay(120);
+    const counts: Record<string, number> = {};
+    for (const i of demo.indicators) counts[i.type] = (counts[i.type] ?? 0) + 1;
+    return counts;
+  },
+
   async getIndicators(params) {
     await delay(200);
     if (params?.offset) return [];

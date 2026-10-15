@@ -274,14 +274,35 @@ def _hostname_fix(facts: _RunFacts, key: str) -> Remediation:
                 "authoritative value to copy into /etc/hostname."
             ),
         )
+    # Rewrite whichever FILES are in the contradicting pair; the command is
+    # never "fixed". A pair of two files (stock: `svr04` vs `nas3`) gets both.
+    pair = set(key.rsplit(":", 1)[-1].split("+"))
+    files = []
+    if "hostname_file" in pair:
+        files.append(HoneyfsFile("etc/hostname", f"{configured}\n"))
+    if "hosts_file" in pair:
+        files.append(HoneyfsFile("etc/hosts", _HOSTS_TEMPLATE.format(name=configured)))
+    paths = " and ".join(f"/{f.path}" for f in files)
     return Remediation(
         finding_key=key,
         summary=(
-            f"Write {configured!r} into /etc/hostname so the file agrees with the "
+            f"Write {configured!r} into {paths} so the file(s) agree with the "
             f"`hostname` command, which reports the name cowrie.cfg configures."
         ),
-        honeyfs_files=(HoneyfsFile("etc/hostname", f"{configured}\n"),),
+        honeyfs_files=tuple(files),
     )
+
+
+# Debian's own /etc/hosts, with the decoy's name on the 127.0.1.1 line.
+_HOSTS_TEMPLATE = (
+    "127.0.0.1\tlocalhost\n"
+    "127.0.1.1\t{name}\n"
+    "\n"
+    "# The following lines are desirable for IPv6 capable hosts\n"
+    "::1     localhost ip6-localhost ip6-loopback\n"
+    "ff02::1 ip6-allnodes\n"
+    "ff02::2 ip6-allrouters\n"
+)
 
 
 def _unsupported(key: str, summary: str, reason: str) -> Remediation:

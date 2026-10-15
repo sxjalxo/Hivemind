@@ -160,6 +160,8 @@ export const FastAPIProvider: DataProvider = {
       query: { type: params?.type, q: params?.q, offset: params?.offset, limit: LIST_PAGE },
     }),
 
+  getIndicatorCounts: () => request<Record<string, number>>(`${endpoints.threatIntel}/counts`),
+
   exportIndicators: (format) =>
     request<IocExport>(endpoints.threatIntelExport, { query: { format } }),
 

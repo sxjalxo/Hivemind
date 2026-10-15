@@ -98,5 +98,11 @@ export const indicatorsQuery = (params?: { type?: string; q?: string }) =>
     queryFn: () => provider.getIndicators(params),
   });
 
+export const indicatorCountsQuery = () =>
+  queryOptions({
+    queryKey: ["indicators", "counts"],
+    queryFn: () => provider.getIndicatorCounts(),
+  });
+
 export const reportsQuery = () =>
   queryOptions({ queryKey: ["reports"], queryFn: () => provider.getReports() });

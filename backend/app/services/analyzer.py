@@ -421,155 +421,136 @@ def _refs_to_out(refs: list[EvidenceRef]) -> list[EvidenceRefOut]:
 
 
 async def _hydrate(db, analysis: Analysis) -> SessionAnalysis:
-    # Every query below carries an explicit ORDER BY. Without one, Postgres
-    # makes no ordering guarantee across repeated SELECTs of the same rows
-    # (physical storage order can shift with vacuum/autoanalyze even when
-    # nothing about the data itself changed) -- which showed up as
-    # `techniques` (and the `classificationChain`/`mitreTechniqueIds` Task
-    # 14 derives from it in `session_builder.get_session`) reordering
-    # between two back-to-back reads of the same analysis. `id` (a random
-    # uuid4) is not insertion order, but it IS a fixed, stable sort key --
-    # the same rows always come back in the same order. Tables that also
-    # carry a meaningful timestamp (`TechniqueMapping`, `EvidenceRef`) sort
-    # by that first, `id` only as the tiebreaker for same-instant rows.
-    async def refs_for(parent_type: ParentType, parent_id) -> list[EvidenceRef]:  # noqa: ANN001
-        return (
-            (
-                await db.execute(
-                    select(EvidenceRef)
-                    .where(
-                        EvidenceRef.parent_type == parent_type,
-                        EvidenceRef.parent_id == parent_id,
-                    )
-                    .order_by(EvidenceRef.timestamp, EvidenceRef.id)
+    return (await _hydrate_many(db, [analysis]))[0]
+
+
+async def _hydrate_many(db, analyses: list[Analysis]) -> list[SessionAnalysis]:  # noqa: ANN001
+    """Every analysis on a page, with its claims and evidence, in seven queries.
+
+    Was one `_hydrate` per row -- five child queries plus one evidence query
+    PER CLAIM -- so a page of history cost hundreds of round trips, and twenty
+    concurrent requests took ~2.7 s on one worker. The same rows, in the same
+    order, now come back in one query per table for the whole page.
+
+    Every query carries an explicit ORDER BY. Without one, Postgres makes no
+    ordering guarantee across repeated SELECTs of the same rows (physical
+    storage order can shift with vacuum/autoanalyze even when nothing about
+    the data itself changed) -- which showed up as `techniques` (and the
+    `classificationChain`/`mitreTechniqueIds` derived from it) reordering
+    between two back-to-back reads of the same analysis. `id` (a random uuid4)
+    is not insertion order, but it IS a fixed, stable sort key. Tables that
+    also carry a meaningful timestamp (`TechniqueMapping`, `EvidenceRef`) sort
+    by that first, `id` only as the tiebreaker for same-instant rows. Grouping
+    by analysis below keeps each analysis's rows in that order.
+    """
+    if not analyses:
+        return []
+    ids = [a.id for a in analyses]
+
+    async def rows(model, *order) -> dict:  # noqa: ANN001, ANN002
+        grouped: dict = {}
+        result = await db.execute(select(model).where(model.analysis_id.in_(ids)).order_by(*order))
+        for row in result.scalars().all():
+            grouped.setdefault(row.analysis_id, []).append(row)
+        return grouped
+
+    mappings = await rows(TechniqueMapping, TechniqueMapping.timestamp, TechniqueMapping.id)
+    behaviors = await rows(ObservedBehavior, ObservedBehavior.id)
+    suspicious = await rows(SuspiciousIndicator, SuspiciousIndicator.id)
+    actions = await rows(RecommendedAction, RecommendedAction.id)
+    rejections = await rows(ClaimRejection, ClaimRejection.stage, ClaimRejection.id)
+
+    parent_ids = [
+        row.id
+        for grouped in (mappings, behaviors, suspicious)
+        for group in grouped.values()
+        for row in group
+    ]
+    refs: dict = {}
+    if parent_ids:
+        result = await db.execute(
+            select(EvidenceRef)
+            .where(EvidenceRef.parent_id.in_(parent_ids))
+            .order_by(EvidenceRef.timestamp, EvidenceRef.id)
+        )
+        for ref in result.scalars().all():
+            refs.setdefault((ref.parent_type, ref.parent_id), []).append(ref)
+
+    def refs_for(parent_type: ParentType, parent_id) -> list[EvidenceRef]:  # noqa: ANN001
+        return refs.get((parent_type, parent_id), [])
+
+    out: list[SessionAnalysis] = []
+    for analysis in analyses:
+        techniques = []
+        for mapping in mappings.get(analysis.id, []):
+            mapping_refs = refs_for(ParentType.TECHNIQUE_MAPPING, mapping.id)
+            techniques.append(
+                TechniqueMappingOut(
+                    technique_id=mapping.technique_id,
+                    technique_name=mapping.technique_name,
+                    tactic=mapping.tactic,
+                    observed=mapping.source == "rule",
+                    confidence=mapping.confidence,
+                    evidence=_refs_to_out(mapping_refs),
+                    related_commands=[r.artifact for r in mapping_refs],
+                    ai_explanation=mapping.ai_explanation,
+                    timestamp=mapping.timestamp.isoformat().replace("+00:00", "Z"),
                 )
             )
-            .scalars()
-            .all()
-        )
 
-    mappings = (
-        (
-            await db.execute(
-                select(TechniqueMapping)
-                .where(TechniqueMapping.analysis_id == analysis.id)
-                .order_by(TechniqueMapping.timestamp, TechniqueMapping.id)
+        out.append(
+            SessionAnalysis(
+                id=str(analysis.id),
+                session_id=analysis.session_id,
+                model=analysis.model,
+                analysis_type=analysis.analysis_type,
+                status=analysis.status,
+                created_at=analysis.created_at.isoformat().replace("+00:00", "Z"),
+                duration_seconds=analysis.duration_seconds,
+                classification=analysis.classification,
+                confidence=analysis.confidence,
+                risk_score=analysis.risk_score,
+                risk=analysis.risk,
+                behavior_summary=analysis.behavior_summary,
+                started_by=analysis.started_by,
+                started_by_label=analysis.started_by_label,
+                observed_behavior=[
+                    LabelledEvidence(
+                        label=b.label,
+                        evidence=_refs_to_out(refs_for(ParentType.OBSERVED_BEHAVIOR, b.id)),
+                    )
+                    for b in behaviors.get(analysis.id, [])
+                ],
+                suspicious_indicators=[
+                    SeverityEvidence(
+                        label=s.label,
+                        severity=s.severity,
+                        evidence=_refs_to_out(refs_for(ParentType.SUSPICIOUS_INDICATOR, s.id)),
+                    )
+                    for s in suspicious.get(analysis.id, [])
+                ],
+                recommended_actions=[
+                    RecommendedActionOut(
+                        priority=a.priority, action=a.action, rationale=a.rationale
+                    )
+                    for a in actions.get(analysis.id, [])
+                ],
+                techniques=techniques,
+                rejected_claims=analysis.rejected_claims,
+                rejections=[
+                    RejectedClaimOut(
+                        stage=r.stage,
+                        kind=r.kind,
+                        reason=r.reason,
+                        technique_id=r.technique_id,
+                        text=r.text,
+                        cited_event_ids=r.cited_event_ids or [],
+                    )
+                    for r in rejections.get(analysis.id, [])
+                ],
             )
         )
-        .scalars()
-        .all()
-    )
-    behaviors = (
-        (
-            await db.execute(
-                select(ObservedBehavior)
-                .where(ObservedBehavior.analysis_id == analysis.id)
-                .order_by(ObservedBehavior.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    suspicious = (
-        (
-            await db.execute(
-                select(SuspiciousIndicator)
-                .where(SuspiciousIndicator.analysis_id == analysis.id)
-                .order_by(SuspiciousIndicator.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    actions = (
-        (
-            await db.execute(
-                select(RecommendedAction)
-                .where(RecommendedAction.analysis_id == analysis.id)
-                .order_by(RecommendedAction.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    rejections = (
-        (
-            await db.execute(
-                select(ClaimRejection)
-                .where(ClaimRejection.analysis_id == analysis.id)
-                .order_by(ClaimRejection.stage, ClaimRejection.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    techniques = []
-    for mapping in mappings:
-        refs = await refs_for(ParentType.TECHNIQUE_MAPPING, mapping.id)
-        techniques.append(
-            TechniqueMappingOut(
-                technique_id=mapping.technique_id,
-                technique_name=mapping.technique_name,
-                tactic=mapping.tactic,
-                observed=mapping.source == "rule",
-                confidence=mapping.confidence,
-                evidence=_refs_to_out(refs),
-                related_commands=[r.artifact for r in refs],
-                ai_explanation=mapping.ai_explanation,
-                timestamp=mapping.timestamp.isoformat().replace("+00:00", "Z"),
-            )
-        )
-
-    return SessionAnalysis(
-        id=str(analysis.id),
-        session_id=analysis.session_id,
-        model=analysis.model,
-        analysis_type=analysis.analysis_type,
-        status=analysis.status,
-        created_at=analysis.created_at.isoformat().replace("+00:00", "Z"),
-        duration_seconds=analysis.duration_seconds,
-        classification=analysis.classification,
-        confidence=analysis.confidence,
-        risk_score=analysis.risk_score,
-        risk=analysis.risk,
-        behavior_summary=analysis.behavior_summary,
-        started_by=analysis.started_by,
-        started_by_label=analysis.started_by_label,
-        observed_behavior=[
-            LabelledEvidence(
-                label=b.label,
-                evidence=_refs_to_out(await refs_for(ParentType.OBSERVED_BEHAVIOR, b.id)),
-            )
-            for b in behaviors
-        ],
-        suspicious_indicators=[
-            SeverityEvidence(
-                label=s.label,
-                severity=s.severity,
-                evidence=_refs_to_out(await refs_for(ParentType.SUSPICIOUS_INDICATOR, s.id)),
-            )
-            for s in suspicious
-        ],
-        recommended_actions=[
-            RecommendedActionOut(priority=a.priority, action=a.action, rationale=a.rationale)
-            for a in actions
-        ],
-        techniques=techniques,
-        rejected_claims=analysis.rejected_claims,
-        rejections=[
-            RejectedClaimOut(
-                stage=r.stage,
-                kind=r.kind,
-                reason=r.reason,
-                technique_id=r.technique_id,
-                text=r.text,
-                cited_event_ids=r.cited_event_ids or [],
-            )
-            for r in rejections
-        ],
-    )
+    return out
 
 
 async def load_analysis(analysis_id: uuid.UUID) -> SessionAnalysis | None:
@@ -608,7 +589,7 @@ async def load_history(
             rows = (await db.execute(statement)).scalars().all()
         else:
             rows = await _visible_rows(db, statement, deny_honeypots, offset, limit)
-        return [await _hydrate(db, row) for row in rows]
+        return await _hydrate_many(db, list(rows))
 
 
 # How many rows a scoped read fetches per round while filling a page.
@@ -638,6 +619,58 @@ async def _visible_rows(
         if len(batch) < _SCOPE_BATCH:
             break
     return rows
+
+
+async def latest_verdicts(
+    session_ids: list[str],
+) -> dict[str, tuple[str, int, list[tuple[str, str]]]]:
+    """For each session with an analysis: (risk, risk_score, [(technique, tactic)]).
+
+    What a session ROW needs from its latest analysis, for a whole page in two
+    queries -- `latest_for_session` hydrates every claim's evidence, which a
+    list never shows. Techniques come back in `_hydrate`'s order (timestamp,
+    then id), so a row reads the same either way.
+    """
+    if not session_ids:
+        return {}
+    async with get_session_factory()() as db:
+        latest = (
+            (
+                await db.execute(
+                    select(Analysis)
+                    .where(Analysis.session_id.in_(session_ids))
+                    .order_by(Analysis.session_id, Analysis.created_at.desc())
+                    .distinct(Analysis.session_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not latest:
+            return {}
+        mappings = (
+            (
+                await db.execute(
+                    select(TechniqueMapping)
+                    .where(TechniqueMapping.analysis_id.in_([a.id for a in latest]))
+                    .order_by(
+                        TechniqueMapping.analysis_id,
+                        TechniqueMapping.timestamp,
+                        TechniqueMapping.id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    techniques: dict = {}
+    for mapping in mappings:
+        techniques.setdefault(mapping.analysis_id, []).append(
+            (mapping.technique_id, mapping.tactic)
+        )
+    return {
+        a.session_id: (a.risk, a.risk_score, techniques.get(a.id, [])) for a in latest
+    }
 
 
 async def latest_for_session(session_id: str) -> SessionAnalysis | None:

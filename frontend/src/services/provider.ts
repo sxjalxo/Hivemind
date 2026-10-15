@@ -117,6 +117,8 @@ export interface DataProvider {
   getMitreCoverage(params?: { sessionId?: string }): Promise<MitreCoverage>;
 
   getIndicators(params?: { type?: string; q?: string; offset?: number }): Promise<Indicator[]>;
+  /** Indicators per type over the whole table, for the type rail. */
+  getIndicatorCounts(): Promise<Record<string, number>>;
 
   /**
    * Optional: indicators as STIX 2.1, a MISP event or an IP blocklist. Absent

@@ -275,3 +275,40 @@ def test_generated_paths_are_relative_and_stay_inside_the_honeyfs_root() -> None
     for path in paths:
         assert not path.startswith("/")
         assert ".." not in path.split("/")
+
+
+def test_a_hosts_file_contradiction_rewrites_etc_hosts_with_the_configured_name() -> None:
+    # Probe set v3. The fix writes the FILE in the pair, never the command,
+    # with the name `hostname` printed -- the one cowrie.cfg configures.
+    item = _only(
+        _run(
+            ["sanity:host.name:hostname_cmd+hosts_file"],
+            [
+                _probe("hostname_cmd", "host.name", "med-ws-04"),
+                _probe("hosts_file", "host.name", "127.0.0.1\tlocalhost\n127.0.1.1\tnas3\n"),
+            ],
+        )
+    )
+
+    assert item.is_actionable
+    assert [f.path for f in item.honeyfs_files] == ["etc/hosts"]
+    assert "127.0.1.1\tmed-ws-04\n" in item.honeyfs_files[0].content
+    assert "127.0.0.1\tlocalhost\n" in item.honeyfs_files[0].content
+    assert "nas3" not in item.honeyfs_files[0].content
+
+
+def test_two_files_disagreeing_with_each_other_are_both_rewritten() -> None:
+    # Stock: /etc/hostname says svr04 and /etc/hosts says nas3. Neither is
+    # authoritative; both get the name the command reports.
+    item = _only(
+        _run(
+            ["sanity:host.name:hostname_file+hosts_file"],
+            [
+                _probe("hostname_cmd", "host.name", "med-ws-04"),
+                _probe("hostname_file", "host.name", "svr04"),
+                _probe("hosts_file", "host.name", "127.0.1.1\tnas3\n"),
+            ],
+        )
+    )
+
+    assert sorted(f.path for f in item.honeyfs_files) == ["etc/hostname", "etc/hosts"]

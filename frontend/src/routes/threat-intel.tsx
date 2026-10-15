@@ -34,7 +34,7 @@ import { usePagedList } from "@/hooks/usePagedList";
 import { formatDateTime } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Indicator, IndicatorType } from "@/types";
-import { indicatorsQuery } from "@/services/queries";
+import { indicatorCountsQuery, indicatorsQuery } from "@/services/queries";
 
 interface IntelSearch {
   q?: string | undefined;
@@ -84,14 +84,15 @@ function ThreatIntelPage() {
       provider.getIndicators({ ...params, offset }),
     );
 
-  // Counts come from the unfiltered set so the type rail never collapses to zero.
-  const all = useQuery(indicatorsQuery());
+  // Counts over the whole table, not the page on screen, so the type rail
+  // neither collapses to zero under a filter nor undercounts past one page.
+  const all = useQuery(indicatorCountsQuery());
   const counts = useMemo(() => {
     const tally = Object.fromEntries(TYPE_ORDER.map((type) => [type, 0])) as Record<
       IndicatorType,
       number
     >;
-    for (const indicator of all.data ?? []) tally[indicator.type] += 1;
+    for (const type of TYPE_ORDER) tally[type] = all.data?.[type] ?? 0;
     return tally;
   }, [all.data]);
 

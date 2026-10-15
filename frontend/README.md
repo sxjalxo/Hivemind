@@ -128,6 +128,7 @@ POST   /api/analyze/{session_id}
 GET    /api/analysis  ·  GET /api/analysis/{id}
 GET    /api/mitre
 GET    /api/threat-intelligence
+GET    /api/threat-intelligence/counts   → indicators per type, over the whole table
 GET    /api/threat-intelligence/export?format=stix|misp|blocklist
 GET    /api/threat-intelligence/{id}/virustotal   → THIRD PARTY; by indicator id only
 GET    /api/attackers/{ip}
