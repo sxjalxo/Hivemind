@@ -4,7 +4,6 @@ import { Activity, Search } from "lucide-react";
 import { useState } from "react";
 import {
   ClassificationChain,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   LoadMore,
@@ -26,7 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { isDemoMode, provider } from "@/services";
+import { provider } from "@/services";
 import { usePagedList } from "@/hooks/usePagedList";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatDuration } from "@/utils/format";
@@ -80,7 +79,6 @@ function SessionsPage() {
             <span className="label-caps">
               {isPending ? "Loading" : `${data?.length ?? 0}${hasMore ? "+" : ""} sessions`}
             </span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
       />

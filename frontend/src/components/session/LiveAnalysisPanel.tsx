@@ -1,8 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Radio } from "lucide-react";
 import { AnalysisProgress } from "./AnalysisProgress";
-import { DemoDataBadge, InlineNotice, StatusRow } from "@/components/common";
-import { isDemoMode } from "@/services";
+import { InlineNotice, StatusRow } from "@/components/common";
 import { formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import { systemStatusQuery } from "@/services/queries";
@@ -49,7 +48,6 @@ export function LiveAnalysisPanel({
             Live analysis
           </span>
         </span>
-        {isDemoMode ? <DemoDataBadge /> : null}
       </header>
 
       <div className="space-y-4 p-4">

@@ -2,7 +2,6 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Radar, Server } from "lucide-react";
 import {
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   Mono,
@@ -13,7 +12,6 @@ import {
   StatusDot,
 } from "@/components/common";
 import { Skeleton } from "@/components/ui/skeleton";
-import { isDemoMode } from "@/services";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Honeypot, HoneypotStatus } from "@/types";
@@ -50,7 +48,6 @@ function HoneypotsPage() {
             <span className="label-caps">
               {isPending ? "Loading" : `${online} of ${data?.length ?? 0} online`}
             </span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
       />

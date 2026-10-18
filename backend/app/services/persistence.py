@@ -1,9 +1,7 @@
 import logging
-import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
 
 from app.db.models import (
     Analysis,
@@ -262,21 +260,3 @@ async def persist_analysis(
         await db.commit()
 
     return rejected
-
-
-async def load_evidence(parent_type: ParentType, parent_id: uuid.UUID) -> list[EvidenceRef]:
-    """Load every evidence row citing a given claim row."""
-    factory = get_session_factory()
-    async with factory() as db:
-        return (
-            (
-                await db.execute(
-                    select(EvidenceRef).where(
-                        EvidenceRef.parent_type == parent_type,
-                        EvidenceRef.parent_id == parent_id,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )

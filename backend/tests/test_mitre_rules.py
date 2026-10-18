@@ -1,7 +1,7 @@
 import pytest
 
 from app.services.compaction import CompactedCommand
-from app.services.mitre.catalog import is_known_technique, load_catalog
+from app.services.mitre.catalog import load_catalog
 from app.services.mitre.rules import apply_rules, load_rules
 
 POSITIVE = [
@@ -47,7 +47,7 @@ def test_rule_does_not_over_match(command: str, technique: str) -> None:
 
 def test_every_rule_id_exists_in_the_attack_catalog() -> None:
     for rule in load_rules():
-        assert is_known_technique(rule.id), f"{rule.id} is not a real ATT&CK technique"
+        assert rule.id in load_catalog(), f"{rule.id} is not a real ATT&CK technique"
 
 
 def test_rule_names_and_tactics_match_the_catalog() -> None:

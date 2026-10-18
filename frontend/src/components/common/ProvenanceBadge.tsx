@@ -1,4 +1,4 @@
-import { Bot, Eye, GitCompareArrows, Microscope, FlaskConical, Users } from "lucide-react";
+import { Bot, Eye, GitCompareArrows, Microscope, Users } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Provenance } from "@/types";
 
@@ -52,22 +52,6 @@ export function ProvenanceBadge({
     >
       {showIcon ? <Icon className="size-3" aria-hidden /> : null}
       {kind}
-    </span>
-  );
-}
-
-/** Marks synthetic dataset output so demo data is never mistaken for a backend response. */
-export function DemoDataBadge({ className }: { className?: string }) {
-  return (
-    <span
-      title="Synthetic dataset served by DemoProvider. Not a backend or LLM response."
-      className={cn(
-        "inline-flex items-center gap-1.5 whitespace-nowrap rounded border border-border-strong bg-muted/60 px-1.5 py-[3px] font-mono text-[10px] font-semibold uppercase tracking-[0.08em] leading-none text-muted-foreground",
-        className,
-      )}
-    >
-      <FlaskConical className="size-3" aria-hidden />
-      Demo data
     </span>
   );
 }

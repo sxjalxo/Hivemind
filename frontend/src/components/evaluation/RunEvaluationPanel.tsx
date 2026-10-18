@@ -161,7 +161,6 @@ export function RunEvaluationPanel() {
           ) : (
             <RunningView
               indeterminate={progress.indeterminate}
-              hasChannel={progress.hasChannel}
               stageIndex={progress.stageIndex}
               progressPct={progress.metrics?.progressPct ?? null}
               metrics={progress.metrics}
@@ -186,14 +185,12 @@ const PHASE_LABEL: Record<string, string> = {
 
 function RunningView({
   indeterminate,
-  hasChannel,
   stageIndex,
   progressPct,
   metrics,
   waitingForRecord,
 }: {
   indeterminate: boolean;
-  hasChannel: boolean;
   stageIndex: number | null;
   progressPct: number | null;
   metrics: {
@@ -221,11 +218,9 @@ function RunningView({
         <EvaluationProgress activeIndex={stageIndex} />
 
         <p className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted-foreground">
-          {!hasChannel
-            ? `This data source publishes no progress channel, so these ${EVALUATION_STAGE_COUNT} stages show the expected pipeline rather than live status.`
-            : indeterminate
-              ? `No stage frame has arrived yet. The channel has no replay, so frames published before this page subscribed are gone — the run may already be past these ${EVALUATION_STAGE_COUNT} stages.`
-              : "Stages are live from the run's progress channel."}
+          {indeterminate
+            ? `No stage frame has arrived yet. The channel has no replay, so frames published before this page subscribed are gone — the run may already be past these ${EVALUATION_STAGE_COUNT} stages.`
+            : "Stages are live from the run's progress channel."}
           {waitingForRecord
             ? " The run record has not appeared yet; the outcome is read from the authoritative GET, not from this channel."
             : null}

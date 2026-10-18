@@ -13,7 +13,6 @@ import { TechniqueDrawer } from "@/components/mitre/TechniqueDrawer";
 import {
   ClassificationChain,
   CopyableMono,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   LoadingState,
@@ -28,7 +27,6 @@ import {
 } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { isDemoMode } from "@/services";
 import { formatDateTime, formatDuration, formatPct } from "@/utils/format";
 import type { MitreTechnique } from "@/types";
 import { analysisQueries, mitreCoverageQuery, sessionQueries } from "@/services/queries";
@@ -90,7 +88,6 @@ function SessionInvestigationPage() {
           <>
             <ProvenanceBadge kind="OBSERVED" />
             <AnalysisStateChip state={data.analysisState} />
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
         actions={

@@ -1,5 +1,5 @@
 export { RiskBadge, asRiskLevel } from "./RiskBadge";
-export { ProvenanceBadge, DemoDataBadge } from "./ProvenanceBadge";
+export { ProvenanceBadge } from "./ProvenanceBadge";
 export { MitreBadge, ClassificationChain } from "./MitreBadge";
 export { Mono, CopyButton, CopyableMono } from "./Mono";
 export { StatusDot, StatusRow } from "./StatusDot";

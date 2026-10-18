@@ -247,7 +247,7 @@ async def test_timeline_does_not_repeat_the_event_action_as_label_and_detail() -
 async def test_a_session_past_the_page_size_says_so(monkeypatch, caplog) -> None:
     """Truncation must be loud, not a short timeline nobody questions.
 
-    `_fetch_session_events` reads one Elasticsearch page. A session past it
+    `get_session_events` reads one Elasticsearch page. A session past it
     used to lose its tail in silence: a timeline missing its end, an
     understated command count, and a compaction the model reads as the whole
     session -- every one of which looks like a quiet honeypot rather than a

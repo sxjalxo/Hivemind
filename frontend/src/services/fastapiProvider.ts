@@ -34,8 +34,6 @@ import type {
  * onto the documented backend contract; no data is fabricated here.
  */
 export const FastAPIProvider: DataProvider = {
-  mode: "api",
-
   getSystemStatus: () => request<ServiceStatus[]>(endpoints.status),
 
   getHoneypots: () => request<Honeypot[]>(endpoints.honeypots),

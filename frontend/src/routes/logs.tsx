@@ -4,7 +4,6 @@ import { ChevronRight, Code2, Download, Rows3, ScrollText, Search, Table2 } from
 import { Fragment, useState } from "react";
 import {
   CopyButton,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   MitreBadge,
@@ -25,7 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { isDemoMode, provider } from "@/services";
+import { provider } from "@/services";
 import { downloadText, toCsv } from "@/utils/csv";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
@@ -183,7 +182,6 @@ function LogExplorerPage() {
             <span className="label-caps">
               {isPending ? "Searching" : `${formatNumber(data?.total ?? 0)} events`}
             </span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
         actions={

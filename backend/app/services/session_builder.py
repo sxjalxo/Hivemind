@@ -74,7 +74,7 @@ def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
-async def _fetch_session_events(session_id: str) -> list[HoneypotEvent]:
+async def get_session_events(session_id: str) -> list[HoneypotEvent]:
     result = await get_es().search(
         index=get_settings().es_index,
         query={"term": {"session.id": session_id}},
@@ -151,12 +151,9 @@ def _build(
     )
 
 
-async def get_session_events(session_id: str) -> list[HoneypotEvent]:
-    return await _fetch_session_events(session_id)
-
 
 async def get_session(session_id: str) -> AttackSession | None:
-    events = await _fetch_session_events(session_id)
+    events = await get_session_events(session_id)
     if not events:
         return None
 
@@ -434,7 +431,7 @@ def _detail(kind: str, label: str, action: str, event: HoneypotEvent) -> str | N
 
 
 async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:
-    events = await _fetch_session_events(session_id)
+    events = await get_session_events(session_id)
     timeline: list[SessionTimelineEvent] = []
 
     for event in events:

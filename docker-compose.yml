@@ -16,6 +16,10 @@ services:
       retries: 12
 
   kibana:
+    # Optional: nothing in the app or its scripts talks to Kibana, and it is the
+    # heaviest container here. The app's own Log Explorer browses the events.
+    #   docker compose --profile tools up -d kibana
+    profiles: ["tools"]
     image: docker.elastic.co/kibana/kibana:8.15.3
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200

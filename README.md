@@ -84,7 +84,7 @@ infrastructure in containers and the backend and frontend on the host, with relo
 
 | | |
 |---|---|
-| Docker Desktop | runs Cowrie, Filebeat, Elasticsearch, Kibana, Postgres, Redis |
+| Docker Desktop | runs Cowrie, the web honeypot, Filebeat, Elasticsearch, Postgres, Redis |
 | [Ollama](https://ollama.com) | on the host, for GPU access |
 | GPU | 8 GB VRAM is sufficient |
 | Python | 3.12 — only to develop on it; the container carries its own |
@@ -164,9 +164,11 @@ features say they are off; nothing else changes.
 docker compose up -d
 ```
 
-Brings up Elasticsearch (`:9200`), Kibana (`:5601`), Postgres (`:5432`), Redis (`:6379`),
+Brings up Elasticsearch (`:9200`), Postgres (`:5432`), Redis (`:6379`),
 Cowrie (`:2222` SSH, `:2223` Telnet), the web honeypot (`:8088` HTTP) and Filebeat. Every
 port binds to `127.0.0.1` only.
+Kibana is optional and off by default: `docker compose --profile tools up -d kibana`
+(`:5601`).
 
 ### 2. Local model
 

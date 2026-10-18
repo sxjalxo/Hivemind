@@ -2,7 +2,6 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { ScorePill } from "@/components/evaluation/AssessmentPair";
 import {
-  DemoDataBadge,
   ErrorState,
   InlineNotice,
   LoadingState,
@@ -28,7 +27,6 @@ import {
   formatDeltaPp,
   shortFingerprint,
 } from "@/services/evaluation";
-import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import type {
   EvaluatorReassessment,
@@ -71,7 +69,6 @@ function CompareRunsPage() {
       <PageHeader
         title="Compare evaluation runs"
         subtitle="What moved between two runs, and whether the move is attributable to the honeypot at all."
-        meta={isDemoMode ? <DemoDataBadge /> : null}
       />
 
       <InlineNotice tone="info">

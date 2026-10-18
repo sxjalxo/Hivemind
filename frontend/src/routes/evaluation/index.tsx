@@ -6,7 +6,6 @@ import { EvaluatorStatusChip, RunStatusChip } from "@/components/evaluation/Eval
 import { RunActor } from "@/components/evaluation/RunActor";
 import { RunEvaluationPanel } from "@/components/evaluation/RunEvaluationPanel";
 import {
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   InlineNotice,
@@ -27,7 +26,6 @@ import {
   findScore,
   shortFingerprint,
 } from "@/services/evaluation";
-import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import type { EvaluationRunSummary } from "@/types";
 
@@ -51,7 +49,6 @@ function EvaluationHistoryPage() {
             <span className="label-caps">
               {isPending ? "Loading" : `${data?.length ?? 0} runs`}
             </span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
         actions={

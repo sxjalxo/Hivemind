@@ -44,9 +44,8 @@ import type {
  *    start rather than spun on forever.
  *
  * The progress channel is decoration. It has no replay and no completion
- * frame, and `subscribeEvaluationProgress` is optional on `DataProvider` (the
- * demo provider omits it), so nothing here is gated on a frame arriving: the
- * poll settles the run on its own.
+ * frame, so nothing here is gated on a frame arriving: the poll settles the
+ * run on its own.
  */
 
 export interface EvaluationRunProgress {
@@ -54,13 +53,11 @@ export interface EvaluationRunProgress {
   stageIndex: EvaluationStageIndex | null;
   metrics: LiveEvaluationMetrics | null;
   /**
-   * True when progress is genuinely unknown rather than merely at stage 0 --
-   * either the provider offers no channel, or frames published before we
-   * subscribed were lost (the channel has no replay).
+   * True when progress is genuinely unknown rather than merely at stage 0:
+   * frames published before we subscribed were lost (the channel has no
+   * replay).
    */
   indeterminate: boolean;
-  /** Whether the provider exposes a progress channel at all. */
-  hasChannel: boolean;
 }
 
 export type EvaluationRunPhase =
@@ -83,7 +80,6 @@ const NO_PROGRESS: EvaluationRunProgress = {
   stageIndex: null,
   metrics: null,
   indeterminate: true,
-  hasChannel: false,
 };
 
 export function useEvaluationRun() {
@@ -106,7 +102,6 @@ export function useEvaluationRun() {
         stageIndex: null,
         metrics: null,
         indeterminate: true,
-        hasChannel: Boolean(provider.subscribeEvaluationProgress),
       });
     },
     onSuccess: (response) => {
@@ -145,11 +140,10 @@ export function useEvaluationRun() {
     return () => window.clearTimeout(timer);
   }, [dispatchedAt, run, failureFrame]);
 
-  // Live stages, where the provider has a channel. Closed as soon as the run
-  // settles or a terminal frame arrives, so a finished run holds no socket.
+  // Live stages. Closed as soon as the run settles or a terminal frame
+  // arrives, so a finished run holds no socket.
   useEffect(() => {
     if (runId === null || settled || failureFrame !== null) return;
-    if (!provider.subscribeEvaluationProgress) return;
 
     // Subscribing is async now: the provider fetches a Clerk session token
     // before opening the socket. An effect cleanup cannot be a promise, so

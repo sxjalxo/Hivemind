@@ -6,7 +6,6 @@ import { AnalysisStateChip } from "@/components/session/AnalysisStateChip";
 import { LiveAnalysisPanel } from "@/components/session/LiveAnalysisPanel";
 import {
   ConfidenceBar,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   LoadMore,
@@ -27,7 +26,7 @@ import {
 } from "@/components/ui/select";
 import { useAnalysisRun } from "@/hooks/useAnalysisRun";
 import { useAdminForSession } from "@/hooks/useAdminFor";
-import { isDemoMode, provider } from "@/services";
+import { provider } from "@/services";
 import { usePagedList } from "@/hooks/usePagedList";
 import { formatDateTime } from "@/utils/format";
 import type { AnalysisState, SessionAnalysis } from "@/types";
@@ -70,7 +69,6 @@ function AnalysisPage() {
                 ? "Loading"
                 : `${history.data?.length ?? 0}${history.hasMore ? "+" : ""} runs`}
             </span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
       />

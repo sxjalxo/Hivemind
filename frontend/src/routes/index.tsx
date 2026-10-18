@@ -11,7 +11,6 @@ import {
 import { TopAttackersTable } from "@/components/dashboard/TopAttackersTable";
 import {
   ClassificationChain,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   KpiCard,
@@ -27,7 +26,6 @@ import { TimeRangeTabs } from "@/components/layout/TimeRangeSelector";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useTimeRange } from "@/hooks/useTimeRange";
-import { isDemoMode } from "@/services";
 import { formatDuration } from "@/utils/format";
 import { dashboardQuery, sessionQueries } from "@/services/queries";
 
@@ -48,7 +46,6 @@ function DashboardPage() {
         meta={
           <>
             <span className="label-caps">Window: {label}</span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
         actions={

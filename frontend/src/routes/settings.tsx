@@ -1,16 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Database, Lock, Server, ShieldCheck } from "lucide-react";
-import {
-  DemoDataBadge,
-  InlineNotice,
-  Mono,
-  PageHeader,
-  Panel,
-  StatusRow,
-} from "@/components/common";
+import { InlineNotice, Mono, PageHeader, Panel, StatusRow } from "@/components/common";
 import { Skeleton } from "@/components/ui/skeleton";
-import { API_BASE_URL, isDemoMode } from "@/services";
+import { API_BASE_URL } from "@/services";
 import { systemStatusQuery } from "@/services/queries";
 
 export const Route = createFileRoute("/settings")({
@@ -25,38 +18,20 @@ function SettingsPage() {
       <PageHeader
         title="Settings"
         subtitle="Where this frontend gets its data, and what it deliberately does not hold."
-        meta={isDemoMode ? <DemoDataBadge /> : null}
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Panel title="Data source" description="The single switch between demo data and FastAPI.">
+        <Panel title="Data source" description="Where every request on this page goes.">
           <dl className="space-y-3">
-            <Row label="Active provider">
-              <Mono className="text-[13px]">{isDemoMode ? "DemoProvider" : "FastAPIProvider"}</Mono>
-            </Row>
             <Row label="API base URL">
               <Mono className="text-[13px]">{API_BASE_URL}</Mono>
             </Row>
-            <Row label="Mode">
-              <span className="text-sm text-foreground/90">
-                {isDemoMode ? "Demo — synthetic dataset" : "Live — backend responses"}
-              </span>
-            </Row>
           </dl>
 
-          <InlineNotice tone={isDemoMode ? "warn" : "info"} icon={Server} className="mt-4">
-            {isDemoMode ? (
-              <>
-                Demo mode is active because <Mono className="text-[11px]">VITE_API_BASE_URL</Mono>{" "}
-                is unset. Everything you see is synthetic and labelled as such. Set that variable
-                and reload to route every request through FastAPI — no component changes needed.
-              </>
-            ) : (
-              <>
-                All data on this instance comes from the configured FastAPI backend. Demo fixtures
-                are not loaded.
-              </>
-            )}
+          <InlineNotice tone="info" icon={Server} className="mt-4">
+            All data on this instance comes from the FastAPI backend at that address, set by{" "}
+            <Mono className="text-[11px]">VITE_API_BASE_URL</Mono> (default{" "}
+            <Mono className="text-[11px]">http://localhost:8000</Mono>).
           </InlineNotice>
         </Panel>
 

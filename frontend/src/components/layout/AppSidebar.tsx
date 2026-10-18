@@ -2,9 +2,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { Hexagon, X } from "lucide-react";
 import { NAV_ITEMS } from "./navigation";
 import { SystemStatusPanel } from "./SystemStatusPanel";
-import { DemoDataBadge } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import { isDemoMode } from "@/services";
 import { cn } from "@/lib/utils";
 
 function isActive(pathname: string, to: string): boolean {
@@ -68,15 +66,6 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </nav>
 
       <div className="shrink-0 border-t border-sidebar-border p-3">
-        {isDemoMode ? (
-          <div className="mb-3 rounded-md border border-border bg-muted/30 p-2.5">
-            <DemoDataBadge />
-            <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
-              Serving the synthetic dataset. Set{" "}
-              <span className="font-mono">VITE_API_BASE_URL</span> to switch to FastAPI.
-            </p>
-          </div>
-        ) : null}
         <SystemStatusPanel />
       </div>
     </div>

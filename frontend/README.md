@@ -17,9 +17,9 @@ service lives in `../backend` and the infrastructure in `../infra`. To run the w
 stack see the [root README](../README.md), or [`../OVERVIEW.md`](../OVERVIEW.md) for the
 design rationale and technical reference.
 
-The frontend still stands alone: it ships with a clearly-labelled demo dataset so it runs
-with no backend at all, and a single environment variable moves every request onto
-FastAPI.
+It needs the FastAPI backend running: every screen is a view of what the backend
+recorded or concluded, and there is no offline dataset (the synthetic demo mode was removed
+on 2026-10-17 -- it was a second implementation of every route to keep in step).
 
 Beyond the analysis surfaces, it also renders the **realism evaluation** half of the
 system — the run history, a run's two independent assessments, and a comparison between
@@ -36,22 +36,17 @@ npm run dev      # http://localhost:8080
 
 Other scripts: `npm run build`, `npm run preview`, `npm run lint`, `npm run format`.
 
-### Demo mode vs. the real backend
+### Pointing it at the backend
 
-Demo mode is active whenever `VITE_API_BASE_URL` is **unset**. To point the app at FastAPI:
+`VITE_API_BASE_URL` sets the backend address; unset, it is `http://localhost:8000`.
 
 ```sh
 # .env
 VITE_API_BASE_URL=http://localhost:8000
 ```
 
-That one variable flips `DemoProvider → FastAPIProvider` in `src/services/index.ts`.
-No component changes are required — every page consumes the `DataProvider` interface,
-not a concrete implementation. The active provider is shown on the **Settings** page.
-
-Demo data is isolated in `src/services/demo/` and never imported by the API path.
-Every surface that renders it carries a **DEMO DATA** badge, so synthetic output is
-never mistaken for a backend or model response.
+Every page goes through `provider` in `src/services/index.ts`, which implements the typed
+`DataProvider` contract over HTTP. The address in use is shown on the **Settings** page.
 
 ---
 
@@ -156,11 +151,10 @@ translate directly into Elasticsearch queries on the backend.
 
 ### Live progress channels
 
-`subscribeAnalysisProgress` and `subscribeEvaluationProgress` are both **optional** on
-`DataProvider`. `FastAPIProvider` implements both over WebSockets; the demo provider
-implements the analysis one with a scripted sequence and omits the evaluation one
-entirely, because there is no real run behind it. When a channel is absent the UI shows an
-indeterminate running state **and says so**, rather than animating invented progress.
+`subscribeAnalysisProgress` and `subscribeEvaluationProgress` open the two progress
+WebSockets. Neither channel replays, so frames published before the page subscribed are
+lost: the UI shows an indeterminate running state **and says so**, rather than animating
+invented progress, and the run's outcome is always read back from the API.
 
 ### Finding lifecycle on the comparison
 
@@ -180,9 +174,7 @@ soften:
   honeypot.
 
 A `fixed` entry has no row in the head run, so its text and evidence arrive from base —
-`fromRunId` says which. The demo provider resolves the same way rather than
-set-differencing keys, so offline mode never shows a fix the real system would refuse to
-claim.
+`fromRunId` says which.
 
 Two properties of the evaluation channel that the UI is built around, because getting
 either wrong produces a permanent spinner:

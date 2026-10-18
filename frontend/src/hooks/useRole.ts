@@ -1,17 +1,17 @@
 import { useAuth } from "@clerk/tanstack-react-start";
-import { AUTH_CONFIGURED, isDemoMode } from "@/services";
+import { AUTH_CONFIGURED } from "@/services";
 
 /**
- * An instance with nobody to be: demo mode, or a build with no Clerk key.
+ * An instance with nobody to be: a build with no Clerk key.
  *
- * Both report `admin` for the same reason. There is no identity to read a
+ * It reports `admin`. There is no identity to read a
  * role from, and the backend in this configuration refuses nothing, so a
  * role check can only ever subtract — disabling AI Analyze, Run evaluation
  * and Analyse while the API behind them answers every caller. Resolving to
  * `viewer` here was a silent regression: it made the documented default
  * setup (no `CLERK_ISSUER`, open API) a read-only shell.
  */
-const OPEN_INSTANCE = isDemoMode || !AUTH_CONFIGURED;
+const OPEN_INSTANCE = !AUTH_CONFIGURED;
 
 export type Role = "admin" | "viewer";
 
@@ -33,10 +33,7 @@ export type Role = "admin" | "viewer";
  * what the UI renders, and that is the check that counts. Hiding a button a
  * viewer cannot use is courtesy; it is not the boundary.
  *
- * Demo mode has no Clerk and no backend to refuse anything, so it reports
- * `admin` rather than rendering a read-only shell of an app whose whole
- * purpose is to demonstrate the features. A build with no Clerk key does the
- * same, for the same reason — see `OPEN_INSTANCE` above.
+ * A build with no Clerk key reports `admin` -- see `OPEN_INSTANCE` above.
  */
 export function useRole(): {
   role: Role;

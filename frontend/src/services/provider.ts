@@ -42,12 +42,11 @@ export interface AnalysisProgressEvent {
 export type Unsubscribe = () => void;
 
 /**
- * Single contract implemented by both the demo provider and the FastAPI
- * provider. Swapping DemoProvider -> FastAPIProvider requires no UI changes.
+ * The typed contract of the FastAPI backend, one method per route. Kept as an
+ * interface, though it has one implementation, because it is where each
+ * route's shape and caveats are written down.
  */
 export interface DataProvider {
-  readonly mode: "demo" | "api";
-
   getSystemStatus(): Promise<ServiceStatus[]>;
 
   getHoneypots(): Promise<Honeypot[]>;
@@ -109,7 +108,7 @@ export interface DataProvider {
    * and the run is already under way. That gap is real, documented, and
    * closed by reading the outcome back from the API, not from the socket.
    */
-  subscribeAnalysisProgress?(
+  subscribeAnalysisProgress(
     sessionId: string,
     onEvent: (event: AnalysisProgressEvent) => void,
   ): Promise<Unsubscribe>;
@@ -120,12 +119,8 @@ export interface DataProvider {
   /** Indicators per type over the whole table, for the type rail. */
   getIndicatorCounts(): Promise<Record<string, number>>;
 
-  /**
-   * Optional: indicators as STIX 2.1, a MISP event or an IP blocklist. Absent
-   * in demo mode, which has no backend to build a real export from -- the UI
-   * then offers no export rather than a synthetic file.
-   */
-  exportIndicators?(format: IocExportFormat): Promise<IocExport>;
+  /** Indicators as STIX 2.1, a MISP event or an IP blocklist. */
+  exportIndicators(format: IocExportFormat): Promise<IocExport>;
   getAttackerProfile(ip: string): Promise<AttackerProfile>;
   getAttackerReputation(ip: string): Promise<Reputation>;
   /** By indicator id: only indicators this system extracted can be looked up. */
@@ -193,7 +188,7 @@ export interface DataProvider {
    * terminal `failed` frame, which may be the ONLY record of a run that never
    * got a row.
    */
-  subscribeEvaluationProgress?(
+  subscribeEvaluationProgress(
     runId: string,
     onEvent: (event: EvaluationProgressEvent) => void,
   ): Promise<Unsubscribe>;

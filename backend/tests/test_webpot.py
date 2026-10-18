@@ -175,7 +175,7 @@ async def test_the_timeline_shows_the_request_line_and_status(monkeypatch):
     async def fake(session_id):
         return [to_event(h) for h in hits]
 
-    monkeypatch.setattr(session_builder, "_fetch_session_events", fake)
+    monkeypatch.setattr(session_builder, "get_session_events", fake)
     request, login = await session_builder.build_timeline("s")
     assert (request.kind, request.label, request.detail) == ("request", "GET /.env", "HTTP 404")
     assert (login.kind, login.label) == ("auth", "Login failed")

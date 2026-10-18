@@ -5,7 +5,6 @@ import { AttackPatternGraph, SimilarityList } from "@/components/attacker/Attack
 import { ReputationPanel } from "@/components/attacker/ReputationPanel";
 import {
   CopyableMono,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   InlineNotice,
@@ -18,7 +17,6 @@ import {
   RiskBadge,
   RiskScoreMeter,
 } from "@/components/common";
-import { isDemoMode } from "@/services";
 import { formatBytes, formatDateTime } from "@/utils/format";
 import { sessionQueries } from "@/services/queries";
 
@@ -60,7 +58,6 @@ function AttackerProfilePage() {
           <>
             <ProvenanceBadge kind="CORRELATED" />
             <span className="label-caps">{data.behaviorLabel}</span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
       />

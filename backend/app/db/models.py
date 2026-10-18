@@ -143,19 +143,6 @@ class Report(SQLModel, table=True):
     body: dict = Field(default_factory=dict, sa_column=Column(JSONB))
 
 
-class AttackerProfile(SQLModel, table=True):
-    __tablename__ = "attacker_profiles"
-
-    ip: str = Field(primary_key=True)
-    risk: str
-    risk_score: int
-    behavior_label: str
-    first_seen: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
-    last_seen: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
-    geo: dict | None = Field(default=None, sa_column=Column(JSONB))
-    updated_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
-
-
 # --- Phase 2: honeypot-realism evaluation schema ---------------------------
 
 

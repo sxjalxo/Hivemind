@@ -15,7 +15,6 @@ import { useMemo, useState } from "react";
 import {
   ConfidenceBar,
   CopyButton,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   LoadMore,
@@ -29,7 +28,7 @@ import {
 import { IocExportPanel } from "@/components/intel/IocExportPanel";
 import { VirusTotalCheck } from "@/components/intel/VirusTotalCheck";
 import { Input } from "@/components/ui/input";
-import { isDemoMode, provider } from "@/services";
+import { provider } from "@/services";
 import { usePagedList } from "@/hooks/usePagedList";
 import { formatDateTime } from "@/utils/format";
 import { cn } from "@/lib/utils";
@@ -109,7 +108,6 @@ function ThreatIntelPage() {
             <span className="label-caps">
               {isPending ? "Loading" : `${data?.length ?? 0}${hasMore ? "+" : ""} indicators`}
             </span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
       />

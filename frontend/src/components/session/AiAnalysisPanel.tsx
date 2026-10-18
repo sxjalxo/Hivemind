@@ -14,7 +14,6 @@ import { EvidenceList } from "./EvidenceList";
 import { RejectedClaims } from "./RejectedClaims";
 import {
   ConfidenceBar,
-  DemoDataBadge,
   ErrorState,
   MitreBadge,
   Mono,
@@ -29,7 +28,6 @@ import { Button } from "@/components/ui/button";
 import { useAnalysisRun } from "@/hooks/useAnalysisRun";
 import { RunActor } from "@/components/evaluation/RunActor";
 import { useAdminForHoneypot } from "@/hooks/useAdminFor";
-import { isDemoMode } from "@/services";
 import { formatDuration } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { EvidenceRef, SessionAnalysis } from "@/types";
@@ -162,7 +160,6 @@ function RunningView({
           <span className="font-mono text-xs uppercase tracking-[0.08em] text-ai">
             Analysing attacker session
           </span>
-          {isDemoMode ? <DemoDataBadge /> : null}
         </div>
 
         <div className="mb-3 h-1 overflow-hidden rounded-full bg-muted">
@@ -230,7 +227,6 @@ function AnalysisResult({
         <Mono tone="muted" className="text-[11px]">
           {analysis.durationSeconds.toFixed(1)}s
         </Mono>
-        {isDemoMode ? <DemoDataBadge className="ml-auto" /> : null}
       </div>
 
       <div className="grid gap-4 rounded-lg border border-border bg-background/40 p-4 sm:grid-cols-3">

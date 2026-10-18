@@ -4,15 +4,7 @@ import { Grid3x3 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MatrixLegend, MitreMatrix } from "@/components/mitre/MitreMatrix";
 import { TechniqueDrawer } from "@/components/mitre/TechniqueDrawer";
-import {
-  DemoDataBadge,
-  EmptyState,
-  ErrorState,
-  InlineNotice,
-  Mono,
-  PageHeader,
-  Panel,
-} from "@/components/common";
+import { EmptyState, ErrorState, InlineNotice, Mono, PageHeader, Panel } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -22,7 +14,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { isDemoMode } from "@/services";
 import { formatPct } from "@/utils/format";
 import type { MitreTechnique } from "@/types";
 import { mitreCoverageQuery, sessionQueries } from "@/services/queries";
@@ -70,7 +61,6 @@ function MitrePage() {
                 {coverage.data.observedCount} of {coverage.data.totalCount} techniques observed
               </span>
             ) : null}
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
         actions={

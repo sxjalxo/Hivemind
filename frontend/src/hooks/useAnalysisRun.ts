@@ -39,34 +39,31 @@ export function useAnalysisRun(sessionId: string) {
       setRun({
         stageIndex: null,
         metrics: null,
-        indeterminate: !provider.subscribeAnalysisProgress,
+        indeterminate: false,
       });
 
       // Awaited, so the channel is listening before the analysis starts.
       // The backend publishes stage 0 immediately and the channel has no
       // replay, so firing the POST while the socket was still connecting
       // dropped however many early stages lost that race.
-      if (provider.subscribeAnalysisProgress) {
-        unsubscribeRef.current = await provider.subscribeAnalysisProgress(
-          sessionId,
-          (event: AnalysisProgressEvent) => {
-            setRun((prev) => ({
-              stageIndex: event.stageIndex,
-              indeterminate: false,
-              metrics: {
-                progressPct: event.metrics?.progressPct ?? prev.metrics?.progressPct ?? 0,
-                eventsProcessed:
-                  event.metrics?.eventsProcessed ?? prev.metrics?.eventsProcessed ?? 0,
-                commandsAnalyzed:
-                  event.metrics?.commandsAnalyzed ?? prev.metrics?.commandsAnalyzed ?? 0,
-                techniquesDetected:
-                  event.metrics?.techniquesDetected ?? prev.metrics?.techniquesDetected ?? 0,
-                iocsExtracted: event.metrics?.iocsExtracted ?? prev.metrics?.iocsExtracted ?? 0,
-              },
-            }));
-          },
-        );
-      }
+      unsubscribeRef.current = await provider.subscribeAnalysisProgress(
+        sessionId,
+        (event: AnalysisProgressEvent) => {
+          setRun((prev) => ({
+            stageIndex: event.stageIndex,
+            indeterminate: false,
+            metrics: {
+              progressPct: event.metrics?.progressPct ?? prev.metrics?.progressPct ?? 0,
+              eventsProcessed: event.metrics?.eventsProcessed ?? prev.metrics?.eventsProcessed ?? 0,
+              commandsAnalyzed:
+                event.metrics?.commandsAnalyzed ?? prev.metrics?.commandsAnalyzed ?? 0,
+              techniquesDetected:
+                event.metrics?.techniquesDetected ?? prev.metrics?.techniquesDetected ?? 0,
+              iocsExtracted: event.metrics?.iocsExtracted ?? prev.metrics?.iocsExtracted ?? 0,
+            },
+          }));
+        },
+      );
 
       try {
         return await provider.analyzeSession(sessionId);

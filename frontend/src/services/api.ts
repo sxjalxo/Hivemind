@@ -8,9 +8,6 @@ export const API_BASE_URL: string =
   (import.meta.env["VITE_API_BASE_URL"] as string | undefined)?.replace(/\/$/, "") ??
   "http://localhost:8000";
 
-/** Demo mode is on unless an API base URL is explicitly configured. */
-export const DEMO_MODE: boolean = !import.meta.env["VITE_API_BASE_URL"];
-
 /**
  * Whether this build has authentication at all.
  *

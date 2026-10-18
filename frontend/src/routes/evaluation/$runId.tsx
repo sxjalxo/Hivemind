@@ -12,7 +12,6 @@ import {
 } from "@/components/evaluation/EvaluationTables";
 import {
   CopyableMono,
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   InlineNotice,
@@ -35,7 +34,6 @@ import {
   findScore,
   isSettledRun,
 } from "@/services/evaluation";
-import { isDemoMode } from "@/services";
 import { formatDateTime } from "@/utils/format";
 import type { EvaluationRun } from "@/types";
 
@@ -155,7 +153,6 @@ function RunDetail({ run }: { run: EvaluationRun }) {
           <>
             <RunStatusChip status={run.status} />
             <EvaluatorStatusChip status={run.evaluatorStatus} model={run.evaluatorModel} />
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
         actions={

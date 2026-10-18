@@ -5,7 +5,6 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ReportView } from "@/components/report/ReportView";
 import {
-  DemoDataBadge,
   EmptyState,
   ErrorState,
   LoadMore,
@@ -25,7 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useAdminForSession } from "@/hooks/useAdminFor";
-import { provider, isDemoMode } from "@/services";
+import { provider } from "@/services";
 import { usePagedList } from "@/hooks/usePagedList";
 import { formatDateTime } from "@/utils/format";
 import { copyToClipboard } from "@/utils/format";
@@ -95,7 +94,6 @@ function ReportsPage() {
                 ? "Loading"
                 : `${reports.data?.length ?? 0}${reports.hasMore ? "+" : ""} reports`}
             </span>
-            {isDemoMode ? <DemoDataBadge /> : null}
           </>
         }
         actions={selected ? <ReportActions report={selected} /> : null}

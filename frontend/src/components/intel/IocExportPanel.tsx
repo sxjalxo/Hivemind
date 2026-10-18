@@ -45,20 +45,16 @@ function excludedSummary(excluded: Record<string, number>): string {
  * mistaken for the whole list.
  */
 export function IocExportPanel() {
-  const exportIndicators = provider.exportIndicators;
   const [format, setFormat] = useState<IocExportFormat>("stix");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<IocExport | null>(null);
   const [failed, setFailed] = useState(false);
 
-  // Demo mode has no backend to build a real export from: offer none.
-  if (!exportIndicators) return null;
-
   const run = async () => {
     setBusy(true);
     setFailed(false);
     try {
-      const exported = await exportIndicators(format);
+      const exported = await provider.exportIndicators(format);
       downloadText(exported.filename, exported.content, exported.mediaType);
       setResult(exported);
     } catch {

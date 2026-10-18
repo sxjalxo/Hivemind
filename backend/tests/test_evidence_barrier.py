@@ -20,7 +20,6 @@ from app.services.llm.schemas import EvidenceCitation
 from app.services.persistence import (
     Claim,
     NaiveTimestampError,
-    load_evidence,
     persist_analysis,
 )
 
@@ -416,8 +415,10 @@ async def test_load_evidence_returns_refs_for_a_parent() -> None:
             .one()
         )
 
-    refs = await load_evidence(ParentType.TECHNIQUE_MAPPING, mapping.id)
+    async with get_session_factory()() as db:
+        refs = await load_evidence_rows(db, mapping.id)
     assert [r.es_event_id for r in refs] == ["e-wget"]
+    assert {r.parent_type for r in refs} == {ParentType.TECHNIQUE_MAPPING}
     await _cleanup(analysis.id)
 
 
