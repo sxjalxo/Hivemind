@@ -2,6 +2,7 @@
 
     docker compose --profile wild up -d wild-pull        # every 5 min, as a service
     python -m scripts.pull_wild --once                   # one pull, from backend/
+    (a --once beside the running service is refused: they share one position file)
 
 The VM keeps its own log and accepts no inbound traffic but the owner's admin
 SSH, so the logs are PULLED: this connects to that sshd, reads only the bytes
@@ -116,6 +117,7 @@ class Remote:
             look_for_keys=False,
             allow_agent=False,
             timeout=30,
+            compress=True,  # the VM's egress is metered (1 GB/month free); JSON shrinks ~10x
         )
         self.dir = f'"$(docker volume inspect -f {{{{.Mountpoint}}}} {shlex.quote(volume)})"'
 
@@ -206,6 +208,16 @@ def main() -> None:
         volume=env.get("WILD_VOLUME", "cowrie-logs"),
     )
     out_dir = Path(env.get("WILD_OUT_DIR", "/wild-logs/gcp-wild-01"))
+    # Two pullers on one directory both read from the same saved offset and
+    # append the same lines twice (2026-10-18: a --once beside the service did).
+    import fcntl  # Linux-only, like the container; tests drive pull_once directly
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lock = (out_dir / ".lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(f"another wild-pull holds {out_dir}; stop it first") from None
     while True:
         try:
             remote = Remote(**config)

@@ -1,0 +1,2 @@
+# Hivemind live honeypot: retention, disk floor and egress budget (guard.sh).
+*/5 * * * * root /opt/hivemind/guard.sh
