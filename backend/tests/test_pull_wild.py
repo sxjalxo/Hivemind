@@ -1,6 +1,6 @@
 """The live-honeypot puller: every line arrives once, in order, across rotations."""
 
-from scripts.pull_wild import (
+from app.services.wild_pull import (
     LIVE,
     Position,
     Read,

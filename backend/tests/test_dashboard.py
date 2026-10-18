@@ -141,15 +141,27 @@ async def test_top_commands_counts_seeded_commands(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_top_attackers_lists_seeded_source_ips() -> None:
-    await seed(reset=True)
-    data = await build_dashboard("30d")
+async def test_top_attackers_lists_seeded_source_ips(monkeypatch) -> None:
+    """On its OWN index, like the test above, and for the same reason: since
+    2026-10-18 the shared index holds the live GCP honeypot's real attackers,
+    who outnumber the seeded ones and push them off a top-N panel."""
+    es = get_es()
+    index = f"honeypot-events-dash-{uuid.uuid4().hex[:8]}"
+    get_settings.cache_clear()
+    monkeypatch.setenv("ES_INDEX", index)
+    try:
+        await seed(reset=True)
+        data = await build_dashboard("30d")
 
-    ips = {a.ip for a in data.top_attackers}
-    assert "185.220.101.44" in ips
-    # No attacker has been assessed yet — every one must carry the
-    # "not yet assessed" convention, never a fabricated severity.
-    assert all(a.risk == "informational" for a in data.top_attackers)
+        ips = {a.ip for a in data.top_attackers}
+        assert "185.220.101.44" in ips
+        # No attacker has been assessed yet — every one must carry the
+        # "not yet assessed" convention, never a fabricated severity.
+        assert all(a.risk == "informational" for a in data.top_attackers)
+    finally:
+        for name in await es.indices.get_alias(name=index):
+            await es.indices.delete(index=name)
+        get_settings.cache_clear()
 
 
 @pytest.mark.asyncio

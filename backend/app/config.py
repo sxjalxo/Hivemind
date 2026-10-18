@@ -16,7 +16,8 @@ class TargetCapabilities(BaseModel):
 
     The case this exists for is Cowrie on a remote VM: it simulates commands
     and its log reaches our index, but there is no container here to
-    `docker exec` into, so it cannot be reset or have its cowrie.cfg digested.
+    `docker exec` into, so it cannot have its cowrie.cfg digested, and can be
+    reset only through a `HoneypotTarget.gate`.
     """
 
     model_config = {"extra": "forbid"}
@@ -24,6 +25,29 @@ class TargetCapabilities(BaseModel):
     container_access: bool | None = None
     commands_logged: bool | None = None
     simulates_commands: bool | None = None
+
+
+class EvalGate(BaseModel):
+    """SSH to a remote evaluation Cowrie's gate (infra/wild-vm/eval-gate.sh).
+
+    For a Cowrie this backend cannot `docker exec` into. The key reaches only
+    that script, which can clear the evaluation Cowrie's residue (the reset)
+    and serve its log, which a run indexes directly before reading its own
+    session back -- nothing else carries that log home, and a run cannot wait
+    for a timer. See `app.services.evaluation.remote_log`.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    host: str
+    port: int = 50022
+    user: str = "hivemind-eval"
+    # On the machine running the backend; `~` is expanded.
+    key_file: str = "~/.ssh/hivemind_eval"
+    # Pinned: "ssh-ed25519 AAAA...". A VM presenting any other key is refused.
+    host_key: str
+    # `honeypot.name` on the events indexed from it.
+    name: str = "GCP evaluation Cowrie"
 
 
 class HoneypotTarget(BaseModel):
@@ -90,6 +114,21 @@ class HoneypotTarget(BaseModel):
     # Docker operation equivalent to root on the host, and this was the only
     # thing that needed one. See `app.services.evaluation.container`.
     capture_container: str | None = None
+    # A remote Cowrie's reset and log pull. See `EvalGate`.
+    gate: EvalGate | None = None
+
+    @model_validator(mode="after")
+    def _a_gate_is_for_a_remote_cowrie(self) -> "HoneypotTarget":
+        if self.gate is not None and (
+            self.kind != "cowrie" or self.capabilities.container_access is not False
+        ):
+            raise ValueError(
+                "a gate is the reset of a Cowrie with no container here: it needs "
+                "kind 'cowrie' and capabilities.container_access false. With a "
+                "container, reset by `docker exec` instead; a generic host has no "
+                "Cowrie residue to clear."
+            )
+        return self
 
     @model_validator(mode="after")
     def _capabilities_only_subtract(self) -> "HoneypotTarget":
@@ -163,6 +202,11 @@ class HoneypotTarget(BaseModel):
     def has_container_access(self) -> bool:
         """Whether reset and the cowrie.cfg digest can `docker exec` into it."""
         return self._capability("container_access")
+
+    @property
+    def resettable(self) -> bool:
+        """Whether a run can clear a previous run's residue: locally, or through a gate."""
+        return self.has_container_access or self.gate is not None
 
     def capability_overrides(self) -> dict[str, bool]:
         """The capabilities set explicitly, for the honeypot fingerprint."""

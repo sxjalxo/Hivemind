@@ -39,12 +39,16 @@ from app.db.models import ModuleStatus
 from app.es.client import get_es
 from app.services.compaction import CompactedCommand
 from app.services.evaluation import agent as agent_module
+from app.services.evaluation import remote_log
 from app.services.evaluation.agent import EvaluationTarget
 from app.services.evaluation.state import ChainRun, iso
 from app.services.evaluation.static import chains as chains_module
 from app.services.evaluation.static.chains import ChainStepResult
 
 logger = logging.getLogger(__name__)
+
+# A seam, so no test opens an SSH connection to the VM.
+_ingest_remote_log = remote_log.ingest
 
 
 # --- chain read-back ---------------------------------------------------
@@ -166,6 +170,13 @@ async def run_chains(target: EvaluationTarget, honeypot_id: str) -> ChainRun:
             for step in chain.steps:
                 await agent_module._execute(session, step)
     finished = datetime.now(timezone.utc)
+
+    if target.log_gate is not None:
+        # Everything below reads the session back from Elasticsearch, which a
+        # remote Cowrie's log reaches only through this. Cowrie has written
+        # the session by now, and the bulk request waits for a refresh.
+        indexed = await _ingest_remote_log(target.log_gate, honeypot_id)
+        logger.info("indexed %d remote evaluation events before read-back", indexed)
 
     session_id = await discover_cowrie_session_id(honeypot_id, marker, started, finished)
     if session_id is None:

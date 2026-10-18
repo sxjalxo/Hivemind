@@ -384,6 +384,12 @@ copy as `gcp-wild-01`. Real traffic found three event shapes the seeded data nev
 (telnet option negotiation, a failed download's reason, Cowrie's `late` flag); each is now
 mapped or dropped on its own event type only, so anything else unknown still dead-letters.
 
+The evaluation half measures the same deployment through a second Cowrie on that VM (port
+2222, owner's IP only, same image, config and persona, volumes of its own), never the live
+one: evaluating the live honeypot would file our own probes as attacks in `gcp-wild-01`, and
+resetting it would delete real attackers' recordings and payloads, which are never copied
+home. Its target is `gcp-eval-01`; see "A remote Cowrie with a gate" below.
+
 **Notables.** The top-bar bell lists what deserves attention in the last seven days, each
 item carrying the provenance of the claim it rests on: a session the model rated high or
 critical (`AI INFERENCE`), the first rule-backed sighting of a technique (`OBSERVED`), a
@@ -1279,9 +1285,19 @@ attempt, and a fingerprint of where it is that does not collide with a local Cow
 the same address. Capabilities can only be switched OFF — a generic target claiming to
 emulate commands is refused, because that claim is what would run the chains for real.
 Destructive chains need emulation AND a reset, since the files and recordings they leave
-would otherwise reach the next run, so a remote Cowrie runs none of them yet; a remote
-reset is what will lift that. Targets that set no capabilities fingerprint exactly as
-they did before the field existed.
+would otherwise reach the next run, so a remote Cowrie runs none of them -- unless it has
+a `gate`. Targets that set no capabilities fingerprint exactly as they did before the
+field existed.
+
+**A remote Cowrie with a gate.** The evaluation Cowrie on the GCP VM adds
+`"gate": {"host": ..., "host_key": "ssh-ed25519 ..."}` (`port` 50022, `user`
+`hivemind-eval` and `key_file` `~/.ssh/hivemind_eval` by default). The key logs in as a
+user whose only command is `infra/wild-vm/eval-gate.sh`, which can do three things to that
+one Cowrie: list its log, read it, and empty its recordings and downloads volumes, failing
+unless they are empty after. That is the reset, so destructive chains run there. Its log
+has no Filebeat, so after the chain session a run reads the log through the gate and
+indexes it itself, under ids made of inode and byte offset, so fetching the same bytes
+twice creates nothing.
 
 ### Running the degradation matrix
 

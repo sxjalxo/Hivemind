@@ -185,6 +185,9 @@ The VM side is `infra/wild-vm/`: Cowrie's config and run script (deploy steps in
 header) and `guard.sh`, which every five minutes ages out rotated logs after 90 days and
 stops Cowrie if free disk drops under 1 GB or the month's outbound traffic passes 900 MB of
 the free tier's 1 GB. It lifts a stop by itself; `journalctl -t hivemind-guard` on the VM says why.
+The evaluation half measures a second Cowrie on the same VM (`run-cowrie.sh eval`, port 2222,
+your IP only) as target `gcp-eval-01`, reset and read through a key that can do nothing else
+(`setup-eval-gate.sh`); `backend/.env.example` has its `EVALUATION_TARGETS` entry.
 
 ### 2. Local model
 

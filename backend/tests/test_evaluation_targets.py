@@ -241,3 +241,35 @@ def test_a_generic_target_cannot_claim_cowrie_capabilities() -> None:
 def test_a_misspelt_capability_is_refused_not_ignored() -> None:
     with pytest.raises(ValidationError):
         HoneypotTarget(host="h", container_name="c", capabilities={"containeraccess": False})
+
+
+# --- checklist 24: a remote evaluation Cowrie reset through its gate -------
+
+_GATE = {"host": "203.0.113.5", "host_key": "ssh-ed25519 AAAA"}
+
+
+def test_a_gate_makes_a_remote_cowrie_resettable() -> None:
+    remote = HoneypotTarget(
+        host="203.0.113.5", capabilities={"container_access": False}, gate=_GATE
+    )
+
+    assert remote.resettable is True
+    assert remote.has_container_access is False
+    # How it is reset is not what it is: the fingerprint input is unchanged.
+    assert remote.capability_overrides() == {"container_access": False}
+
+
+def test_without_a_gate_a_remote_cowrie_cannot_be_reset() -> None:
+    assert HoneypotTarget(host="h", capabilities={"container_access": False}).resettable is False
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"container_name": "c"},  # a local container resets by docker exec
+        {"kind": "generic", "ssh_password": "x", "capabilities": {"container_access": False}},
+    ],
+)
+def test_a_gate_is_refused_unless_it_is_a_cowrie_with_no_container_here(fields) -> None:
+    with pytest.raises(ValidationError, match="a gate is the reset"):
+        HoneypotTarget(host="h", gate=_GATE, **fields)

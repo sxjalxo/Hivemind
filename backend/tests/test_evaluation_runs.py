@@ -1793,3 +1793,90 @@ async def test_an_assessed_characteristic_is_still_reported_normally(
     assert (reassessed.base_rating, reassessed.head_rating) == (0.4, 0.4)
     assert (reassessed.base_status, reassessed.head_status) == ("completed", "completed")
     assert reassessed.head_verdict.evidence
+
+
+# --- checklist 24: the evaluation Cowrie on the VM ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_remote_cowrie_with_a_gate_is_reset_through_it_and_runs_its_chains(
+    monkeypatch, started
+) -> None:
+    """Reset through the gate, never by `docker exec`, and the chains get a
+    target that can be reset and knows where to pull its log from."""
+    from app.config import EvalGate, HoneypotTarget
+
+    _stub_modules(monkeypatch)
+    monkeypatch.setattr(runs, "_evaluator_client", lambda: None)
+    gate = EvalGate(host="203.0.113.5", host_key="ssh-ed25519 AAAA")
+    configured = get_settings().model_copy(
+        update={
+            "evaluation_targets": {
+                "gcp-eval-test": HoneypotTarget(
+                    host="203.0.113.5", capabilities={"container_access": False}, gate=gate
+                )
+            }
+        }
+    )
+    monkeypatch.setattr(runs, "get_settings", lambda: configured)
+    reset_through: list = []
+    chain_targets: list = []
+
+    async def _remote(g):
+        reset_through.append(g)
+
+    async def _must_not_docker(*args, **kwargs):  # pragma: no cover - asserts absence
+        raise AssertionError("a remote Cowrie was reset by docker exec")
+
+    async def _chains(target, honeypot_id):
+        chain_targets.append(target)
+        return []
+
+    monkeypatch.setattr(runs, "_reset_remote", _remote)
+    monkeypatch.setattr(runs, "_reset_target", _must_not_docker)
+    monkeypatch.setattr(runs, "_run_chains", _chains)
+
+    await started("gcp-eval-test")
+
+    assert reset_through == [gate]
+    (target,) = chain_targets
+    assert target.resettable is True
+    assert target.log_gate == gate
+
+
+@pytest.mark.asyncio
+async def test_a_gated_target_indexes_its_log_before_looking_for_its_session(monkeypatch) -> None:
+    """A remote Cowrie's log reaches the index only through the gate; looking for
+    the chain session first would time out on every run."""
+    from app.config import EvalGate
+
+    monkeypatch.setattr(chain_runner.agent_module, "_open_session", _stub_session)
+    monkeypatch.setattr(chain_runner.agent_module, "_execute", _stub_execute)
+    order: list = []
+    gate = EvalGate(host="203.0.113.5", host_key="ssh-ed25519 AAAA")
+
+    async def _ingest(g, honeypot_id):
+        order.append(("ingest", g, honeypot_id))
+        return 0
+
+    async def _discover(*args, **kwargs):
+        order.append("discover")
+        return None
+
+    monkeypatch.setattr(chain_runner, "_ingest_remote_log", _ingest)
+    monkeypatch.setattr(chain_runner, "discover_cowrie_session_id", _discover)
+
+    await runs._run_chains(
+        runs.EvaluationTarget(
+            host="203.0.113.5",
+            port=2222,
+            username="root",
+            password="x",
+            kind="cowrie",
+            resettable=True,
+            log_gate=gate,
+        ),
+        "gcp-eval-test",
+    )
+
+    assert order == [("ingest", gate, "gcp-eval-test"), "discover"]

@@ -114,7 +114,12 @@ from app.services.evaluation.findings import fact_findings as _fact_findings
 from app.services.evaluation.findings import flush_findings as _flush_findings
 from app.services.evaluation.findings import stage_finding as _stage_finding
 from app.services.evaluation.outcomes import ModuleOutcome
-from app.services.evaluation.reset import ResetBoundaryError, ResetError, reset_target
+from app.services.evaluation.reset import (
+    ResetBoundaryError,
+    ResetError,
+    reset_remote,
+    reset_target,
+)
 from app.services.evaluation.state import PendingFinding, RunNotFoundError
 from app.services.evaluation.state import Collected as _Collected
 from app.services.evaluation.static import nmap as nmap_module
@@ -218,6 +223,7 @@ class TargetUnreachableError(RuntimeError):
 # session data.
 
 _reset_target = reset_target
+_reset_remote = reset_remote
 # Chain execution moved to `chain_runner`; this stays a seam here because
 # `_execute_run` calls it and the suite patches it by this name. The
 # functions chain_runner calls INTERNALLY are patched on that module.
@@ -1168,7 +1174,8 @@ async def start_run(
         kind=configured.kind,
         simulates_commands=configured.simulates_commands,
         has_own_event_log=configured.has_own_event_log,
-        resettable=configured.has_container_access,
+        resettable=configured.resettable,
+        log_gate=configured.gate,
     )
     budget = AgentBudget(
         max_commands=settings.evaluation_agent_max_commands,
@@ -1203,6 +1210,10 @@ async def start_run(
     )
     if configured.has_container_access:
         await _reset_target(container)
+    elif configured.gate is not None:
+        # A Cowrie on the VM: the gate clears the same two directories on its
+        # own volumes and fails unless they are empty. See infra/wild-vm.
+        await _reset_remote(configured.gate)
     else:
         # Nothing to clear, rather than "we gave up on clearing".
         #

@@ -25,6 +25,8 @@ import asyncio
 import contextlib
 from pathlib import PurePosixPath
 
+from app.config import EvalGate
+from app.services import wild_pull
 from app.services.evaluation import container as container_module
 from app.services.evaluation.container import CONTAINER_NAME as _CONTAINER_NAME
 from app.services.evaluation.container import CONTAINER_PYTHON, error_detail
@@ -362,3 +364,25 @@ async def reset_target(
 
     for path in RESET_PATHS:
         await _clear_one(container, path, timeout_seconds)
+
+
+# Includes the SSH handshake to the VM, which alone may take a few seconds.
+_REMOTE_TIMEOUT_SECONDS = 60.0
+
+
+async def reset_remote(gate: EvalGate, timeout_seconds: float = _REMOTE_TIMEOUT_SECONDS) -> None:
+    """Clear a remote evaluation Cowrie's residue through its gate, or raise.
+
+    The gate (infra/wild-vm/eval-gate.sh) empties the same two directories as
+    `RESET_PATHS`, on that Cowrie's own volumes and never the live honeypot's,
+    and exits non-zero unless they are empty afterwards. So a return here means
+    cleared, exactly as for `reset_target`; anything else is `ResetError`.
+    """
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(wild_pull.reset_through_gate, gate), timeout_seconds
+        )
+    except Exception as exc:
+        raise ResetError(
+            f"remote reset through {gate.user}@{gate.host}:{gate.port} failed: {exc}"
+        ) from exc

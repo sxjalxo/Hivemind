@@ -6,6 +6,7 @@ import time
 import paramiko
 from pydantic import BaseModel, model_validator
 
+from app.config import EvalGate
 from app.db.models import FactStatus, ModuleStatus
 from app.services.evaluation.outcomes import ModuleOutcome
 from app.services.evaluation.probes import Probe, load_probes
@@ -40,6 +41,9 @@ class EvaluationTarget(BaseModel):
     has_own_event_log: bool | None = None
     # Residue a run leaves (downloads, tty recordings) can be cleared.
     resettable: bool | None = None
+    # A remote Cowrie's gate: its log is indexed through it before the chain
+    # read-back, since nothing else carries that log home.
+    log_gate: EvalGate | None = None
 
     @model_validator(mode="after")
     def _unset_capabilities_follow_kind(self) -> "EvaluationTarget":
