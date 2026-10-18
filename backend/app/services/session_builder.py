@@ -35,6 +35,11 @@ _KIND_BY_ACTION = {
     # command would show more commands in the timeline than the session
     # header reports.
     "cowrie.command.failed": "execution",
+    # Its sibling on the live honeypot: the command ran without error.
+    "cowrie.command.success": "execution",
+    # A download Cowrie attempted and could not complete -- on the live VM
+    # outbound traffic is blocked, so every attempt ends here, URL kept.
+    "cowrie.session.file_download.failed": "download",
     "cowrie.session.file_download": "download",
     "cowrie.session.file_upload": "file",
     # SSH transport and session metadata that Cowrie records for every real
@@ -46,6 +51,8 @@ _KIND_BY_ACTION = {
     "cowrie.client.fingerprint": "protocol",
     "cowrie.session.params": "protocol",
     "cowrie.log.closed": "protocol",
+    # Telnet option negotiation (WILL/DO NAWS...), seen on the live honeypot.
+    "cowrie.telnet.option": "protocol",
     # Port forwarding is the attacker asking the honeypot to relay traffic on
     # their behalf (ATT&CK T1090). It is an action they took, not transport
     # metadata the daemon recorded, and burying it next to the key exchange

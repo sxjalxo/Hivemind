@@ -170,6 +170,17 @@ port binds to `127.0.0.1` only.
 Kibana is optional and off by default: `docker compose --profile tools up -d kibana`
 (`:5601`).
 
+**Live honeypot (optional).** If a Cowrie VM is deployed on the internet, `wild-pull` copies
+its log home over SSH every five minutes and Filebeat indexes it as `gcp-wild-01`. Set four
+variables in the repo-root `.env`, then `docker compose --profile wild up -d wild-pull`:
+
+| Variable | Value |
+|---|---|
+| `WILD_HOST` | the VM's external IP |
+| `WILD_USER` | the admin account on it (SSH on port `50022`; override with `WILD_PORT`) |
+| `WILD_HOST_KEY` | the VM's pinned host key, `ssh-ed25519 AAAA...`; any other key is refused |
+| `WILD_KEY_FILE` | path to the private key on this machine; mounted read-only |
+
 ### 2. Local model
 
 ```bash

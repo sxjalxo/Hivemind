@@ -129,6 +129,30 @@ services:
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
 
+  wild-pull:
+    # Pulls the LIVE honeypot's Cowrie log home (backend/scripts/pull_wild.py)
+    # every 5 minutes, into a named volume Filebeat follows as gcp-wild-01.
+    # Opt-in: it needs a real VM, so it only runs with `--profile wild`:
+    #   docker compose --profile wild up -d wild-pull
+    # Settings come from the repo-root .env, one variable at a time: the VM's
+    # address, admin user, pinned SSH host key, and the path to the private key
+    # file on this machine (mounted read-only; never copied into the image).
+    # A named volume, not a bind mount: Filebeat identifies files by inode, and
+    # a Windows bind mount's inode is not guaranteed stable -- an unstable one
+    # makes Filebeat re-read the file and index every event twice.
+    profiles: ["wild"]
+    build: ./backend
+    entrypoint: ["python", "-m", "scripts.pull_wild"]
+    environment:
+      - WILD_HOST=${WILD_HOST:-}
+      - WILD_PORT=${WILD_PORT:-50022}
+      - WILD_USER=${WILD_USER:-}
+      - WILD_HOST_KEY=${WILD_HOST_KEY:-}
+    volumes:
+      - ${WILD_KEY_FILE:-./WILD_KEY_FILE-is-not-set}:/run/secrets/wild_key:ro
+      - wild-logs:/wild-logs
+    restart: unless-stopped
+
   prune:
     # Retention, run by an operator and never on a timer (backend/scripts/prune.py):
     #   docker compose --profile tools run --rm prune --older-than 90d [--apply]
@@ -160,6 +184,7 @@ services:
       - cowrie-logs-degraded-sanity:/cowrie-logs-degraded-sanity:ro
       - cowrie-logs-degraded-fs:/cowrie-logs-degraded-fs:ro
       - webpot-logs:/webpot-logs:ro
+      - wild-logs:/wild-logs:ro
       # The registry: how far into each Cowrie log Filebeat has shipped. It
       # lived in the container's writable layer until 2026-10-12, so anything
       # that RECREATED this container -- `docker compose down` then `up`, or
@@ -409,6 +434,7 @@ volumes:
   cowrie-logs:
   cowrie-tty:
   webpot-logs:
+  wild-logs:
   cowrie-logs-hardened:
   cowrie-logs-degraded-sanity:
   cowrie-logs-degraded-fs:

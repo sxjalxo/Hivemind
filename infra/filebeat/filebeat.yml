@@ -101,6 +101,26 @@ filebeat.inputs:
             id: web-01
             name: Web HTTP (staff portal)
 
+  # The LIVE honeypot on the GCP VM (gcp-wild-01). Its log is pulled home by the
+  # `wild-pull` service into the `wild-logs` volume; inert until that runs.
+  # Real internet traffic: never merge it with the seed corpus or the matrix.
+  - type: filestream
+    id: gcp-wild-json
+    enabled: true
+    paths:
+      - /wild-logs/gcp-wild-01/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: gcp-wild-01
+            name: GCP live (med-ws-04)
+
 # Cowrie's JSON is parsed into the nested "cowrie" namespace above (rather than
 # the document root) because Filebeat's own filestream input always attaches a
 # root-level "input" field (input.type: filestream). Cowrie's raw JSON also has

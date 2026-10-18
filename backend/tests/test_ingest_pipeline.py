@@ -29,9 +29,7 @@ COWRIE_LOGIN_EVENT = {
 
 async def _simulate(doc: dict) -> dict:
     await bootstrap_es()
-    result = await get_es().ingest.simulate(
-        id=PIPELINE_ID, docs=[{"_source": doc}]
-    )
+    result = await get_es().ingest.simulate(id=PIPELINE_ID, docs=[{"_source": doc}])
     entry = result["docs"][0]
     assert "error" not in entry, entry
     return entry["doc"]["_source"]
@@ -230,3 +228,92 @@ async def test_a_telnet_event_keeps_its_protocol() -> None:
 @pytest.mark.asyncio
 async def test_an_event_without_a_protocol_still_defaults_to_ssh() -> None:
     assert (await _simulate(COWRIE_COMMAND_EVENT))["network"]["protocol"] == "ssh"
+
+
+# --- live-honeypot event shapes (first seen on gcp-wild-01, 2026-10-18) -------
+#
+# Both were dead-lettered by the strict mapping on the first day of real
+# traffic. Each is now accepted -- through the real pipeline into the real
+# index -- and the guard each fix was careful to keep is held too.
+
+TELNET_OPTION = {
+    "eventid": "cowrie.telnet.option",
+    "timestamp": "2026-10-18T15:14:53.805082Z",
+    "session": "test-telnet-option",
+    "src_ip": "119.167.1.61",
+    "src_port": 36090,
+    "dst_port": 2223,
+    "protocol": "telnet",
+    "command": "WILL",
+    "option_byte": 31,
+    "option_name": "NAWS",
+    "message": "Telnet WILL NAWS",
+}
+
+DOWNLOAD_FAILED = {
+    "eventid": "cowrie.session.file_download.failed",
+    "timestamp": "2026-10-18T14:56:01.216888Z",
+    "session": "test-download-failed",
+    "src_ip": "42.2.12.41",
+    "src_port": 45194,
+    "dst_port": 2223,
+    "protocol": "telnet",
+    "url": "tftp://130.12.180.212:69/x86_64",
+    "error": "TFTP: Transfer timed out",
+    "late": True,
+    "message": "Attempt to download file(s) from URL (tftp://...) failed",
+}
+
+
+async def _index_and_fetch(doc: dict) -> dict:
+    await bootstrap_es()
+    es = get_es()
+    result = await es.index(
+        index=get_settings().es_index, document={"cowrie": doc}, pipeline=PIPELINE_ID, refresh=True
+    )
+    try:
+        return (await es.get(index=result["_index"], id=result["_id"]))["_source"]
+    finally:
+        await es.delete(index=result["_index"], id=result["_id"], refresh=True)
+
+
+@pytest.mark.asyncio
+async def test_a_telnet_option_event_is_indexed_without_its_negotiation_fields() -> None:
+    src = await _index_and_fetch(TELNET_OPTION)
+    assert src["event"]["action"] == "cowrie.telnet.option"
+    assert src["network"]["protocol"] == "telnet"
+    assert not {"command", "option_byte", "option_name"} & src.keys()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_download_keeps_its_url_and_reason() -> None:
+    src = await _index_and_fetch(DOWNLOAD_FAILED)
+    assert src["file"]["url"] == "tftp://130.12.180.212:69/x86_64"
+    assert src["event"]["reason"] == "TFTP: Transfer timed out"
+    assert "error" not in src
+
+
+@pytest.mark.asyncio
+async def test_an_error_object_on_that_event_still_fails_loudly() -> None:
+    """Filebeat reports a malformed log line as an `error` OBJECT. The rename
+    above takes only Cowrie's STRING, so this must still be refused."""
+    await bootstrap_es()
+    doc = {**DOWNLOAD_FAILED, "error": {"message": "parse failure", "type": "json"}}
+    with pytest.raises(BadRequestError) as exc_info:
+        await get_es().index(
+            index=get_settings().es_index, document={"cowrie": doc}, pipeline=PIPELINE_ID
+        )
+    assert "strict_dynamic_mapping_exception" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_command_is_removed_only_from_telnet_options() -> None:
+    """`command` is protocol noise on a telnet option and nowhere else known:
+    on any other event it must still be refused, not silently dropped."""
+    await bootstrap_es()
+    doc = {**COWRIE_COMMAND_EVENT, "command": "WILL"}
+    with pytest.raises(BadRequestError) as exc_info:
+        await get_es().index(
+            index=get_settings().es_index, document={"cowrie": doc}, pipeline=PIPELINE_ID
+        )
+    assert "command" in str(exc_info.value)

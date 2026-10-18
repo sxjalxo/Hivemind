@@ -375,6 +375,15 @@ and is standard library only. It is low-interaction on purpose; SNARE + TANNER i
 candidate baseline if web-honeypot realism is ever compared. The evaluation half does not
 probe it yet: evaluation targets are Cowrie-shaped until `HoneypotTarget.kind` is split.
 
+**A live honeypot.** Cowrie also runs on an internet-facing GCP e2-micro (ports 22 and 23,
+the hardened persona, outbound traffic blocked so downloads fail and are logged as failed).
+Nothing on the VM can reach this machine: `wild-pull` connects out to it over SSH, pinned to
+its host key, and appends only whole new lines of `cowrie.json` to a local volume, keeping a
+byte offset per file so a pull is exactly-once across log rotation. Filebeat indexes that
+copy as `gcp-wild-01`. Real traffic found three event shapes the seeded data never had
+(telnet option negotiation, a failed download's reason, Cowrie's `late` flag); each is now
+mapped or dropped on its own event type only, so anything else unknown still dead-letters.
+
 **Notables.** The top-bar bell lists what deserves attention in the last seven days, each
 item carrying the provenance of the claim it rests on: a session the model rated high or
 critical (`AI INFERENCE`), the first rule-backed sighting of a technique (`OBSERVED`), a
