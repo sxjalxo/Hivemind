@@ -1,6 +1,6 @@
 #!/bin/sh
 # Hivemind on the VM: the live honeypot on 22/23 and, for the evaluation half
-# (checklist 24), a second Cowrie on 2222. Idempotent.
+# (checklist 24), a second Cowrie on 2222/2223. Idempotent.
 #   ./run-cowrie.sh        (re)create both
 #   ./run-cowrie.sh eval   (re)create only the evaluation one; the live
 #                          honeypot keeps running
@@ -56,9 +56,10 @@ if [ "${1:-}" != eval ]; then
   start cowrie 350m -p 22:2222 -p 23:2223
 fi
 
-# 3. The evaluation Cowrie: same image, config and persona, SSH only, on 2222,
+# 3. The evaluation Cowrie: same image, config and persona, SSH on 2222 and
+#    telnet on 2223 -- the ports the evaluation's service scan asks about --
 #    which the GCP rule opens to the owner's IP alone. Its volumes are its own,
 #    so its reset (eval-gate.sh) can never reach the live honeypot's evidence,
 #    and evaluation sessions never land in gcp-wild-01. Recreating it gives it
 #    new SSH host keys: the next run fingerprints as a different honeypot.
-start cowrie-eval 250m -p 2222:2222
+start cowrie-eval 250m -p 2222:2222 -p 2223:2223

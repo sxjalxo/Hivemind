@@ -185,7 +185,7 @@ The VM side is `infra/wild-vm/`: Cowrie's config and run script (deploy steps in
 header) and `guard.sh`, which every five minutes ages out rotated logs after 90 days and
 stops Cowrie if free disk drops under 1 GB or the month's outbound traffic passes 900 MB of
 the free tier's 1 GB. It lifts a stop by itself; `journalctl -t hivemind-guard` on the VM says why.
-The evaluation half measures a second Cowrie on the same VM (`run-cowrie.sh eval`, port 2222,
+The evaluation half measures a second Cowrie on the same VM (`run-cowrie.sh eval`, ports 2222 and 2223,
 your IP only) as target `gcp-eval-01`, reset and read through a key that can do nothing else
 (`setup-eval-gate.sh`); `backend/.env.example` has its `EVALUATION_TARGETS` entry.
 
@@ -208,6 +208,11 @@ cp .env.example .env                                  # optional — every value
 .venv/Scripts/python -m alembic upgrade head
 EVALUATION_TARGET_HOST=127.0.0.1 .venv/Scripts/python -m uvicorn app.main:app --port 8000
 ```
+
+To evaluate more than the one local Cowrie (the degradation-matrix arms, the GCP evaluation
+Cowrie), put an `EVALUATION_TARGETS` map in `backend/.env.evaluation` -- the entries are in
+`backend/.env.example` -- and add `--env-file .env.evaluation` to the command above. A separate
+file, because `backend/.env` is also read by the test suite, which needs the map empty.
 
 On first start the backend installs the Elasticsearch ingest pipeline and index
 template, then seeds a deterministic corpus so every screen has data before any attacker

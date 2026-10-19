@@ -384,8 +384,8 @@ copy as `gcp-wild-01`. Real traffic found three event shapes the seeded data nev
 (telnet option negotiation, a failed download's reason, Cowrie's `late` flag); each is now
 mapped or dropped on its own event type only, so anything else unknown still dead-letters.
 
-The evaluation half measures the same deployment through a second Cowrie on that VM (port
-2222, owner's IP only, same image, config and persona, volumes of its own), never the live
+The evaluation half measures the same deployment through a second Cowrie on that VM (ports
+2222 and 2223, owner's IP only, same image, config and persona, volumes of its own), never the live
 one: evaluating the live honeypot would file our own probes as attacks in `gcp-wild-01`, and
 resetting it would delete real attackers' recordings and payloads, which are never copied
 home. Its target is `gcp-eval-01`; see "A remote Cowrie with a gate" below.

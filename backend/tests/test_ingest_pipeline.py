@@ -317,3 +317,25 @@ async def test_command_is_removed_only_from_telnet_options() -> None:
             index=get_settings().es_index, document={"cowrie": doc}, pipeline=PIPELINE_ID
         )
     assert "command" in str(exc_info.value)
+
+
+TELNET_ERROR = {
+    "eventid": "cowrie.telnet.error",
+    "timestamp": "2026-10-19T02:38:04.750446Z",
+    "session": "test-telnet-error",
+    "src_ip": "203.0.113.7",
+    "src_port": 30765,
+    "dst_port": 2223,
+    "protocol": "telnet",
+    "error": "('Stumped', b'\x01')",
+    "message": "Telnet protocol error ('Stumped', b'\x01'); dropping connection",
+}
+
+
+@pytest.mark.asyncio
+async def test_a_telnet_protocol_error_keeps_its_reason() -> None:
+    """A port scanner's non-Telnet bytes; first seen on the GCP evaluation Cowrie."""
+    src = await _index_and_fetch(TELNET_ERROR)
+    assert src["event"]["action"] == "cowrie.telnet.error"
+    assert src["event"]["reason"] == "('Stumped', b'\x01')"
+    assert "error" not in src

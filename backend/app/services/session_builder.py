@@ -53,6 +53,7 @@ _KIND_BY_ACTION = {
     "cowrie.log.closed": "protocol",
     # Telnet option negotiation (WILL/DO NAWS...), seen on the live honeypot.
     "cowrie.telnet.option": "protocol",
+    "cowrie.telnet.error": "protocol",
     # Port forwarding is the attacker asking the honeypot to relay traffic on
     # their behalf (ATT&CK T1090). It is an action they took, not transport
     # metadata the daemon recorded, and burying it next to the key exchange
