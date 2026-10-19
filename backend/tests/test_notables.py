@@ -128,3 +128,19 @@ async def test_a_denied_sensor_and_an_unplaceable_session_are_both_withheld() ->
     # Under any scope, a session that cannot be placed on a sensor is not shown.
     assert unplaced not in other
     assert "seed-recon-01" in other
+
+
+async def test_a_burst_of_high_risk_sessions_cannot_hide_a_first_sighting() -> None:
+    """A plain newest-50 list let 48 freshly analysed high-risk sessions push a
+    first-ever technique sighting off the bell (2026-10-19)."""
+    sid = f"test-notable-{uuid.uuid4().hex[:8]}"
+    first = _analysis(sid, "low", NOW - timedelta(hours=2), "fixture")
+    burst = [
+        _analysis(f"{sid}-{i}", "critical", NOW - timedelta(minutes=i), "burst") for i in range(60)
+    ]
+    rows = (first, *burst, _mapping(first, "T9904", "rule", NOW - timedelta(hours=2)))
+    async with _rows(*rows):
+        notables = await list_notables(days=7)
+
+    assert "T9904" in {n.technique_id for n in notables}
+    assert len(notables) <= 50

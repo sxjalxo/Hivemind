@@ -7,6 +7,7 @@ from app.services.wild_pull import (
     RemoteFile,
     plan,
     pull_once,
+    sync_tty,
     whole_lines,
 )
 
@@ -72,3 +73,29 @@ def test_every_line_arrives_once_across_pulls_partial_lines_and_a_rotation(tmp_p
 
     lines = (out / LIVE).read_bytes().splitlines()
     assert lines == [b'{"n":1}', b'{"n":2}', b'{"n":3}', b'{"n":4}', b'{"n":5}']
+
+
+class FakeTty:
+    """A recordings volume: finished files named by SHA-256, plus a live one."""
+
+    def __init__(self, names: dict[str, bytes]):
+        self.files = names
+        self.reads: list[str] = []
+
+    def tty_names(self):
+        return [n for n in self.files if len(n) == 64]  # what Remote's regex keeps
+
+    def read_tty(self, name):
+        self.reads.append(name)
+        return self.files[name]
+
+
+def test_finished_recordings_are_copied_once_and_never_half(tmp_path):
+    a, b = "a" * 64, "b" * 64
+    remote = FakeTty({a: b"rec-a", "20261019-live.log": b"still writing"})
+    assert sync_tty(remote, tmp_path) == 1
+    remote.files[b] = b"rec-b"
+    assert sync_tty(remote, tmp_path) == 1  # only the new one
+    assert remote.reads == [a, b]
+    assert sorted(p.name for p in tmp_path.iterdir()) == [a, b]  # no .part left behind
+    assert (tmp_path / a).read_bytes() == b"rec-a"

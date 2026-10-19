@@ -18,9 +18,13 @@ def _client() -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
-async def _walk(client: httpx.AsyncClient, route: str, page: int, total: int) -> list[str]:
+async def _walk(
+    client: httpx.AsyncClient, route: str, page: int, total: int, capped: bool = False
+) -> list[str]:
     # A walk that never meets a short page is a paging bug: it must fail, not
-    # hang, so it gets one page more than the list can fill.
+    # hang, so it gets one page more than the list can fill. When the reference
+    # list was itself cut at its limit (the live honeypot makes the session list
+    # outgrow it), only that prefix can be compared.
     pages = total // page + 2
     seen: list[str] = []
     offset = 0
@@ -31,6 +35,8 @@ async def _walk(client: httpx.AsyncClient, route: str, page: int, total: int) ->
         seen.extend(item["id"] for item in items)
         if len(items) < page:
             return seen
+        if capped and len(seen) >= total:
+            return seen[:total]
         offset += page
     pytest.fail(f"{route}: still full pages after {pages}")
 
@@ -42,7 +48,7 @@ async def _walk(client: httpx.AsyncClient, route: str, page: int, total: int) ->
 async def test_walking_the_pages_yields_exactly_the_list(route):
     async with _client() as client:
         whole = (await client.get(route, params={"limit": 500})).json()
-        walked = await _walk(client, route, page=2, total=len(whole))
+        walked = await _walk(client, route, page=2, total=len(whole), capped=len(whole) == 500)
     assert walked == [item["id"] for item in whole]
 
 

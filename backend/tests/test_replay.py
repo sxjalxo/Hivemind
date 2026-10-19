@@ -139,3 +139,23 @@ async def test_an_oversized_recording_plays_truncated(tty_dir, monkeypatch):
     )
     result = await replay.build_replay("s1")
     assert result.truncated and 0 < len(result.frames) < 3
+
+
+@pytest.mark.asyncio
+async def test_a_honeypot_with_its_own_folder_plays_from_it(tty_dir, tmp_path_factory, monkeypatch):
+    """The cloud honeypot's recordings are copied into a folder of their own
+    (TTY_PATHS), which wins over COWRIE_TTY_PATH for that honeypot only."""
+    import json
+
+    own = tmp_path_factory.mktemp("cloud-tty")
+    (own / SHA).write_bytes(ttylog(START + 0.5))  # not in tty_dir
+    monkeypatch.setenv("TTY_PATHS", json.dumps({"cowrie-01": str(own)}))
+    get_settings.cache_clear()
+    _events(
+        monkeypatch, [_event("cowrie.session.connect", 0), _event("cowrie.log.closed", 10, SHA)]
+    )
+    assert (await replay.build_replay("s1")).status == "ok"
+
+    monkeypatch.setenv("TTY_PATHS", json.dumps({"some-other-honeypot": str(own)}))
+    get_settings.cache_clear()
+    assert (await replay.build_replay("s1")).status == "missing"

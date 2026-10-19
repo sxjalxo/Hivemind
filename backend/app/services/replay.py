@@ -63,11 +63,15 @@ def _epoch(timestamp: str) -> float:
 
 
 async def build_replay(session_id: str) -> SessionReplay:
-    tty_path = get_settings().cowrie_tty_path
-    if not tty_path:
+    settings = get_settings()
+    if not settings.cowrie_tty_path and not settings.tty_paths:
         return SessionReplay(status="not_configured")
 
     events = await session_builder.get_session_events(session_id)
+    honeypot = events[0].honeypot.id if events else None
+    tty_path = settings.tty_paths.get(honeypot) or settings.cowrie_tty_path
+    if not tty_path:
+        return SessionReplay(status="not_configured")
     hashes = [
         e.file.hash.sha256
         for e in events

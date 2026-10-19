@@ -148,9 +148,12 @@ services:
       - WILD_PORT=${WILD_PORT:-50022}
       - WILD_USER=${WILD_USER:-}
       - WILD_HOST_KEY=${WILD_HOST_KEY:-}
+      # Finished terminal recordings too, for the session replay of live sessions.
+      - WILD_TTY_DIR=/wild-tty
     volumes:
       - ${WILD_KEY_FILE:-./WILD_KEY_FILE-is-not-set}:/run/secrets/wild_key:ro
       - wild-logs:/wild-logs
+      - wild-tty:/wild-tty
     restart: unless-stopped
 
   prune:
@@ -263,6 +266,8 @@ services:
       # Cowrie's TTY recordings, read-only, for the session replay
       # (app/services/replay.py). The backend never writes there.
       - cowrie-tty:/cowrie-tty:ro
+      # The cloud honeypot's recordings, copied home by wild-pull.
+      - wild-tty:/wild-tty:ro
     environment:
       # The honeypot, its container and its capture sidecar, by compose
       # service and container name -- all reachable from inside this network.
@@ -275,6 +280,7 @@ services:
       - VIRUSTOTAL_API_KEY=${VIRUSTOTAL_API_KEY:-}
       - REDIS_URL=redis://redis:6379/0
       - COWRIE_TTY_PATH=/cowrie-tty
+      - 'TTY_PATHS={"gcp-wild-01":"/wild-tty"}'
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -435,6 +441,7 @@ volumes:
   cowrie-tty:
   webpot-logs:
   wild-logs:
+  wild-tty:
   cowrie-logs-hardened:
   cowrie-logs-degraded-sanity:
   cowrie-logs-degraded-fs:

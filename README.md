@@ -171,7 +171,7 @@ Kibana is optional and off by default: `docker compose --profile tools up -d kib
 (`:5601`).
 
 **Live honeypot (optional).** If a Cowrie VM is deployed on the internet, `wild-pull` copies
-its log home over SSH every five minutes and Filebeat indexes it as `gcp-wild-01`. Set four
+its log and finished terminal recordings home over SSH every five minutes and Filebeat indexes it as `gcp-wild-01`. Set four
 variables in the repo-root `.env`, then `docker compose --profile wild up -d wild-pull`:
 
 | Variable | Value |

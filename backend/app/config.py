@@ -257,6 +257,10 @@ class Settings(BaseSettings):
     # Where Cowrie's TTY recordings are mounted (read-only) for the terminal
     # replay. Unset = replay off. See `app.services.replay`.
     cowrie_tty_path: str | None = None
+    # Per-honeypot recording folders, which win over `cowrie_tty_path` for their
+    # honeypot -- the cloud honeypot's recordings are copied home by wild-pull.
+    # TTY_PATHS={"gcp-wild-01": "/wild-tty"}
+    tty_paths: dict[str, str] = {}
 
     # Redis for cross-worker progress fan-out (app/workers/queue.py). Unset =
     # in-process only, which requires a single uvicorn worker.

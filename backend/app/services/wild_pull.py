@@ -46,6 +46,10 @@ LIVE = "cowrie.json"
 # exactly these two shapes are ever accepted.
 _NAME = re.compile(r"^cowrie\.json(?:\.\d{4}-\d{2}-\d{2})?$")
 MAX_CHUNK = 20 * 1024 * 1024  # per file per pull; the rest comes next time
+# Cowrie names a finished TTY recording by the SHA-256 of its input; nothing else
+# in that volume is a finished recording, and the name is put into a command.
+_TTY = re.compile(r"^[0-9a-f]{64}$")
+MAX_TTY_BYTES = 5_000_000  # the replay reads no more than this (app.services.replay)
 
 
 @dataclass(frozen=True)
@@ -149,12 +153,26 @@ class _Ssh:
         self.client.close()
 
 
-class Remote(_Ssh):
-    """The live honeypot's log volume, read with the admin key and sudo."""
+def _mountpoint(volume: str) -> str:
+    return f'"$(docker volume inspect -f {{{{.Mountpoint}}}} {shlex.quote(volume)})"'
 
-    def __init__(self, host: str, port: int, user: str, key_file: str, host_key: str, volume: str):
+
+class Remote(_Ssh):
+    """The live honeypot's log and recording volumes, read with the admin key and sudo."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        user: str,
+        key_file: str,
+        host_key: str,
+        volume: str,
+        tty_volume: str = "cowrie-tty",
+    ):
         super().__init__(host, port, user, key_file, host_key)
-        self.dir = f'"$(docker volume inspect -f {{{{.Mountpoint}}}} {shlex.quote(volume)})"'
+        self.dir = _mountpoint(volume)
+        self.tty_dir = _mountpoint(tty_volume)
 
     def _run(self, command: str) -> bytes:
         return self._exec(f"sudo sh -c {shlex.quote(command)}")
@@ -168,6 +186,15 @@ class Remote(_Ssh):
         return self._run(
             f"cd {self.dir} && tail -c +{start + 1} {_checked(name)} | head -c {length}"
         )
+
+    def tty_names(self) -> list[str]:
+        out = self._run(f"cd {self.tty_dir} && ls -1")
+        return [name for name in out.decode().split() if _TTY.fullmatch(name)]
+
+    def read_tty(self, name: str) -> bytes:
+        if not _TTY.fullmatch(name):
+            raise ValueError(f"refusing recording name {name!r}")
+        return self._run(f"cd {self.tty_dir} && head -c {MAX_TTY_BYTES} {name}")
 
 
 class Gate(_Ssh):
@@ -254,6 +281,28 @@ def pull_once(remote: Remote, out_dir: Path) -> int:
         if read.start + len(data) < read.end:
             break  # chunk cap or half-written line: finish this file before the next
     return appended
+
+
+def sync_tty(remote: Remote, out_dir: Path) -> int:
+    """Copy the finished TTY recordings that are not here yet. Returns how many.
+
+    No offsets: Cowrie renames a recording to the SHA-256 of its input only when
+    its channel closes, and never writes to it again (a session that types the
+    same input reuses the existing file). A name that exists here is therefore
+    complete, and a copy is written to a temporary name first so an interrupted
+    one is never mistaken for a finished one.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for name in remote.tty_names():
+        target = out_dir / name
+        if target.exists():
+            continue
+        tmp = out_dir / f".{name}.part"
+        tmp.write_bytes(remote.read_tty(name))
+        os.replace(tmp, target)
+        copied += 1
+    return copied
 
 
 def _open_gate(cfg: EvalGate) -> Gate:

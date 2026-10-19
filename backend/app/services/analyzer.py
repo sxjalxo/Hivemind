@@ -49,7 +49,7 @@ from app.workers.queue import analysis_job_key, get_queue
 logger = logging.getLogger(__name__)
 
 _PROMPTS = Path(__file__).parent / "llm" / "prompts"
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # v2 (2026-10-19): classification is a closed vocabulary
 
 
 def _prompt(name: str) -> str:

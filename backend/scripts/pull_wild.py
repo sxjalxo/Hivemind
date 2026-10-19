@@ -21,7 +21,7 @@ import os
 import time
 from pathlib import Path
 
-from app.services.wild_pull import PullerBusy, Remote, locked, pull_once
+from app.services.wild_pull import PullerBusy, Remote, locked, pull_once, sync_tty
 
 log = logging.getLogger("pull_wild")
 
@@ -40,8 +40,11 @@ def main() -> None:
         key_file=env.get("WILD_KEY_FILE", "/run/secrets/wild_key"),
         host_key=env["WILD_HOST_KEY"],
         volume=env.get("WILD_VOLUME", "cowrie-logs"),
+        tty_volume=env.get("WILD_TTY_VOLUME", "cowrie-tty"),
     )
     out_dir = Path(env.get("WILD_OUT_DIR", "/wild-logs/gcp-wild-01"))
+    # Finished terminal recordings, for the session replay; unset = not copied.
+    tty_dir = env.get("WILD_TTY_DIR")
     try:
         with locked(out_dir):
             while True:
@@ -49,6 +52,8 @@ def main() -> None:
                     remote = Remote(**config)
                     try:
                         log.info("pulled %d bytes", pull_once(remote, out_dir))
+                        if tty_dir:
+                            log.info("copied %d recordings", sync_tty(remote, Path(tty_dir)))
                     finally:
                         remote.close()
                 except Exception:  # a timer must survive one bad pull (VM stopped, IP changed)

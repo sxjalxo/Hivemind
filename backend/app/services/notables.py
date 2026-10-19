@@ -139,7 +139,15 @@ async def list_notables(days: int = 7, deny_honeypots: set[str] | None = None) -
             )
         )
 
-    # Parsed, not compared as strings: Elasticsearch and Postgres format
-    # fractional seconds differently, which mis-orders two items in the same second.
-    notables.sort(key=lambda n: datetime.fromisoformat(n.timestamp), reverse=True)
-    return notables[:_MAX_NOTABLES]
+    def newest(items: list[Notable]) -> list[Notable]:
+        # Parsed, not compared as strings: Elasticsearch and Postgres format
+        # fractional seconds differently, which mis-orders two items in the same second.
+        return sorted(items, key=lambda n: datetime.fromisoformat(n.timestamp), reverse=True)
+
+    # A burst of high-risk sessions must not crowd out the rare kinds. A first
+    # sighting or a campaign is what the bell exists for and there are a few
+    # dozen at most, while sessions arrive by the hundred (2026-10-19: one batch
+    # of 48 pushed a first sighting off a plain newest-50 list).
+    rare = newest([n for n in notables if n.kind != "high_risk_session"])[:_MAX_NOTABLES]
+    sessions = [n for n in notables if n.kind == "high_risk_session"]
+    return newest(rare + newest(sessions)[: _MAX_NOTABLES - len(rare)])

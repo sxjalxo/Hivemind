@@ -45,8 +45,8 @@ class FileInfo(CamelModel):
     """A `cowrie.session.file_download`'s payload, ECS-shaped.
 
     The ingest pipeline (`infra/elasticsearch/pipelines/cowrie-ecs.json`)
-    renames Cowrie's raw `shasum`/`url`/`outfile` fields to
-    `file.hash.sha256`/`file.url`/`file.name` on ingest; this mirrors that
+    renames Cowrie's raw `shasum`/`url`/`outfile`/`destfile` fields to
+    `file.hash.sha256`/`file.url`/`file.name`/`file.path` on ingest; this mirrors that
     shape exactly rather than re-flattening it. Cowrie's raw `size` field is
     deliberately stripped as known-noise by the same pipeline (see its
     comment), so there is no `file.size` to model here -- a downstream
@@ -55,6 +55,8 @@ class FileInfo(CamelModel):
 
     name: str | None = None
     url: str | None = None
+    # Where in the fake filesystem the attacker put it, e.g. /tmp/.b.
+    path: str | None = None
     hash: FileHashInfo | None = None
 
 

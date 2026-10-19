@@ -17,35 +17,39 @@ class EvidenceCitation(BaseModel):
     artifact: str
 
 
-# Bounds on the free text the model returns, in the spirit of `rating`'s
-# range on `EvaluatorVerdict`: a field whose value is stored, re-rendered
-# into a later prompt, or indexed has to have a size the caller decided.
+# `classification` is a closed vocabulary, not free text (2026-10-19). Free text
+# gave 22 different labels to 134 live sessions that ran near-identical
+# commands -- the same busybox loader called a dropper in one session and
+# reconnaissance in the next -- so the label could not be counted, filtered or
+# compared. `OllamaClient.complete_json` sends this model's JSON schema as the
+# `format`, so the enum is enforced while the model generates; anything else
+# that builds a ClassificationResult is validated against it, and a refusal
+# degrades to the visible "Unclassified" fallback in `_classify_one`.
 #
-# `classification` is the one that earns this. The prompt asks for a short
-# label ("Automated botnet dropper"), but the model wrote it after reading
-# attacker-chosen commands, and the value is then interpolated into the
-# recommend prompt, stored, shown, used as a report title, and indexed into
-# Elasticsearch as `ai_classification` -- a `keyword` with no `ignore_above`,
-# so past Lucene's ~32KB term limit the enrichment write fails and the
-# session stays silently un-enriched forever.
+# The closed set also retires the old length bound: the value is stored, shown,
+# used as a report title, re-rendered into the recommend prompt and indexed as
+# the keyword `ai_classification`, and now it can only ever be one of these.
+# The definitions the model sees are in prompts/classify.md -- keep them in step.
+Classification = Literal[
+    "Credential brute force",
+    "Reconnaissance",
+    "Botnet loader",
+    "Malware dropper",
+    "Cryptominer deployment",
+    "Persistence",
+    "Credential access",
+    "Defense evasion",
+    "Unclassified",
+]
 #
-# Generous enough that a reasonable answer never trips it: over the bound is
-# an LLMValidationError, which `_classify_one` degrades to the labelled
-# "Unclassified" fallback. Failing to the visible fallback is the right
-# direction; quietly storing an unbounded string is not.
-#
-# `behavior_summary` is deliberately NOT bounded here. `_merge_classifications`
+# `behavior_summary` is deliberately NOT bounded: `_merge_classifications`
 # concatenates one summary per chunk into a new ClassificationResult, so any
-# per-call bound would be breached by the merge itself -- as a ValidationError
-# in our own code, not an LLMValidationError from a model, so it would abort
-# a completed analysis rather than degrade it. It is also never re-rendered
-# into another prompt and never indexed as a keyword, which is what makes
-# `classification` the field that needs the bound.
-_MAX_LABEL_CHARS = 200
+# per-call bound would be breached by the merge itself -- a ValidationError in
+# our own code that would abort a completed analysis rather than degrade it.
 
 
 class ClassificationResult(BaseModel):
-    classification: str = Field(max_length=_MAX_LABEL_CHARS)
+    classification: Classification
     confidence: float = Field(ge=0.0, le=1.0)
     risk_score: int = Field(ge=0, le=100)
     risk: RiskLevel

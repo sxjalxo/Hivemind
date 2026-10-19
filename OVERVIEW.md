@@ -364,6 +364,16 @@ keeps one recording per distinct keystroke sequence, so a session that typed exa
 an earlier one did has no recording of its own; the replay detects that from the
 recording's open time and says the output shown is the other session's. Only sessions
 recorded after 2026-10-14 have one, and the recordings volume has no retention yet.
+The cloud honeypot's recordings are copied home by `wild-pull` into the `wild-tty` volume
+(finished recordings only, each once; they are immutable, so no offsets are needed), and
+`TTY_PATHS` tells the replay which folder belongs to which honeypot.
+
+**Classification labels.** The model picks the session label from a closed list of nine
+(credential brute force, reconnaissance, botnet loader, malware dropper, cryptominer
+deployment, persistence, credential access, defense evasion, unclassified), enforced by the
+JSON schema the model generates against. Free text had given 22 different labels to 134 live
+sessions that ran near-identical commands. Download entries in the session timeline name the
+source URL and where the payload landed (`file.path`, from Cowrie's `destfile`).
 
 **A web honeypot.** `infra/webpot` is a small HTTP honeypot, deliberately separate from
 Cowrie: a staff sign-in page that records submitted credentials, believable Apache 404s for

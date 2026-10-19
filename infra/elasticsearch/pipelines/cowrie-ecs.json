@@ -51,6 +51,7 @@
     { "rename": { "field": "shasum", "target_field": "file.hash.sha256", "ignore_missing": true } },
     { "rename": { "field": "url", "target_field": "file.url", "ignore_missing": true } },
     { "rename": { "field": "outfile", "target_field": "file.name", "ignore_missing": true } },
+    { "rename": { "field": "destfile", "target_field": "file.path", "ignore_missing": true, "description": "Where in the fake filesystem the payload was written (e.g. /tmp/.b). Used to be dropped as noise, which made a loader writing one payload to fifteen directories look like fifteen identical events." } },
     { "rename": { "field": "path", "target_field": "url.path", "ignore_missing": true, "description": "The HTTP honeypot (infra/webpot). After the url -> file.url rename above, which must never see this object." } },
     { "rename": { "field": "query", "target_field": "url.query", "ignore_missing": true } },
     {
@@ -79,7 +80,7 @@
     {
       "remove": {
         "description": "Known-noise Cowrie fields with no mapped ECS home. Live for both the direct/_simulate path (root-level docs, e.g. backend/tests/test_ingest_pipeline.py) and the Filebeat path (flattened from 'cowrie.*' by the script processor above). 'uuid'/'width'/'height'/'duration_ms' were the fields that originally tripped strict_dynamic_mapping_exception under live Cowrie traffic; 'duplicate'/'name'/'value'/'size' are additional known-noise fields from cowrie.session.file_download/file_upload, cowrie.client.var, and cowrie.log.closed. Deliberately NOT included: 'error' (written by Filebeat's ndjson parser on a malformed log line) — that must keep failing loudly via strict_dynamic_mapping_exception rather than being suppressed here.",
-        "field": ["message", "sensor", "system", "isError", "src_host", "duration", "duration_ms", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "destfile", "shell", "input_hex", "uuid", "width", "height", "duplicate", "name", "value", "size"],
+        "field": ["message", "sensor", "system", "isError", "src_host", "duration", "duration_ms", "ttylog", "arch", "kernel_version", "kernel_build_string", "hassh", "hasshAlgorithms", "version", "macCS", "encCS", "kexAlgs", "keyAlgs", "compCS", "langCS", "shasum_hex", "shell", "input_hex", "uuid", "width", "height", "duplicate", "name", "value", "size"],
         "ignore_missing": true
       }
     }

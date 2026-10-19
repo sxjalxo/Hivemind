@@ -282,3 +282,40 @@ async def test_a_session_inside_the_page_size_is_silent(monkeypatch, caplog) -> 
         await get_session_events("small-session")
 
     assert "truncated" not in caplog.text
+
+
+_DOWNLOADS_SESSION = "test-timeline-downloads-01"
+
+
+@pytest.mark.asyncio
+async def test_a_download_entry_says_where_the_payload_came_from_and_landed() -> None:
+    """Cowrie's `destfile` reaches the index as `file.path` (it used to be dropped
+    as noise) and the timeline names it, so a loader writing one payload to many
+    directories reads as many different entries."""
+    from app.es.bootstrap import PIPELINE_ID, bootstrap_es
+
+    await bootstrap_es()
+    es = get_es()
+    base = {"session": _DOWNLOADS_SESSION, "src_ip": "203.0.113.9", "protocol": "telnet"}
+    raw = [
+        {"eventid": "cowrie.session.file_download", "timestamp": "2026-10-19T01:00:00Z",
+         "url": "http://198.51.100.7/x86", "destfile": "/tmp/.b", "outfile": "var/lib/cowrie/downloads/ab",
+         "shasum": "ab" * 32},
+        {"eventid": "cowrie.session.file_download", "timestamp": "2026-10-19T01:00:01Z",
+         "destfile": "/dev/.b", "outfile": "var/lib/cowrie/downloads/ab", "shasum": "ab" * 32},
+        {"eventid": "cowrie.session.file_download.failed", "timestamp": "2026-10-19T01:00:02Z",
+         "url": "tftp://198.51.100.7/x86", "error": "TFTP: Transfer timed out"},
+    ]
+    for doc in raw:
+        await es.index(index=get_settings().es_index, document={"cowrie": {**base, **doc}},
+                       pipeline=PIPELINE_ID, refresh=True)
+    try:
+        labels = [e.label for e in await build_timeline(_DOWNLOADS_SESSION) if e.kind == "download"]
+        assert labels == [
+            "Download http://198.51.100.7/x86 to /tmp/.b",
+            "File written to /dev/.b",
+            "Download failed: tftp://198.51.100.7/x86",
+        ]
+    finally:
+        await es.delete_by_query(index=get_settings().es_index,
+                                 query={"term": {"session.id": _DOWNLOADS_SESSION}}, refresh=True)

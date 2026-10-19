@@ -7,7 +7,7 @@ from app.services.llm.schemas import ClassificationResult, EvidenceCitation
 def test_classification_requires_at_least_one_citation() -> None:
     with pytest.raises(ValidationError):
         ClassificationResult(
-            classification="Botnet dropper",
+            classification="Botnet loader",
             confidence=0.9,
             risk_score=87,
             risk="critical",
@@ -19,7 +19,7 @@ def test_classification_requires_at_least_one_citation() -> None:
 def test_confidence_outside_zero_to_one_is_rejected() -> None:
     with pytest.raises(ValidationError):
         ClassificationResult(
-            classification="Botnet dropper",
+            classification="Botnet loader",
             confidence=90,
             risk_score=87,
             risk="critical",
@@ -31,7 +31,7 @@ def test_confidence_outside_zero_to_one_is_rejected() -> None:
 def test_risk_score_outside_zero_to_hundred_is_rejected() -> None:
     with pytest.raises(ValidationError):
         ClassificationResult(
-            classification="Botnet dropper",
+            classification="Botnet loader",
             confidence=0.9,
             risk_score=870,
             risk="critical",
@@ -43,7 +43,7 @@ def test_risk_score_outside_zero_to_hundred_is_rejected() -> None:
 def test_unknown_risk_level_is_rejected() -> None:
     with pytest.raises(ValidationError):
         ClassificationResult(
-            classification="Botnet dropper",
+            classification="Botnet loader",
             confidence=0.9,
             risk_score=87,
             risk="apocalyptic",
@@ -54,7 +54,7 @@ def test_unknown_risk_level_is_rejected() -> None:
 
 def test_valid_classification_is_accepted() -> None:
     result = ClassificationResult(
-        classification="Automated botnet dropper",
+        classification="Botnet loader",
         confidence=0.91,
         risk_score=87,
         risk="critical",
@@ -69,18 +69,15 @@ def test_valid_classification_is_accepted() -> None:
     assert result.evidence[0].event_id == "seed-botnet-01-008"
 
 
-def test_an_unbounded_classification_label_is_rejected() -> None:
-    """`classification` is the model's free text, written after it read
-    attacker-chosen commands, and it goes on to be interpolated into the
-    recommend prompt, stored, used as a report title and indexed into
-    Elasticsearch as `ai_classification` -- a `keyword`, where past Lucene's
-    term limit the enrichment write fails and the session stays silently
-    un-enriched. Rejecting it here degrades to the visible "Unclassified"
-    fallback instead.
-    """
+@pytest.mark.parametrize("label", ["Automated botnet dropper", "A" * 5000, ""])
+def test_a_label_outside_the_vocabulary_is_rejected(label: str) -> None:
+    """Free text gave 22 labels to near-identical sessions, and a label is
+    stored, shown, re-rendered into the recommend prompt and indexed as a
+    keyword. Off the list it is refused; `_classify_one` degrades that to the
+    visible "Unclassified" fallback."""
     with pytest.raises(ValidationError):
         ClassificationResult(
-            classification="A" * 5000,
+            classification=label,
             confidence=0.5,
             risk_score=10,
             risk="low",
@@ -89,13 +86,25 @@ def test_an_unbounded_classification_label_is_rejected() -> None:
         )
 
 
+def test_the_vocabulary_reaches_the_schema_the_model_is_given() -> None:
+    """Ollama is sent this schema as `format`, so the enum is what constrains
+    the label during generation rather than after it."""
+    from typing import get_args
+
+    from app.services.llm.schemas import Classification
+
+    schema = ClassificationResult.model_json_schema()
+    assert set(schema["properties"]["classification"]["enum"]) == set(get_args(Classification))
+    assert "Unclassified" in get_args(Classification)  # the analyzer's fallback must be on the list
+
+
 def test_a_long_behavior_summary_is_still_accepted() -> None:
     """Deliberately unbounded: `_merge_classifications` concatenates one
     summary per chunk, so a per-call bound would be breached by our own
     merge -- a ValidationError in our code, aborting a completed analysis
     rather than degrading it."""
     result = ClassificationResult(
-        classification="Automated botnet dropper",
+        classification="Botnet loader",
         confidence=0.5,
         risk_score=10,
         risk="low",

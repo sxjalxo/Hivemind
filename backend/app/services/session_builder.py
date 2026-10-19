@@ -455,6 +455,16 @@ async def build_timeline(session_id: str) -> list[SessionTimelineEvent]:
             query = f"?{event.url.query}" if event.url.query else ""
             method = event.http.request.method if event.http and event.http.request else "?"
             label = f"{method} {event.url.path}{query}"
+        elif kind == "download" and event.file and (event.file.url or event.file.path):
+            # Where it came from and where it landed. A loader that writes one
+            # payload to many directories is many entries that differ only here.
+            url, path = event.file.url, event.file.path
+            if action.endswith(".failed"):
+                label = f"Download failed: {url or path}"
+            elif url:
+                label = f"Download {url}" + (f" to {path}" if path else "")
+            else:
+                label = f"File written to {path}"
         elif kind == "connection":
             label = f"Connection from {event.source.ip}"
         elif kind == "disconnect":
