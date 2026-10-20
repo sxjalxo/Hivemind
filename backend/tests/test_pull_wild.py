@@ -31,6 +31,22 @@ def test_a_rotation_finishes_the_old_file_then_starts_the_new_one():
     assert warning is None
 
 
+def test_an_outage_across_two_rotations_reads_every_day_in_between():
+    files = [
+        RemoteFile(9, 40, "cowrie.json.2026-10-20"),
+        RemoteFile(7, 120, "cowrie.json.2026-10-19"),
+        RemoteFile(5, 80, "cowrie.json.2026-10-18"),  # read before the outage: not again
+        RemoteFile(10, 30, LIVE),
+    ]
+    reads, warning = plan(Position(7, 100), files)
+    assert reads == [
+        Read("cowrie.json.2026-10-19", 100, 120),
+        Read("cowrie.json.2026-10-20", 0, 40),
+        Read(LIVE, 0, 30),
+    ]
+    assert warning is None
+
+
 def test_a_vanished_inode_resumes_at_the_live_log_and_warns():
     reads, warning = plan(Position(99, 10), [RemoteFile(8, 30, LIVE)])
     assert reads == [Read(LIVE, 0, 30)]
@@ -73,6 +89,22 @@ def test_every_line_arrives_once_across_pulls_partial_lines_and_a_rotation(tmp_p
 
     lines = (out / LIVE).read_bytes().splitlines()
     assert lines == [b'{"n":1}', b'{"n":2}', b'{"n":3}', b'{"n":4}', b'{"n":5}']
+
+
+def test_no_line_is_lost_when_the_puller_misses_two_midnights(tmp_path):
+    remote, out = FakeRemote(), tmp_path / "gcp"
+    remote.write(b'{"n":1}\n')
+    pull_once(remote, out)
+    remote.write(b'{"n":2}\n')
+    remote.rotate("2026-10-19")
+    remote.write(b'{"n":3}\n')
+    remote.rotate("2026-10-20")
+    remote.write(b'{"n":4}\n')
+    pull_once(remote, out)
+    pull_once(remote, out)
+
+    lines = (out / LIVE).read_bytes().splitlines()
+    assert lines == [b'{"n":1}', b'{"n":2}', b'{"n":3}', b'{"n":4}']
 
 
 class FakeTty:

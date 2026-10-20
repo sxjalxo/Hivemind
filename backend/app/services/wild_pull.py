@@ -96,6 +96,12 @@ def plan(position: Position | None, files: list[RemoteFile]) -> tuple[list[Read]
         return [Read(mine.name, 0, mine.size)], warning
     if mine.name != LIVE:  # rotated since the last pull: finish it, then start the new one
         reads.append(Read(mine.name, position.offset, mine.size))
+        # Every day rotated after it too: an outage across two midnights leaves
+        # whole days between it and the live log (the dated names sort by day).
+        later = sorted(
+            (f for f in files if f.name != LIVE and f.name > mine.name), key=lambda f: f.name
+        )
+        reads += [Read(f.name, 0, f.size) for f in later]
         if live and live.inode != mine.inode:
             reads.append(Read(LIVE, 0, live.size))
         return reads, warning
