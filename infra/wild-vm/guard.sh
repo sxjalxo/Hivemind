@@ -4,9 +4,10 @@
 # Three bounds on a box that faces the internet with a 10 GB disk and metered
 # outbound traffic (GCP free tier: 1 GB/month from North America, billing
 # months in Pacific time):
-#   1. Retention: rotated cowrie.json files older than KEEP_DAYS are deleted.
-#      wild-pull copied them home long before. TTY recordings and downloads are
-#      NOT copied home, so they are never aged out here; the disk floor bounds them.
+#   1. Retention: rotated cowrie.json files and TTY recordings older than
+#      KEEP_DAYS are deleted; wild-pull copied both home long before. Downloads
+#      are NOT copied home, so they are never aged out here; the disk floor
+#      bounds them.
 #   2. Disk floor: with less than DISK_FLOOR_KB free, Cowrie is stopped, so file
 #      after file uploaded by an attacker cannot fill the disk sshd and the OS need.
 #   3. Egress budget: once this billing month's outbound bytes pass
@@ -28,8 +29,12 @@ say() { logger -t hivemind-guard "$*"; }
 
 # 1. Retention.
 logs=$(docker volume inspect -f '{{.Mountpoint}}' cowrie-logs)
-find "$logs" -maxdepth 1 -name 'cowrie.json.*' -mtime +"$KEEP_DAYS" -print -delete |
-  while read -r gone; do say "retention: deleted $gone"; done
+# Tolerant: a missing recordings volume must not end the run before the egress check.
+tty=$(docker volume inspect -f '{{.Mountpoint}}' cowrie-tty 2>/dev/null || true)
+{
+  find "$logs" -maxdepth 1 -name 'cowrie.json.*' -mtime +"$KEEP_DAYS" -print -delete
+  [ -z "$tty" ] || find "$tty" -maxdepth 1 -type f -mtime +"$KEEP_DAYS" -print -delete
+} | while read -r gone; do say "retention: deleted $gone"; done
 
 # 2. Free disk.
 free_kb=$(df --output=avail -k / | tail -1 | tr -d ' ')

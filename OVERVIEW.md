@@ -363,10 +363,11 @@ terminal emulator: colours are dropped and pauses over two seconds are shortened
 keeps one recording per distinct keystroke sequence, so a session that typed exactly what
 an earlier one did has no recording of its own; the replay detects that from the
 recording's open time and says the output shown is the other session's. Only sessions
-recorded after 2026-10-14 have one, and the recordings volume has no retention yet.
+recorded after 2026-10-14 have one; `prune` retires old ones as above.
 The cloud honeypot's recordings are copied home by `wild-pull` into the `wild-tty` volume
 (finished recordings only, each once; they are immutable, so no offsets are needed), and
-`TTY_PATHS` tells the replay which folder belongs to which honeypot.
+`TTY_PATHS` tells the replay which folder belongs to which honeypot. The VM ages its own
+copies out after 90 days, as it does rotated logs; `prune` handles the home copies.
 
 **Classification labels.** The model picks the session label from a closed list of nine
 (credential brute force, reconnaissance, botnet loader, malware dropper, cryptominer

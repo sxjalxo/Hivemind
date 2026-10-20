@@ -182,7 +182,7 @@ variables in the repo-root `.env`, then `docker compose --profile wild up -d wil
 | `WILD_KEY_FILE` | path to the private key on this machine; mounted read-only |
 
 The VM side is `infra/wild-vm/`: Cowrie's config and run script (deploy steps in its
-header) and `guard.sh`, which every five minutes ages out rotated logs after 90 days and
+header) and `guard.sh`, which every five minutes ages out rotated logs and terminal recordings after 90 days and
 stops Cowrie if free disk drops under 1 GB or the month's outbound traffic passes 900 MB of
 the free tier's 1 GB. It lifts a stop by itself; `journalctl -t hivemind-guard` on the VM says why.
 The evaluation half measures a second Cowrie on the same VM (`run-cowrie.sh eval`, ports 2222 and 2223,

@@ -172,6 +172,7 @@ services:
       - cowrie-logs-degraded-fs:/prune/cowrie-logs-degraded-fs
       - webpot-logs:/prune/webpot-logs
       - cowrie-tty:/prune/cowrie-tty
+      - wild-tty:/prune/wild-tty
 
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.15.3

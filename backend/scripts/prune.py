@@ -19,7 +19,9 @@ without bound once a honeypot faces the internet, and each has its own rule:
   older than the cutoff. They are the copy Filebeat already shipped; the live
   file is never touched.
 * **TTY recordings** older than the cutoff, unless a referenced session's
-  `cowrie.log.closed` names one.
+  `cowrie.log.closed` names one. That includes the live honeypot's copies in
+  `wild-tty`; the VM keeps its own for 90 days (infra/wild-vm/guard.sh), so one
+  pruned younger than that is copied home again by the next pull.
 
 Postgres is not pruned: analyses, evaluations and reports are small, and they
 are the record of what this system concluded.
@@ -200,9 +202,10 @@ async def _main() -> None:
     parser.add_argument("--older-than", type=parse_age, required=True, metavar="DAYS")
     parser.add_argument("--apply", action="store_true", help="delete; without it, a dry run")
     parser.add_argument("--log-dir", action="append", type=Path, metavar="DIR")
-    parser.add_argument("--tty-dir", type=Path, default=Path("/prune/cowrie-tty"))
+    parser.add_argument("--tty-dir", action="append", type=Path, metavar="DIR")
     args = parser.parse_args()
     log_dirs = args.log_dir or sorted(p for p in Path("/prune").glob("*-logs*") if p.is_dir())
+    tty_dirs = args.tty_dir or sorted(p for p in Path("/prune").glob("*-tty") if p.is_dir())
     cutoff = datetime.now(UTC) - args.older_than
     print(f"cutoff {cutoff:%Y-%m-%d %H:%M} UTC -- {'APPLYING' if args.apply else 'dry run'}")
 
@@ -225,11 +228,11 @@ async def _main() -> None:
             _act(args.apply, directory / name)
 
     print("TTY recordings:")
-    if args.tty_dir.is_dir():
-        keep = await _kept_recordings(sessions)
-        files = {p.name: p.stat().st_mtime for p in args.tty_dir.iterdir() if p.is_file()}
+    keep = await _kept_recordings(sessions) if tty_dirs else set()
+    for directory in tty_dirs:
+        files = {p.name: p.stat().st_mtime for p in directory.iterdir() if p.is_file()}
         for name in old_recordings(files, cutoff, keep):
-            _act(args.apply, args.tty_dir / name)
+            _act(args.apply, directory / name)
     await get_es().close()
 
 

@@ -17,7 +17,7 @@ STUBS = {
     "docker": """#!/bin/sh
 echo "$*" >>"$CALLS"
 case "$1 $2" in
-  "volume inspect") echo "$LOGS" ;;
+  "volume inspect") case "$*" in *cowrie-tty) [ -n "$TTY" ] || exit 1; echo "$TTY" ;; *) echo "$LOGS" ;; esac ;;
   "inspect -f") echo "$RUNNING" ;;
 esac
 """,
@@ -32,7 +32,13 @@ echo "$*" >>"$SAID"
 
 
 def guard(
-    tmp: Path, *, tx: int, running: bool = True, free_kb: int = 5_000_000, budget: int = 1000
+    tmp: Path,
+    *,
+    tx: int,
+    running: bool = True,
+    free_kb: int = 5_000_000,
+    budget: int = 1000,
+    tty: bool = True,
 ):
     stubs = tmp / "bin"
     if not stubs.exists():
@@ -41,6 +47,7 @@ def guard(
             (stubs / name).write_text(body, newline="\n")
             (stubs / name).chmod(0o755)
         (tmp / "logs").mkdir()
+        (tmp / "tty").mkdir()
     (tmp / "tx").write_text(str(tx))
     calls = tmp / "calls"
     calls.write_text("")
@@ -50,6 +57,7 @@ def guard(
         "CALLS": str(calls),
         "SAID": str(tmp / "said"),
         "LOGS": str(tmp / "logs"),
+        "TTY": str(tmp / "tty") if tty else "",  # "" = no such volume: inspect fails
         "RUNNING": "true" if running else "false",
         "FREE_KB": str(free_kb),
         "EGRESS_BUDGET": str(budget),
@@ -100,3 +108,18 @@ def test_retention_deletes_only_old_rotated_logs(tmp_path: Path) -> None:
     os.utime(logs / "cowrie.json.2026-01-01", (old, old))
     guard(tmp_path, tx=10)
     assert sorted(p.name for p in logs.iterdir()) == ["cowrie.json", "cowrie.json.2026-10-17"]
+
+
+def test_retention_deletes_only_old_recordings(tmp_path: Path) -> None:
+    guard(tmp_path, tx=10)  # creates the stub tty volume
+    tty, old = tmp_path / "tty", time.time() - 100 * 86400
+    for name in ("a" * 64, "b" * 64):
+        (tty / name).write_bytes(b"rec")
+    os.utime(tty / ("a" * 64), (old, old))
+    guard(tmp_path, tx=10)
+    assert [p.name for p in tty.iterdir()] == ["b" * 64]
+    assert "retention: deleted" in (tmp_path / "said").read_text()
+
+
+def test_a_missing_recordings_volume_still_reaches_the_egress_check(tmp_path: Path) -> None:
+    assert guard(tmp_path, tx=5000, budget=1000, tty=False) == ["stop cowrie"]
