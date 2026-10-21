@@ -41,6 +41,9 @@ dependencies = [
     # Clerk session-token verification. `cryptography` is already present
     # (paramiko pulls it in), so the bare package is enough for RS256.
     "pyjwt>=2.9",
+    # scripts/deploy_persona.py loads the repo-root .env with it. It used to
+    # arrive only through `pydantic-settings`; nothing imported may.
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

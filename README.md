@@ -188,6 +188,22 @@ the free tier's 1 GB. It lifts a stop by itself; `journalctl -t hivemind-guard` 
 The evaluation half measures a second Cowrie on the same VM (`run-cowrie.sh eval`, ports 2222 and 2223,
 your IP only) as target `gcp-eval-01`, reset and read through a key that can do nothing else
 (`setup-eval-gate.sh`); `backend/.env.example` has its `EVALUATION_TARGETS` entry.
+To put a persona on both VM Cowries, first copy the new `run-cowrie.sh` to the VM, once, before the first `--apply` (which refuses until it is there):
+
+```
+scp -P 50022 -i KEY infra/wild-vm/run-cowrie.sh USER@VM:/opt/hivemind/
+sed -i 's/\r$//' /opt/hivemind/run-cowrie.sh && chmod 755 /opt/hivemind/run-cowrie.sh   # on the VM
+```
+
+Then run `python -m scripts.deploy_persona <name>` from `backend/` (a dry run; `--apply` acts, and drops live sessions). `python -m scripts.deploy_persona --revert --apply` undoes it: it removes `personas/current`, restarts both Cowries on the setup they ran before any persona, and records that.
+
+**Personas (optional).** `infra/cowrie/personas/` holds three disguises for the decoy (a
+web server, a database server, a Raspberry Pi), each a short `persona.yaml` of facts that
+`scripts.build_persona` renders into every Cowrie file that states them, so a persona
+cannot contradict itself. `docker compose --profile personas up -d` runs them as extra
+evaluable arms; after editing a `persona.yaml`, run `python -m scripts.build_persona` from
+`backend/` and commit the regenerated files. `run_degradation_matrix.py --personas`
+compares them.
 
 ### 2. Local model
 
@@ -261,7 +277,8 @@ Run from `backend/` with the venv's Python, as `python -m scripts.<name>`:
 | `preflight [--warm]` | checks a running stack is ready to demo; `--warm` loads the model first |
 | `probe_candidates` | ranks commands real attackers ran against what the evaluator's probes cover |
 | `mapping_eval [--runs N]` | ATT&CK mapping precision/recall, rulebook alone vs rulebook + model |
-| `run_degradation_matrix [--repeat N]` | evaluates every matrix arm; `--repeat` reports each score's spread |
+| `run_degradation_matrix [--personas] [--repeat N]` | evaluates every matrix arm (`--personas`: the three honeypot personas instead); `--repeat` reports each score's spread |
+| `build_persona [--check] [name]` | renders `infra/cowrie/personas/*/persona.yaml` into Cowrie's files; `--check` fails on drift |
 | `prune --older-than 90d [--apply]` | retention, dry run by default; run it in the stack as `docker compose --profile tools run --rm prune ...` so it can reach the log volumes |
 
 ---

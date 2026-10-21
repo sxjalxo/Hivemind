@@ -17,6 +17,7 @@
 #   sed -i 's/\r$//' /opt/hivemind/*.sh /opt/hivemind/*.cron && chmod 755 /opt/hivemind/*.sh
 #   sudo install -m 644 /opt/hivemind/hivemind-guard.cron /etc/cron.d/hivemind-guard
 #   /opt/hivemind/run-cowrie.sh
+# Personas: `python -m scripts.deploy_persona <name>` from backend/ (dry run first).
 set -eu
 cd /opt/hivemind
 IMAGE=$(cat image.txt)
@@ -31,6 +32,18 @@ if grep -q '^Port 22$' "$DROPIN"; then
   sudo systemctl restart ssh.service
 fi
 
+# The disguise both Cowries wear. A persona deployed by
+# backend/scripts/deploy_persona.py (personas/current -> personas/<digest12>)
+# replaces the legacy config and hardened honeyfs; with none deployed, the
+# legacy pair is used, exactly as before. Docker resolves the symlink when the
+# container is created, so a switch takes effect on the recreate below.
+P=/opt/hivemind/personas/current
+if [ -f "$P/cowrie.cfg" ]; then
+  persona_cfg="$P/cowrie.cfg" persona_dir="$P" persona_at=/persona
+else
+  persona_cfg=/opt/hivemind/cowrie.cfg persona_dir=/opt/hivemind/honeyfs persona_at=/honeyfs
+fi
+
 # start NAME MEMORY PORTS...: (re)create one Cowrie from this config, with
 # volumes NAME-logs, NAME-tty and NAME-dl of its own.
 start() {
@@ -43,8 +56,8 @@ start() {
     --memory "$memory" --memory-swap "$((${memory%m} * 2))m" \
     --log-opt max-size=10m --log-opt max-file=3 \
     "$@" \
-    -v /opt/hivemind/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro \
-    -v /opt/hivemind/honeyfs:/honeyfs:ro \
+    -v "$persona_cfg":/cowrie/cowrie-git/etc/cowrie.cfg:ro \
+    -v "$persona_dir":"$persona_at":ro \
     -v "$name-logs":/cowrie/cowrie-git/var/log/cowrie \
     -v "$name-tty":/cowrie/cowrie-git/var/lib/cowrie/tty \
     -v "$name-dl":/cowrie/cowrie-git/var/lib/cowrie/downloads \

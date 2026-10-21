@@ -264,7 +264,7 @@ and does nothing — and an overlay can replace content but never remove a node.
 
 Measured end to end: the remediation generated from the stock honeypot's own findings is
 byte-identical to the hand-built `hardened` arm of the matrix, which is independently
-measured at sanity 0.667 → 1.000 with contradictions 1 → 0.
+measured (probe set v4) at sanity 0.857 → 1.000 with contradictions 3 → 0.
 
 **In the interface**, a fix is rendered directly beneath the finding it repairs, on the
 run detail page — a patch read away from the defect it fixes is a patch applied without
@@ -299,22 +299,88 @@ measured result on this machine:
 ```
 arm                      basic_c file_sy service attack_  sanity context   contradictions
 matrix-hardened            1.000   1.000   0.667   1.000   1.000   1.000        0
-cowrie-01  (stock)         1.000   1.000   0.667   1.000   0.667   1.000        1
-matrix-degraded-sanity     1.000   1.000   0.667   1.000   1.000   1.000        2
-matrix-degraded-fs         1.000   0.333   0.667   1.000   0.667   1.000        1
+cowrie-01  (stock)         1.000   1.000   0.667   1.000   0.857   1.000        3
+matrix-degraded-sanity     1.000   1.000   0.667   1.000   1.000   1.000        4
+matrix-degraded-fs         1.000   0.333   0.667   1.000   0.714   1.000        3
 ```
 
-Read the `degraded-sanity` row against the `hardened` row: **identical scores, twice the
-contradictions.** That arm answers every probe, so every fact is observed and its sanity
-score is a perfect 3/3 — and it says it is Ubuntu while its kernel says Debian, and gives
-two different hostnames. An evaluation reporting scores alone would call it as good as the
-hardened decoy. The two axes are separate measurements of separate questions — *did it
+(Probe set v4, 12 probes, run 2026-10-21. The same four arms under v3, 9 probes, scored
+sanity 1.0 / 0.75 / 1.0 / 0.75 in table order and found the same contradictions; v4 adds
+three `host.arch` probes, which every x86 arm agrees on.)
+
+Read the `degraded-sanity` row against the `hardened` row: **identical scores, four
+contradictions against none.** That arm answers every probe, so every fact is observed and
+its sanity score is a perfect 1.0 — and it says it is Ubuntu while its kernel says Debian,
+and gives disagreeing hostnames. An evaluation reporting scores alone would call it as
+good as the hardened decoy. The two axes are separate measurements of separate questions — *did it
 answer* and *do its answers agree* — and the matrix exists partly to keep anyone from
 quietly averaging them into one number.
 
 All four arms share one `evaluation_config_fingerprint` and carry four different
 `honeypot_fingerprint`s, which is the precondition that makes the comparison mean
 anything: the same question, asked of four different things.
+
+**Honeypot personas, which is the same comparison between disguises.** The matrix varies
+how *broken* a decoy is; a persona varies what it *claims to be*. Each of
+`infra/cowrie/personas/{web-server,db-server,rpi}/` is a `persona.yaml` of facts only
+(hostname, distribution, kernel and architecture, CPU, memory, users, SSH banner), and
+`scripts/build_persona.py` writes each fact once into every file that states it, so the
+persona cannot disagree with itself. Per persona that is sixteen generated files:
+`passwd`, `group`, `hostname`, `hosts`, `os-release`, `/proc/cpuinfo`, `/proc/meminfo`,
+`/proc/version`, `/etc/issue`, `/etc/issue.net`, `/etc/motd`, `/etc/debian_version`, the
+`lscpu` and `nproc` command outputs, Cowrie's userdb and its `cowrie.cfg`. The generator
+refuses four things instead of writing them: a path the pinned image does not hold as a
+real file (Cowrie would ignore the overlay without a word), a persona the evaluator's own
+readers find self-contradictory, a CPU vendor that cannot run the claimed architecture,
+and a userdb line for the evaluation agent's own user. The generated files are committed,
+not built at start-up, so a persona is a diff you can read and `build_persona --check`
+catches a file edited by hand; the compose arms bind-mount them like the matrix arms'
+overlays. `docker compose --profile personas up -d` starts the arms.
+
+Measured with `run_degradation_matrix.py --personas --repeat 3` (probe set v4, 2026-10-21):
+
+```
+arm                  basic_c file_sy service attack_  sanity context   contradictions
+persona-web-server     1.000   1.000   0.667   1.000   1.000   1.000        0
+persona-db-server      1.000   1.000   0.667   1.000   1.000   1.000        0
+persona-rpi            1.000   1.000   0.667   1.000   1.000   1.000        2
+```
+
+All three share one `evaluation_config_fingerprint` and carry three different
+`honeypot_fingerprint`s, and every score was identical across the three runs. The two
+x86 personas agree with themselves everywhere. The Raspberry Pi persona is the one built
+to fail: every file it renders says `aarch64`, but Cowrie's own file tree is x86 (`ls
+/lib` lists `x86_64-linux-gnu`), and probe set v4's `host.arch` fact reads the claim from
+`uname -m`, from `/proc/cpuinfo` and from the library directory. Two contradictions
+result, `lib_arch` against `uname_m` and `lib_arch` against `cpu_arch`. Its sanity score is
+still 1.0, for the same reason as `degraded-sanity` above. That is the limit the
+personas demonstrate: configuration can change what a honeypot says, but not the file tree
+under it, and an evaluator that reads both will say so.
+
+**Deploying a persona to the GCP honeypot.** `python -m scripts.deploy_persona <name>` is an
+operator script on the owner's PC, a dry run unless given `--apply`, and it uses the admin key
+and pinned host key `wild-pull` already holds. The bundle is rendered for the VM (`role="vm"`):
+identity comes from the persona, but the live honeypot's operating settings stay (terminal
+recordings on, the download limit, SSH forwarding), and the persona's login list is applied
+only if the persona declares one, so the stock userdb keeps drawing the logins it always did.
+A deploy is twinned: the same bundle, identified by its sha256 digest, goes to
+`/opt/hivemind/personas/<digest12>/`, `current` is switched atomically, and `run-cowrie.sh`
+recreates both VM Cowries with it, so an evaluation of `gcp-eval-01` measures the disguise
+attackers meet without probing the live sensor. The order is upload, switch, restart, record,
+twin check; live sessions drop at the restart. Each deploy that switches `current`
+writes one `persona_deployments` row per sensor (persona, digest, `operator:<user>`, time), and
+a deploy refused before the switch records nothing;
+a sensor's active persona at time T is its latest row at or before T, and before the first row
+it is the hardened honeyfs it has run since 2026-10-18. The evaluation's honeypot fingerprint
+includes the active digest for remote sensors (omitted when none, so existing fingerprints do
+not change); without it, two disguises on a remote Cowrie would read as the same configuration.
+The script finishes by checking `hostname`, `uname -r` and `os-release` on the evaluation
+Cowrie only, never the live one. Once `current` points at the bundle the record is kept even
+if the restart or the twin check fails, because the files are what is mounted; the script
+then exits non-zero naming the failed step. Rolling back is deploying the previous persona
+(earlier bundles stay on the VM) or `--revert --apply`, which removes `current`, restarts both
+Cowries on the setup they ran before any persona and records `pre-persona`, so the evaluation
+fingerprint is again the one from before any deploy.
 
 **Authentication, and roles scoped to a honeypot.** Unset, the API is open — which is
 what it always was, and defensible only bound to localhost. It is never quiet about it:
@@ -602,6 +668,10 @@ suite, and each fix is now pinned by a test that fails on the old behaviour.
   called. Probe set v3 adds a `hosts_file` probe for `host.name`, so all three hostname
   probes share one extract (a bare name, or the `127.0.1.1` entry); the contradiction is
   reported with a generated `/etc/hosts`, and the hardened matrix arm now carries one.
+  Probe set v4 (12 probes, up from 9) adds `host.arch`, read from `uname -m`,
+  `/proc/cpuinfo` and the library directory, which is what lets the evaluation catch a
+  persona whose claimed architecture its file tree contradicts. Results recorded under v3
+  stay v3 results.
 - **Prompt-injection fencing is a mitigation, not a guarantee.** Honeypot commands are
   attacker-authored, and an attacker who suspects analysis can write instructions into a
   command line. Attacker text is fenced and labelled as data, but the schema gates and the
@@ -1317,7 +1387,8 @@ docker compose --profile matrix up -d
 cd backend && .venv/Scripts/python scripts/run_degradation_matrix.py
 ```
 
-`EVALUATION_TARGETS` must map all four arms first; `backend/.env.example` has the entry
+`EVALUATION_TARGETS` must map all four arms first (and, for `--personas`, the three
+persona arms); `backend/.env.example` has the entry
 ready to paste. **It must include `cowrie-01` too** — the moment that map holds anything,
 an unmapped id is refused, so leaving the stock decoy out does not fall back to the single
 default, it makes the honeypot you already have un-evaluable.
