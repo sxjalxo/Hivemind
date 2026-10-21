@@ -384,6 +384,27 @@ class SessionAnnotation(SQLModel, table=True):
     author_label: str | None = None
     created_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
 
+
+class PersonaDeployment(SQLModel, table=True):
+    """Which persona a sensor ran, from when (roadmap R1).
+
+    One row per Cowrie per deploy; a twinned deploy writes one row for the live
+    sensor and one for its evaluation twin, same digest, same time. A sensor's
+    persona at time T is its latest row at or before T; before its first row
+    it runs the pre-persona setup. Rows are history: never updated, never
+    deleted, so traffic can always be attributed to the disguise that drew it.
+    """
+
+    __tablename__ = "persona_deployments"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    honeypot_id: str = Field(index=True)
+    persona: str
+    digest: str  # build_persona.bundle_digest of the deployed bundle
+    deployed_by: str  # "operator:<os user>", the convention of `Analysis.started_by`
+    deployed_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
+
+
 class ClaimRejection(SQLModel, table=True):
     """A claim the model made that a gate refused, and why (checklist item 16).
 
