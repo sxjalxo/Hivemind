@@ -92,6 +92,7 @@ from app.models.evaluation import (
     EvaluationProgressEvent,
     LiveEvaluationMetrics,
 )
+from app.services import persona_deployments
 from app.services.chunking import MAX_ITEM_CHARS, truncate_text
 from app.services.evaluation import agent as agent_module
 from app.services.evaluation import chain_runner
@@ -1247,6 +1248,7 @@ async def start_run(
             ssh_username=target.username,
             capture_container=configured.capture_container,
             overrides=tuple(sorted(configured.capability_overrides().items())),
+            persona_digest=await persona_deployments.active_digest(honeypot_id),
         )
     )
     config_fp = _evaluation_config_fingerprint(

@@ -79,6 +79,12 @@ class Target:
     # fingerprints exactly as it always did; a remote Cowrie with
     # `container_access: false` fingerprints apart from a local one.
     overrides: tuple[tuple[str, bool], ...] = ()
+    # The persona deployed on this honeypot (`persona_deployments`), when one
+    # is. Left out of the digest when None, like `overrides`, so every target
+    # with no deployment fingerprints exactly as it always did. It matters for
+    # a remote Cowrie, whose config this module cannot read: without it, a
+    # persona swap would leave the fingerprint unchanged.
+    persona_digest: str | None = None
 
 
 def _target_payload(target: Target) -> dict:
@@ -87,6 +93,8 @@ def _target_payload(target: Target) -> dict:
         del payload["overrides"]
     else:
         payload["overrides"] = dict(payload["overrides"])
+    if payload["persona_digest"] is None:
+        del payload["persona_digest"]
     return payload
 
 

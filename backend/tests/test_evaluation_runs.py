@@ -132,6 +132,34 @@ async def test_compare_flags_a_honeypot_configuration_change(monkeypatch, starte
 
 
 @pytest.mark.asyncio
+async def test_a_run_fingerprints_the_persona_deployed_on_its_honeypot(
+    monkeypatch, started
+) -> None:
+    # A remote Cowrie's config is unreadable, so the persona deployed on it is
+    # what moves its fingerprint: the run must look it up by ITS honeypot id
+    # and hand the digest to the fingerprint.
+    _stub_modules(monkeypatch)
+    asked: list[str] = []
+    targets: list = []
+
+    async def _active_digest(honeypot_id: str) -> str:
+        asked.append(honeypot_id)
+        return "sha256:" + "c" * 64
+
+    async def _capture_target(target) -> str:
+        targets.append(target)
+        return "sha256:BASE"
+
+    monkeypatch.setattr(runs.persona_deployments, "active_digest", _active_digest)
+    monkeypatch.setattr(runs, "_honeypot_fingerprint", _capture_target)
+
+    await started("cowrie-01")
+
+    assert asked == ["cowrie-01"]
+    assert [t.persona_digest for t in targets] == ["sha256:" + "c" * 64]
+
+
+@pytest.mark.asyncio
 async def test_compare_deltas_are_real_numbers_and_none_where_nothing_was_established(
     monkeypatch, started
 ) -> None:

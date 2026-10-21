@@ -46,6 +46,8 @@ def _without_empty_overrides(target: "fingerprints.Target") -> dict:
     """
     payload = dataclasses.asdict(target)
     assert payload.pop("overrides") == ()
+    # Likewise a target with no deployed persona: the field is absent, not null.
+    assert payload.pop("persona_digest") is None
     return payload
 
 
@@ -851,6 +853,8 @@ def test_the_target_carries_no_credential() -> None:
         # Capabilities the operator switched off (checklist 24): what the
         # deployment can do, never how to log into it.
         "overrides",
+        # The persona deployed on a remote Cowrie, whose config cannot be read.
+        "persona_digest",
     }
     # The property, not just the current field list: any future field
     # whose name looks like a credential fails here too.
@@ -1118,3 +1122,33 @@ async def test_a_cowrie_without_container_access_fingerprints_without_docker(
     )
     assert remote.startswith("sha256:")
     assert remote != as_generic
+
+
+def _remote(**changes) -> fingerprints.Target:
+    base = {
+        "kind": "cowrie",
+        "container_name": None,
+        "host": "203.0.113.5",
+        "ssh_port": 2222,
+        "ssh_username": "root",
+        "overrides": (("container_access", False),),
+    }
+    return fingerprints.Target(**{**base, **changes})
+
+
+def test_a_target_without_a_persona_fingerprints_exactly_as_before() -> None:
+    # Every run recorded before personas were deployable must keep its digest.
+    assert "persona_digest" not in fingerprints._target_payload(_remote())
+    # Pinned when persona_digest was added: a literal, so this cannot pass by
+    # comparing the code with itself.
+    assert fingerprints._uninspectable_fingerprint(_remote()) == (
+        "sha256:5df0da44618b5cc49b1e8dda0649a27127aa347aa51ee445b8bfbdb82d21a81b"
+    )
+
+
+def test_a_persona_swap_moves_a_remote_honeypots_fingerprint() -> None:
+    # A remote Cowrie's config is unreadable, so without this two different
+    # disguises fingerprint identically and compare as "same configuration".
+    a = fingerprints._uninspectable_fingerprint(_remote(persona_digest="sha256:" + "a" * 64))
+    b = fingerprints._uninspectable_fingerprint(_remote(persona_digest="sha256:" + "b" * 64))
+    assert len({a, b, fingerprints._uninspectable_fingerprint(_remote())}) == 3
