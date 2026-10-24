@@ -14,6 +14,10 @@ async def test_live_cowrie_events_are_ecs_shaped() -> None:
                 "filter": [
                     {"term": {"event.action": "cowrie.command.input"}},
                     {"term": {"labels.seeded": False}},
+                    # The local Filebeat input under test. Other sensors' live
+                    # events share the index (gcp-wild-01 since 2026-10-18),
+                    # so an unscoped first hit could be any of them.
+                    {"term": {"honeypot.id": "cowrie-01"}},
                 ]
             }
         },
@@ -27,4 +31,4 @@ async def test_live_cowrie_events_are_ecs_shaped() -> None:
     assert src["event"]["category"] == "process"
     assert src["process"]["command_line"]
     assert src["session"]["id"]
-    assert src["honeypot"]["id"] == "cowrie-01"
+    assert src["honeypot"]["name"]  # stamped by that input, beside its id

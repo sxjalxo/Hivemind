@@ -171,8 +171,8 @@ Kibana is optional and off by default: `docker compose --profile tools up -d kib
 (`:5601`).
 
 **Live honeypot (optional).** If a Cowrie VM is deployed on the internet, `wild-pull` copies
-its log and finished terminal recordings home over SSH every five minutes and Filebeat indexes it as `gcp-wild-01`. Set four
-variables in the repo-root `.env`, then `docker compose --profile wild up -d wild-pull`:
+its log and finished terminal recordings home over SSH every five minutes and Filebeat indexes it as `gcp-wild-01`. Set the
+first four variables in the repo-root `.env`, then `docker compose --profile wild up -d wild-pull`:
 
 | Variable | Value |
 |---|---|
@@ -180,13 +180,32 @@ variables in the repo-root `.env`, then `docker compose --profile wild up -d wil
 | `WILD_USER` | the admin account on it (SSH on port `50022`; override with `WILD_PORT`) |
 | `WILD_HOST_KEY` | the VM's pinned host key, `ssh-ed25519 AAAA...`; any other key is refused |
 | `WILD_KEY_FILE` | path to the private key on this machine; mounted read-only |
+| `WILD_PULL_HOST` | optional: the address `wild-pull` uses instead of `WILD_HOST`, because a container reaches the host's tunnels as `host.docker.internal` |
+| `WILD_EVAL_HOST` | optional: the evaluation Cowrie's address when it differs from `WILD_HOST` (`127.0.0.2` with IAP tunnels); `deploy_persona` checks the twin there |
+| `GCP_PROJECT`, `GCP_ZONE`, `GCP_INSTANCE` | only for the IAP tunnels below: which VM `iap-tunnels.ps1` opens them to |
+
+**Reaching the VM through IAP (recommended).** Google's Identity-Aware Proxy carries SSH to the
+VM, so no firewall rule has to name your home IP, which changes. Install the Google Cloud CLI
+and run `gcloud auth login`. Add a firewall rule that admits only `35.235.240.0/20` (IAP's
+range) on ports 50022, 2222 and 2223, and drop any rule that lists your own address. In the
+repo-root `.env` set `GCP_PROJECT`, `GCP_ZONE` and `GCP_INSTANCE`, plus `WILD_HOST=127.0.0.1`,
+`WILD_PORT=22022`, `WILD_PULL_HOST=host.docker.internal` and `WILD_EVAL_HOST=127.0.0.2`. Then
+run `infra/wild-vm/iap-tunnels.ps1` in PowerShell: it opens three local listeners
+(`127.0.0.1:22022` to the admin SSH, `127.0.0.2:2222` and `:2223` to the evaluation Cowrie),
+`-Stop` ends them, and `-Register` once makes it run at every logon. `backend/.env.example`
+shows the `gcp-eval-01` target in this form. Without IAP: leave `WILD_PULL_HOST` and
+`WILD_EVAL_HOST` unset, set `WILD_HOST` to the VM's IP and `WILD_PORT=50022`, and keep a
+firewall rule for your IP.
 
 The VM side is `infra/wild-vm/`: Cowrie's config and run script (deploy steps in its
 header) and `guard.sh`, which every five minutes ages out rotated logs and terminal recordings after 90 days and
 stops Cowrie if free disk drops under 1 GB or the month's outbound traffic passes 900 MB of
 the free tier's 1 GB. It lifts a stop by itself; `journalctl -t hivemind-guard` on the VM says why.
+It also rate-limits the live honeypot's ports 22/23 per source /24 (2 new connections a minute,
+burst 6, 3 at once; the knobs are at the top of the script), so a few flood bots cannot spend the
+month's egress; the evaluation Cowrie is never limited. `iptables -L DOCKER-USER -v` shows what was dropped.
 The evaluation half measures a second Cowrie on the same VM (`run-cowrie.sh eval`, ports 2222 and 2223,
-your IP only) as target `gcp-eval-01`, reset and read through a key that can do nothing else
+reachable only through IAP, or from your IP without it) as target `gcp-eval-01`, reset and read through a key that can do nothing else
 (`setup-eval-gate.sh`); `backend/.env.example` has its `EVALUATION_TARGETS` entry.
 To put a persona on both VM Cowries, first copy the new `run-cowrie.sh` to the VM, once, before the first `--apply` (which refuses until it is there):
 

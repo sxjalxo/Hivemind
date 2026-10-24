@@ -1,6 +1,23 @@
+# Honeypot personas (infra/cowrie/personas/, spec 2026-10-20): Cowrie arms whose
+# config and content are generated from persona.yaml. Same pinned image as the
+# matrix; `docker compose --profile personas up -d`. Each needs, like a matrix
+# arm, its own log volume, Filebeat input and capture sidecar.
+x-persona-cowrie: &persona-cowrie
+  profiles: ["personas"]
+  image: cowrie/cowrie@sha256:42e01e0e5fe705a0a63dacc0f1992b2d230740ac149af7675f48197abf740d44
+  restart: unless-stopped
+x-persona-capture: &persona-capture
+  profiles: ["personas"]
+  image: nicolaka/netshoot@sha256:b09d9b21381f47a79b3cbcb30da25266dc17186ea00ae65e99fdc51396f48e70
+  command: ["sleep", "infinity"]
+  restart: unless-stopped
+
 services:
+  # Core services restart with Docker like the honeypots do, so a PC restart does
+  # not leave the pipeline half-up (seen 2026-10-21 and 2026-10-25).
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -31,6 +48,7 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       - POSTGRES_USER=hivemind
       - POSTGRES_PASSWORD=hivemind
@@ -50,6 +68,7 @@ services:
   # Loopback-only, like every other port here.
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "127.0.0.1:6379:6379"
@@ -144,7 +163,10 @@ services:
     build: ./backend
     entrypoint: ["python", "-m", "scripts.pull_wild"]
     environment:
-      - WILD_HOST=${WILD_HOST:-}
+      # With IAP tunnels the admin tunnel listens on the host's 127.0.0.1, which a
+      # container reaches as host.docker.internal; WILD_PULL_HOST says so. Unset:
+      # the direct address, as before.
+      - WILD_HOST=${WILD_PULL_HOST:-${WILD_HOST:-}}
       - WILD_PORT=${WILD_PORT:-50022}
       - WILD_USER=${WILD_USER:-}
       - WILD_HOST_KEY=${WILD_HOST_KEY:-}
@@ -170,12 +192,16 @@ services:
       - cowrie-logs-hardened:/prune/cowrie-logs-hardened
       - cowrie-logs-degraded-sanity:/prune/cowrie-logs-degraded-sanity
       - cowrie-logs-degraded-fs:/prune/cowrie-logs-degraded-fs
+      - cowrie-logs-persona-web-server:/prune/cowrie-logs-persona-web-server
+      - cowrie-logs-persona-db-server:/prune/cowrie-logs-persona-db-server
+      - cowrie-logs-persona-rpi:/prune/cowrie-logs-persona-rpi
       - webpot-logs:/prune/webpot-logs
       - cowrie-tty:/prune/cowrie-tty
       - wild-tty:/prune/wild-tty
 
   filebeat:
     image: docker.elastic.co/beats/filebeat:8.15.3
+    restart: unless-stopped
     user: root
     command: ["--strict.perms=false"]
     volumes:
@@ -187,6 +213,9 @@ services:
       - cowrie-logs-hardened:/cowrie-logs-hardened:ro
       - cowrie-logs-degraded-sanity:/cowrie-logs-degraded-sanity:ro
       - cowrie-logs-degraded-fs:/cowrie-logs-degraded-fs:ro
+      - cowrie-logs-persona-web-server:/cowrie-logs-persona-web-server:ro
+      - cowrie-logs-persona-db-server:/cowrie-logs-persona-db-server:ro
+      - cowrie-logs-persona-rpi:/cowrie-logs-persona-rpi:ro
       - webpot-logs:/webpot-logs:ro
       - wild-logs:/wild-logs:ro
       # The registry: how far into each Cowrie log Filebeat has shipped. It
@@ -435,6 +464,54 @@ services:
       cowrie-degraded-fs:
         condition: service_started
 
+  cowrie-persona-web-server:
+    <<: *persona-cowrie
+    ports:
+      - "127.0.0.1:2262:2222"
+    volumes:
+      - ./infra/cowrie/personas/web-server/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./infra/cowrie/personas/web-server:/persona:ro
+      - cowrie-logs-persona-web-server:/cowrie/cowrie-git/var/log/cowrie
+
+  capture-persona-web-server:
+    <<: *persona-capture
+    network_mode: "service:cowrie-persona-web-server"
+    depends_on:
+      cowrie-persona-web-server:
+        condition: service_started
+
+  cowrie-persona-db-server:
+    <<: *persona-cowrie
+    ports:
+      - "127.0.0.1:2272:2222"
+    volumes:
+      - ./infra/cowrie/personas/db-server/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./infra/cowrie/personas/db-server:/persona:ro
+      - cowrie-logs-persona-db-server:/cowrie/cowrie-git/var/log/cowrie
+
+  capture-persona-db-server:
+    <<: *persona-capture
+    network_mode: "service:cowrie-persona-db-server"
+    depends_on:
+      cowrie-persona-db-server:
+        condition: service_started
+
+  cowrie-persona-rpi:
+    <<: *persona-cowrie
+    ports:
+      - "127.0.0.1:2282:2222"
+    volumes:
+      - ./infra/cowrie/personas/rpi/cowrie.cfg:/cowrie/cowrie-git/etc/cowrie.cfg:ro
+      - ./infra/cowrie/personas/rpi:/persona:ro
+      - cowrie-logs-persona-rpi:/cowrie/cowrie-git/var/log/cowrie
+
+  capture-persona-rpi:
+    <<: *persona-capture
+    network_mode: "service:cowrie-persona-rpi"
+    depends_on:
+      cowrie-persona-rpi:
+        condition: service_started
+
 volumes:
   es-data:
   pg-data:
@@ -446,4 +523,7 @@ volumes:
   cowrie-logs-hardened:
   cowrie-logs-degraded-sanity:
   cowrie-logs-degraded-fs:
+  cowrie-logs-persona-web-server:
+  cowrie-logs-persona-db-server:
+  cowrie-logs-persona-rpi:
   filebeat-data:

@@ -24,6 +24,7 @@ from app.services.analyzer import load_analysis, run_analysis
 from app.services.compaction import chunk_session, compact
 from app.services.session_builder import get_session_events
 from app.workers.queue import analysis_job_key, get_queue
+from tests.conftest import get_event
 
 # Cleanup runs INLINE, at the end of each test's own coroutine (try/finally),
 # the same pattern tests/test_evidence_barrier.py already uses -- not as a
@@ -249,14 +250,11 @@ async def test_write_back_enrichment_lands_after_a_real_analysis() -> None:
         analysis = await load_analysis(analysis_id)
         assert analysis is not None
 
-        settings = get_settings()
-        es = get_es()
-
         # The wget command is always rule-mapped to T1105 (see
         # test_rule_backed_techniques_are_marked_observed) -- its event must
         # carry the session-wide risk/classification AND the rule-backed
         # mitre.* stamp.
-        wget_doc = await es.get(index=settings.es_index, id="seed-botnet-01-008")
+        wget_doc = await get_event("seed-botnet-01-008")
         wget_src = wget_doc["_source"]
         assert wget_src["risk"] == {"score": analysis.risk_score, "level": analysis.risk}
         assert wget_src["ai_classification"] == analysis.classification
@@ -267,7 +265,7 @@ async def test_write_back_enrichment_lands_after_a_real_analysis() -> None:
         # isn't a command at all) but still gets the session-wide
         # risk/classification verdict -- and, having never been cited by a
         # RULE-backed mapping, must never have a mitre.* field at all.
-        connect_doc = await es.get(index=settings.es_index, id="seed-botnet-01-000")
+        connect_doc = await get_event("seed-botnet-01-000")
         connect_src = connect_doc["_source"]
         assert connect_src["risk"] == {"score": analysis.risk_score, "level": analysis.risk}
         assert connect_src["ai_classification"] == analysis.classification
@@ -280,7 +278,7 @@ async def test_write_back_enrichment_lands_after_a_real_analysis() -> None:
             if technique.ai_explanation is not None:
                 continue  # ai_explanation is None only for rule-backed techniques
             for ref in technique.evidence:
-                doc = await es.get(index=settings.es_index, id=ref.event_id)
+                doc = await get_event(ref.event_id)
                 mitre = doc["_source"].get("mitre")
                 assert mitre is not None, (
                     f"{ref.event_id} should carry a rule-backed mitre stamp"

@@ -1,0 +1,37 @@
+# A Raspberry Pi 4 on Raspberry Pi OS (64-bit). Chosen to show where a
+# config-only persona stops: everything here agrees, but Cowrie's own file
+# tree is x86 (`ls /lib` lists x86_64-linux-gnu), and probe set v4 sees it.
+hostname: raspberrypi
+distro:
+  id: debian
+  name: Debian GNU/Linux
+  pretty_name: Debian GNU/Linux 12 (bookworm)
+  version_id: "12"
+  version: 12 (bookworm)
+  codename: bookworm
+  home_url: https://www.debian.org/
+  issue: Debian GNU/Linux 12
+  debian_version: "12.7"
+  motd: |
+
+    The programs included with the Debian GNU/Linux system are free software;
+    the exact distribution terms for each program are described in the
+    individual files in /usr/share/doc/*/copyright.
+
+    Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+    permitted by applicable law.
+kernel:
+  release: 6.6.51+rpt-rpi-v8
+  build: "#1 SMP PREEMPT Debian 1:6.6.51-1+rpt3 (2024-10-08)"
+  arch: aarch64
+  compiler: "(serge@raspberrypi.com) (aarch64-linux-gnu-gcc-12 (Debian 12.2.0-14) 12.2.0, GNU ld (GNU Binutils for Debian) 2.40)"
+cpu:
+  vendor: arm
+  model: Cortex-A72
+  cores: 4
+  mhz: 1800
+  board: Raspberry Pi 4 Model B Rev 1.4
+memory_mb: 3796
+users:
+  - {name: pi, uid: 1000, gecos: ",,,"}
+ssh_banner: SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3

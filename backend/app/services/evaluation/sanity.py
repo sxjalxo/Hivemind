@@ -21,8 +21,15 @@ def probe_extracts() -> dict[str, str]:
     return {p.id: p.extract for p in load_probes() if p.extract}
 
 
+def probe_aliases() -> dict[str, dict[str, str]]:
+    """probe id -> its declared alias table, for probes that declare one."""
+    return {p.id: dict(p.aliases) for p in load_probes() if p.aliases}
+
+
 def comparable_value(
-    observation: "Observation", extracts: Mapping[str, str]
+    observation: "Observation",
+    extracts: Mapping[str, str],
+    aliases: Mapping[str, Mapping[str, str]] | None = None,
 ) -> str | None:
     """What this observation actually CLAIMS about its fact, or None.
 
@@ -33,7 +40,8 @@ def comparable_value(
     A probe WITH an extract claims only the captured group, normalised. When
     the pattern does not match, this returns None and the caller drops the
     observation: we could not read the claim, which is not the same as the
-    claim agreeing with its partner.
+    claim agreeing with its partner. A declared alias then maps the claim to
+    the word it implies; `aliases` defaults to the loaded probe set.
     """
     if observation.value is None:
         return None
@@ -43,7 +51,10 @@ def comparable_value(
     match = _compiled(pattern).search(observation.value)
     if match is None:
         return None
-    return _WHITESPACE.sub(" ", match.group(1)).strip().lower()
+    claim = _WHITESPACE.sub(" ", match.group(1)).strip().lower()
+    if aliases is None:
+        aliases = probe_aliases()
+    return aliases.get(observation.probe_id, {}).get(claim, claim)
 
 
 class Observation(BaseModel):
@@ -60,7 +71,9 @@ class Contradiction(BaseModel):
 
 
 def find_contradictions(
-    observations: list[Observation], extracts: Mapping[str, str] | None = None
+    observations: list[Observation],
+    extracts: Mapping[str, str] | None = None,
+    aliases: Mapping[str, Mapping[str, str]] | None = None,
 ) -> list[Contradiction]:
     """Two COMPLETED probes establishing the same canonical fact, disagreeing.
 
@@ -87,9 +100,11 @@ def find_contradictions(
     """
     if extracts is None:
         extracts = probe_extracts()
+    if aliases is None:
+        aliases = probe_aliases()
 
     usable = [
-        (o, comparable_value(o, extracts))
+        (o, comparable_value(o, extracts, aliases))
         for o in observations
         if o.establishes and o.value is not None and o.fact_status == FactStatus.OBSERVED
     ]

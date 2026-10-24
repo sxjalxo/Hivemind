@@ -81,6 +81,57 @@ filebeat.inputs:
             id: matrix-degraded-fs
             name: Matrix arm - degraded filesystem
 
+  - type: filestream
+    id: cowrie-json-persona-web-server
+    enabled: true
+    paths:
+      - /cowrie-logs-persona-web-server/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: persona-web-server
+            name: Persona - web server
+
+  - type: filestream
+    id: cowrie-json-persona-db-server
+    enabled: true
+    paths:
+      - /cowrie-logs-persona-db-server/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: persona-db-server
+            name: Persona - database server
+
+  - type: filestream
+    id: cowrie-json-persona-rpi
+    enabled: true
+    paths:
+      - /cowrie-logs-persona-rpi/cowrie.json
+    parsers:
+      - ndjson:
+          target: cowrie
+          overwrite_keys: true
+          add_error_key: true
+    processors:
+      - add_fields:
+          target: honeypot
+          fields:
+            id: persona-rpi
+            name: Persona - Raspberry Pi
+
   # The HTTP honeypot (infra/webpot). It writes Cowrie-shaped lines, so it is
   # parsed into the same `cowrie` namespace and goes through the same pipeline;
   # the namespace name is historical, not a claim that this is Cowrie.

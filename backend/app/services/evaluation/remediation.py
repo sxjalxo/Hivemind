@@ -347,6 +347,15 @@ def _for_finding(finding: FindingOut, facts: _RunFacts) -> Remediation:
                 key,
                 "The honeypot's /etc/os-release contradicts its own kernel string.",
             )
+        if fact == "host.arch":
+            return _unsupported(
+                key,
+                "No generated fix for a CPU architecture contradiction.",
+                "the architecture also shows through Cowrie's built-in file tree (`ls /lib` "
+                "lists x86_64-linux-gnu in this image), and an overlay can replace a file's "
+                "contents but not the tree. Claim x86_64 instead, or give the decoy its own "
+                "filesystem image (backlog: custom filesystem per persona).",
+            )
         return _unsupported(
             key,
             f"No generated fix for a contradiction about {fact!r}.",

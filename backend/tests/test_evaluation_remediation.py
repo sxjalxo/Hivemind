@@ -312,3 +312,12 @@ def test_two_files_disagreeing_with_each_other_are_both_rewritten() -> None:
     )
 
     assert sorted(f.path for f in item.honeyfs_files) == ["etc/hostname", "etc/hosts"]
+
+
+def test_an_architecture_contradiction_is_refused_and_says_why() -> None:
+    # No config lever fixes it: the file tree is part of the image. A refusal,
+    # never a guessed patch, and the reason must name the real cause.
+    item = _only(_run(["sanity:host.arch:lib_arch+uname_m"], []))
+    assert not item.is_actionable
+    assert not item.honeyfs_files
+    assert "file tree" in item.unsupported_reason

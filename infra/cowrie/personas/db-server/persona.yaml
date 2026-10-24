@@ -1,0 +1,35 @@
+# A dedicated PostgreSQL box. Facts only -- see web-server/persona.yaml.
+hostname: pg-main-01
+distro:
+  id: debian
+  name: Debian GNU/Linux
+  pretty_name: Debian GNU/Linux 12 (bookworm)
+  version_id: "12"
+  version: 12 (bookworm)
+  codename: bookworm
+  home_url: https://www.debian.org/
+  issue: Debian GNU/Linux 12
+  debian_version: "12.7"
+  motd: |
+
+    The programs included with the Debian GNU/Linux system are free software;
+    the exact distribution terms for each program are described in the
+    individual files in /usr/share/doc/*/copyright.
+
+    Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+    permitted by applicable law.
+kernel:
+  release: 6.1.0-26-amd64
+  build: "#1 SMP PREEMPT_DYNAMIC Debian 6.1.112-1 (2024-09-30)"
+  arch: x86_64
+  compiler: "(debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0, GNU ld (GNU Binutils for Debian) 2.40)"
+cpu:
+  vendor: amd
+  model: AMD EPYC 7502P 32-Core Processor
+  cores: 8
+  mhz: 2500
+memory_mb: 32096
+users:
+  - {name: postgres, uid: 105, gecos: "PostgreSQL administrator,,,", home: /var/lib/postgresql, shell: /bin/bash}
+  - {name: dbadmin, uid: 1000, gecos: "DB Admin,,,"}
+ssh_banner: SSH-2.0-OpenSSH_9.2p1 Debian-2+deb12u3

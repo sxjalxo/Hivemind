@@ -17,6 +17,29 @@ async def _es_lifecycle():
     await get_engine().dispose()
 
 
+async def get_event(event_id: str) -> dict:
+    """One event by id through the rollover alias: the hit, with `_index` and
+    `_source`.
+
+    Not `es.get`: a GET (or exists, or delete) by id needs ONE concrete index,
+    and `honeypot-events` spans several once it has rolled over -- the first
+    live rollover (2026-10-20) turned every such call here into a 400. The app
+    never does single-document operations through the alias for that reason.
+    A search sees only refreshed data; every write these tests read back
+    refreshes. Exactly one hit, because ids are unique per index, not per
+    alias, and a second copy would be a real bug.
+    """
+    from app.config import get_settings
+
+    hits = (
+        await get_es().search(
+            index=get_settings().es_index, query={"ids": {"values": [event_id]}}, size=2
+        )
+    )["hits"]["hits"]
+    assert len(hits) == 1, f"{event_id}: {len(hits)} copies behind the alias"
+    return hits[0]
+
+
 # --- WebSocket harnesses ------------------------------------------------
 #
 # Neither of these is a convenience. A progress handler's defining property

@@ -37,6 +37,13 @@ class Probe(BaseModel):
     # scoring. (A kernel string naming no distribution at all is the ordinary
     # way this happens; the pair is then simply not cross-checked.)
     extract: str | None = None
+    # Optional: what a captured token MEANS, when one fact is printed as
+    # different words by different sources. `/proc/cpuinfo` names a vendor
+    # (`GenuineIntel`) where `uname -m` names an architecture (`x86_64`); the
+    # alias maps the normalised token to the word it implies. A token with no
+    # entry compares as itself. Applied after `extract`, so it only ever sees
+    # a claim we could read.
+    aliases: dict[str, str] | None = None
 
 
 @lru_cache
@@ -65,19 +72,25 @@ def _check_comparable_forms(probes: tuple[Probe, ...]) -> None:
     contradiction, and the honeypot gets blamed for our own mismatched
     declaration. That is the exact bug this field was added to remove, so it
     must not be reachable by editing half of a pair.
+
+    The rule covers the pattern and the alias table too, not just whether an
+    extract is declared: two probes reading one fact through different
+    patterns or alias tables reduce the same machine to different words, and
+    disagree in the same silent way.
     """
-    forms: dict[str, set[bool]] = {}
+    forms: dict[str, set[tuple[str | None, tuple[tuple[str, str], ...]]]] = {}
     for probe in probes:
         if probe.establishes:
-            forms.setdefault(probe.establishes, set()).add(probe.extract is not None)
+            reading = (probe.extract, tuple(sorted((probe.aliases or {}).items())))
+            forms.setdefault(probe.establishes, set()).add(reading)
 
-    split = sorted(fact for fact, declared in forms.items() if len(declared) > 1)
+    split = sorted(fact for fact, readings in forms.items() if len(readings) > 1)
     if split:
         raise ProbeSetError(
-            f"probes establishing {split} disagree about whether they declare an "
-            f"`extract`. Every probe naming one fact must read it the same way, or "
-            f"their values are not comparable and every run reports a false "
-            f"contradiction. Give all of them an extract, or none of them."
+            f"probes establishing {split} do not read their fact the same way. Every "
+            f"probe naming one fact must declare the same `extract` and the same "
+            f"`aliases` (or none of either), or their values are not comparable and "
+            f"every run reports a false contradiction."
         )
 
 

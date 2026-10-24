@@ -134,7 +134,12 @@ ROLL_BACK_BOTH = ("deploy the previous persona", "deploy_persona --revert --appl
 
 def _rig(monkeypatch, *, db_down=False, record_error=None, fail_on=None, twin_wrong=False):
     """Fake every outside thing `main --apply` touches; `calls` is what happened, in order."""
-    calls: list = []
+
+    class Calls(list):
+        twin_hosts: list
+
+    calls = Calls()
+    calls.twin_hosts = []
     records: list = []
 
     class Admin(FakeRemote):
@@ -162,10 +167,12 @@ def _rig(monkeypatch, *, db_down=False, record_error=None, fail_on=None, twin_wr
 
     async def twin(host, expected, wait_seconds=90):
         calls.append("twin")
+        calls.twin_hosts.append(host)
         return {**expected, "hostname": "wrong"} if twin_wrong else dict(expected)
 
     monkeypatch.setattr(deploy, "load_dotenv", lambda *a, **k: None)  # never the repo-root .env
     monkeypatch.setenv("WILD_HOST", "vm.invalid")
+    monkeypatch.delenv("WILD_EVAL_HOST", raising=False)
     monkeypatch.setattr(deploy, "_Admin", Admin)
     monkeypatch.setattr(deploy, "_look_at_twin", twin)
     monkeypatch.setattr(persona_deployments, "active", active)
@@ -190,6 +197,22 @@ def test_a_clean_deploy_checks_the_database_then_deploys_then_records_then_check
     ]
     assert records == [(deploy.SENSORS, "web-server", DIGEST)]
     assert "the evaluation twin shows the persona" in capsys.readouterr().out
+
+
+def test_the_twin_is_checked_at_its_own_address_when_it_has_one(monkeypatch) -> None:
+    # With IAP tunnels the admin tunnel is 127.0.0.1 and the evaluation Cowrie's is 127.0.0.2.
+    calls, _ = _rig(monkeypatch)
+    monkeypatch.setenv("WILD_HOST", "127.0.0.1")
+    monkeypatch.setenv("WILD_EVAL_HOST", "127.0.0.2")
+    assert deploy.main(["web-server", "--apply"]) == 0
+    assert calls.twin_hosts == ["127.0.0.2"]
+
+
+def test_the_twin_is_checked_at_the_admin_address_without_an_eval_address(monkeypatch) -> None:
+    calls, _ = _rig(monkeypatch)
+    monkeypatch.setenv("WILD_HOST", "127.0.0.1")
+    assert deploy.main(["web-server", "--apply"]) == 0
+    assert calls.twin_hosts == ["127.0.0.1"]
 
 
 def test_an_unreachable_database_stops_the_apply_before_the_vm_is_touched(

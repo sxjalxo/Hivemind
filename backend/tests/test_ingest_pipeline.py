@@ -90,7 +90,7 @@ async def test_nested_cowrie_fields_from_filebeat_flatten_and_map_correctly() ->
         index=settings.es_index, document=doc, pipeline=PIPELINE_ID, refresh=True
     )
     try:
-        fetched = await get_es().get(index=settings.es_index, id=resp["_id"])
+        fetched = await get_es().get(index=resp["_index"], id=resp["_id"])
         src = fetched["_source"]
 
         assert src["process"]["command_line"] == "id"
@@ -99,7 +99,7 @@ async def test_nested_cowrie_fields_from_filebeat_flatten_and_map_correctly() ->
         assert src["honeypot"]["id"] == "cowrie-01"
         assert "cowrie" not in src
     finally:
-        await get_es().delete(index=settings.es_index, id=resp["_id"])
+        await get_es().delete(index=resp["_index"], id=resp["_id"])
 
 
 @pytest.mark.asyncio
@@ -175,11 +175,11 @@ async def test_a_live_shaped_event_is_accepted_whatever_the_geoip_database_state
         index=settings.es_index, document=doc, pipeline=PIPELINE_ID, refresh=True
     )
     try:
-        src = (await get_es().get(index=settings.es_index, id=resp["_id"]))["_source"]
+        src = (await get_es().get(index=resp["_index"], id=resp["_id"]))["_source"]
         assert "tags" not in src
         assert "tmp_geo" not in src
     finally:
-        await get_es().delete(index=settings.es_index, id=resp["_id"])
+        await get_es().delete(index=resp["_index"], id=resp["_id"])
 
 
 @pytest.mark.asyncio

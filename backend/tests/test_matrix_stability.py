@@ -35,3 +35,21 @@ def test_spread_is_computed_over_established_scores_only():
 
 def test_a_characteristic_never_established_reports_none_not_zero():
     assert matrix.stability([_run(), _run()])["context"] == (None, None, None, 0, 2)
+
+
+def test_arm_selection() -> None:
+    import pytest
+
+    assert matrix.select_arms(None, False) == matrix.ARMS
+    assert (
+        matrix.select_arms(None, True)
+        == matrix.PERSONAS
+        == (
+            "persona-web-server",
+            "persona-db-server",
+            "persona-rpi",
+        )
+    )
+    assert matrix.select_arms(["cowrie-01"], False) == ("cowrie-01",)
+    with pytest.raises(SystemExit):
+        matrix.select_arms(["cowrie-01"], True)  # one or the other, never a silent merge

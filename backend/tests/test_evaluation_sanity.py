@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.evaluation.sanity import Observation, find_contradictions
 
 
@@ -181,3 +183,71 @@ def test_a_consistent_hosts_file_or_one_without_a_127_0_1_1_line_is_not() -> Non
     # unreadable claim is never counted as agreement OR disagreement.
     nameless = "127.0.0.1 localhost\n::1 localhost\n"
     assert find_contradictions(_stock_hostnames(nameless), probe_extracts()) == []
+
+
+_ARCH_PATTERN = r"\b(x86_64|aarch64|genuineintel)\b"
+_ARCH_EXTRACTS = {"m": _ARCH_PATTERN, "cpu": _ARCH_PATTERN}
+_ARCH_ALIASES = {"m": {"genuineintel": "x86_64"}, "cpu": {"genuineintel": "x86_64"}}
+
+
+def test_aliases_reduce_two_different_words_to_one_claim() -> None:
+    from app.services.evaluation.sanity import comparable_value
+
+    cpu = _obs("cpu", "host.arch", "vendor_id\t: GenuineIntel")
+    assert comparable_value(cpu, _ARCH_EXTRACTS, _ARCH_ALIASES) == "x86_64"
+    agreeing = [_obs("m", "host.arch", "x86_64"), cpu]
+    assert find_contradictions(agreeing, _ARCH_EXTRACTS, _ARCH_ALIASES) == []
+
+
+def test_a_token_with_no_alias_compares_as_itself() -> None:
+    from app.services.evaluation.sanity import comparable_value
+
+    arm = _obs("m", "host.arch", "aarch64")
+    assert comparable_value(arm, _ARCH_EXTRACTS, _ARCH_ALIASES) == "aarch64"
+    disagreeing = [arm, _obs("cpu", "host.arch", "vendor_id\t: GenuineIntel")]
+    assert len(find_contradictions(disagreeing, _ARCH_EXTRACTS, _ARCH_ALIASES)) == 1
+
+
+X86_CPUINFO = (
+    "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\n"
+    "model name\t: Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz\nflags\t\t: fpu vme de pse lm\n"
+)
+AMD_CPUINFO = (
+    "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD EPYC 7502P 32-Core Processor\n"
+)
+ARM_CPUINFO = (
+    "processor\t: 0\nBogoMIPS\t: 108.00\nFeatures\t: fp asimd evtstrm crc32 cpuid\n"
+    "CPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0xd08\n"
+)
+X86_LIB = (
+    "apt              binfmt.d         dpkg             init\n"
+    "os-release       python3          python3.11       x86_64-linux-gnu\n"
+)
+ARM_LIB = "apt              dpkg             aarch64-linux-gnu  os-release\n"
+
+
+def _arch(machine: str, cpuinfo: str, lib: str) -> list[Observation]:
+    return [
+        _obs("uname_m", "host.arch", machine),
+        _obs("cpu_arch", "host.arch", cpuinfo),
+        _obs("lib_arch", "host.arch", lib),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("machine", "cpuinfo", "lib"),
+    [
+        ("x86_64", X86_CPUINFO, X86_LIB),
+        ("x86_64", AMD_CPUINFO, X86_LIB),
+        ("aarch64", ARM_CPUINFO, ARM_LIB),
+    ],
+)
+def test_a_consistent_machine_agrees_on_its_architecture(machine, cpuinfo, lib) -> None:
+    assert find_contradictions(_arch(machine, cpuinfo, lib)) == []
+
+
+def test_an_arm_disguise_over_an_x86_file_tree_is_caught() -> None:
+    # The rpi persona's expected result: uname and cpuinfo say ARM (the persona
+    # wrote both), Cowrie's own file tree still says x86.
+    found = find_contradictions(_arch("aarch64", ARM_CPUINFO, X86_LIB))
+    assert {c.probe_ids for c in found} == {("uname_m", "lib_arch"), ("cpu_arch", "lib_arch")}

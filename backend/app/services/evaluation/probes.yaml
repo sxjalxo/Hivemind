@@ -1,4 +1,4 @@
-version: "3"
+version: "4"
 
 # How a probe's claim about `os.identity` is read out of its raw output.
 #
@@ -24,6 +24,24 @@ _os_distro: &os_distro '\b(debian|ubuntu|centos|fedora|alpine|arch|red\s*hat|rhe
 # /etc/hosts lines (`127.0.0.1 localhost`, comments, IPv6) never match, and a
 # file with no 127.0.1.1 line has no claim and is simply not cross-checked.
 _host_name: &host_name '(?m)^(?:127\.0\.1\.1[ \t]+)?([a-z0-9][\w.-]*)[ \t\r]*$'
+
+# How a probe's claim about `host.arch` is read (added in version 4, with the
+# honeypot personas). Three sources print it as three different words:
+# `uname -m` prints the architecture, /proc/cpuinfo names an x86 vendor or an
+# ARM architecture number, and `ls /lib` shows the multiarch library directory
+# -- which comes from Cowrie's own file tree, so it is the one a disguise
+# cannot reach. One pattern captures any of those tokens (the longer
+# `-linux-gnu` forms first, so they win over the bare architecture), and
+# `_arch_aliases` maps each to the architecture it implies.
+_arch: &arch '\b(x86_64-linux-gnu|aarch64-linux-gnu|arm-linux-gnueabihf|x86_64|aarch64|armv7l|genuineintel|authenticamd|cpu architecture:\s*\d+)\b'
+_arch_aliases: &arch_aliases
+  x86_64-linux-gnu: x86_64
+  genuineintel: x86_64
+  authenticamd: x86_64
+  aarch64-linux-gnu: aarch64
+  "cpu architecture: 8": aarch64
+  arm-linux-gnueabihf: armv7l
+  "cpu architecture: 7": armv7l
 
 probes:
   - id: uname
@@ -67,3 +85,21 @@ probes:
     characteristic: file_system
     command: "cat /proc/cpuinfo"
     establishes: fs.proc_cpuinfo
+  - id: uname_m
+    characteristic: sanity
+    command: "uname -m"
+    establishes: host.arch
+    extract: *arch
+    aliases: *arch_aliases
+  - id: cpu_arch
+    characteristic: sanity
+    command: "cat /proc/cpuinfo"
+    establishes: host.arch
+    extract: *arch
+    aliases: *arch_aliases
+  - id: lib_arch
+    characteristic: sanity
+    command: "ls /lib"
+    establishes: host.arch
+    extract: *arch
+    aliases: *arch_aliases

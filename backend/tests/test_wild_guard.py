@@ -28,6 +28,22 @@ printf 'Avail\\n%s\\n' "$FREE_KB"
 shift 2
 echo "$*" >>"$SAID"
 """,
+    # -C answers from IPT_PRESENT (0 = rule exists); -L prints a counter fixture;
+    # IPT_FAIL=1 makes every call fail, as a missing module or a locked xtables would.
+    "iptables": """#!/bin/sh
+echo "$*" >>"$IPT_CALLS"
+[ "$IPT_FAIL" = 1 ] && exit 1
+case "$1" in
+  -C) exit "$IPT_PRESENT" ;;
+  -L) printf 'Chain DOCKER-USER
+ pkts bytes target
+   40  2400 DROP tcp
+    2   120 DROP tcp
+  900 50000 RETURN all
+' ;;
+esac
+exit 0
+""",
 }
 
 
@@ -39,6 +55,10 @@ def guard(
     free_kb: int = 5_000_000,
     budget: int = 1000,
     tty: bool = True,
+    ipt_present: bool = True,
+    ipt_fail: bool = False,
+    rate_limit: str = "on",
+    minute: str = "17",
 ):
     stubs = tmp / "bin"
     if not stubs.exists():
@@ -63,7 +83,13 @@ def guard(
         "EGRESS_BUDGET": str(budget),
         "TX": str(tmp / "tx"),
         "STATE": str(tmp / "state"),
+        "IPT_CALLS": str(tmp / "ipt"),
+        "IPT_PRESENT": "0" if ipt_present else "1",
+        "IPT_FAIL": "1" if ipt_fail else "0",
+        "RATE_LIMIT": rate_limit,
+        "NOW_MINUTE": minute,
     }
+    (tmp / "ipt").write_text("")
     subprocess.run([SH, str(GUARD)], env=env, check=True)
     return [c for c in calls.read_text().splitlines() if c.split()[0] in ("stop", "start")]
 
@@ -123,3 +149,49 @@ def test_retention_deletes_only_old_recordings(tmp_path: Path) -> None:
 
 def test_a_missing_recordings_volume_still_reaches_the_egress_check(tmp_path: Path) -> None:
     assert guard(tmp_path, tx=5000, budget=1000, tty=False) == ["stop cowrie"]
+
+
+def ipt(tmp: Path, verb: str) -> list[str]:
+    return [c for c in (tmp / "ipt").read_text().splitlines() if c.startswith(verb)]
+
+
+def test_missing_rate_limit_rules_are_installed_once_each(tmp_path: Path) -> None:
+    guard(tmp_path, tx=10, ipt_present=False)
+    inserted = ipt(tmp_path, "-I")
+    assert len(inserted) == 4  # ssh + telnet, each a rate and a concurrency rule
+    for port in ("22", "23"):
+        mine = [r for r in inserted if f"--ctorigdstport {port} " in r]
+        assert len(mine) == 2
+        assert any("--hashlimit-above 2/minute --hashlimit-burst 6" in r for r in mine)
+        assert any("--connlimit-above 3 --connlimit-mask 24" in r for r in mine)
+    assert all(r.startswith("-I DOCKER-USER ") and r.endswith("-j DROP") for r in inserted)
+    assert all("--hashlimit-srcmask 24" in r for r in inserted if "hashlimit" in r)
+    # Never the evaluation Cowrie: every IAP connection reaches it from a few proxy
+    # addresses, so a per-source limit there would throttle our own evaluations.
+    assert not any("2222" in r or "2223" in r for r in inserted)
+    assert (tmp_path / "state" / "rate-limit-since").read_text().strip()
+    assert "rate limit: installed" in (tmp_path / "said").read_text()
+
+
+def test_present_rules_are_left_alone(tmp_path: Path) -> None:
+    guard(tmp_path, tx=10, ipt_present=True)
+    assert ipt(tmp_path, "-I") == []
+    assert len(ipt(tmp_path, "-C")) == 4
+
+
+def test_a_failing_iptables_never_skips_the_egress_bound(tmp_path: Path) -> None:
+    assert guard(tmp_path, tx=5000, budget=1000, ipt_fail=True) == ["stop cowrie"]
+    assert egress(tmp_path) == 5000
+    assert "rate limit:" in (tmp_path / "said").read_text()
+
+
+def test_the_rate_limit_can_be_switched_off(tmp_path: Path) -> None:
+    guard(tmp_path, tx=10, ipt_present=False, rate_limit="off")
+    assert (tmp_path / "ipt").read_text() == ""
+
+
+def test_the_hourly_run_logs_how_many_connections_were_turned_away(tmp_path: Path) -> None:
+    guard(tmp_path, tx=10, minute="00")
+    assert "rate limit: 42 new connections dropped" in (tmp_path / "said").read_text()
+    guard(tmp_path, tx=10, minute="35")  # not on the hour: nothing more said
+    assert (tmp_path / "said").read_text().count("connections dropped") == 1

@@ -14,7 +14,8 @@ Rollback is deploying the previous persona (earlier bundles stay on the VM), or
 
 Reads WILD_HOST, WILD_PORT, WILD_USER, WILD_HOST_KEY and WILD_KEY_FILE from the
 repo-root .env -- the admin key and pinned host key wild-pull already uses.
-The dry run connects to nothing.
+WILD_EVAL_HOST is the evaluation Cowrie's address when it differs from the admin
+one, e.g. 127.0.0.2 with IAP tunnels. The dry run connects to nothing.
 """
 
 import argparse
@@ -262,7 +263,7 @@ async def _deploy(
 
     expected = expected_view(persona, files)
     try:
-        seen = await _look_at_twin(env["WILD_HOST"], expected)
+        seen = await _look_at_twin(env.get("WILD_EVAL_HOST") or env["WILD_HOST"], expected)
     except Exception as exc:  # noqa: BLE001
         return _fail(f"the persona is live, but the twin check failed: {_detail(exc)}.")
     wrong = twin_mismatches(expected, seen)

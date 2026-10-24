@@ -38,6 +38,7 @@ USAGE
     # EVALUATION_TARGETS must map every arm -- see backend/.env.example
     python scripts/run_degradation_matrix.py
     python scripts/run_degradation_matrix.py --arm matrix-hardened --arm cowrie-01
+    python scripts/run_degradation_matrix.py --personas [--repeat N]
 
 If an arm reports `context` as unestablished while its neighbours score it,
 its capture sidecar is almost certainly orphaned: restarting an arm destroys
@@ -96,6 +97,20 @@ ARMS: tuple[str, ...] = (
     "matrix-degraded-sanity",
     "matrix-degraded-fs",
 )
+
+# The honeypot personas (infra/cowrie/personas/): the same comparison, between
+# disguises rather than between degradations. x86 first, then the ARM persona
+# whose file tree is expected to give it away.
+PERSONAS: tuple[str, ...] = ("persona-web-server", "persona-db-server", "persona-rpi")
+
+
+def select_arms(arms: list[str] | None, personas: bool) -> tuple[str, ...]:
+    if arms and personas:
+        raise SystemExit("--arm and --personas select different sets; pass one of them")
+    if personas:
+        return PERSONAS
+    return tuple(arms) if arms else ARMS
+
 
 CHARACTERISTICS = (
     "basic_commands",
@@ -271,6 +286,11 @@ async def main() -> int:
         help="Evaluate only this honeypot id. Repeatable. Defaults to every arm.",
     )
     parser.add_argument(
+        "--personas",
+        action="store_true",
+        help="Evaluate the honeypot personas instead of the degradation matrix.",
+    )
+    parser.add_argument(
         "--repeat",
         type=int,
         default=1,
@@ -278,7 +298,7 @@ async def main() -> int:
         "evaluation (reset, probes, chains): minutes per arm per run.",
     )
     args = parser.parse_args()
-    arms = tuple(args.arms) if args.arms else ARMS
+    arms = select_arms(args.arms, args.personas)
 
     _check_targets(arms)
 

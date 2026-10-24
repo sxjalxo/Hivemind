@@ -73,3 +73,44 @@ def test_a_consistently_declared_pair_loads() -> None:
         Probe(id="d", characteristic="sanity", command="y", establishes="host.name"),
     )
     _check_comparable_forms(neither)  # must not raise
+
+
+def test_probes_for_one_fact_must_share_extract_and_aliases() -> None:
+    # Declaring an extract on every probe is not enough: two probes that read
+    # one fact through DIFFERENT patterns or alias tables reduce the same
+    # machine to different words, and every run reports a false contradiction.
+    import pytest
+
+    from app.services.evaluation.probes import Probe, ProbeSetError, _check_comparable_forms
+
+    pattern = r"\b(x86_64|genuineintel)\b"
+    a = Probe(
+        id="a",
+        characteristic="sanity",
+        command="x",
+        establishes="host.arch",
+        extract=pattern,
+        aliases={"genuineintel": "x86_64"},
+    )
+    no_aliases = Probe(
+        id="b", characteristic="sanity", command="y", establishes="host.arch", extract=pattern
+    )
+    other_pattern = Probe(
+        id="c",
+        characteristic="sanity",
+        command="z",
+        establishes="host.arch",
+        extract=r"\b(x86_64)\b",
+        aliases={"genuineintel": "x86_64"},
+    )
+    for partner in (no_aliases, other_pattern):
+        with pytest.raises(ProbeSetError, match="host.arch"):
+            _check_comparable_forms((a, partner))
+    _check_comparable_forms((a, a.model_copy(update={"id": "d"})))  # identical reading: fine
+
+
+def test_probe_set_v4_reads_the_architecture_three_ways() -> None:
+    ids = {p.id for p in load_probes() if p.establishes == "host.arch"}
+    assert ids == {"uname_m", "cpu_arch", "lib_arch"}
+    assert all(p.characteristic == "sanity" for p in load_probes() if p.id in ids)
+    assert PROBE_SET_VERSION == "4"

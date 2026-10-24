@@ -229,7 +229,9 @@ async def test_30d_window_returns_at_least_as_many_events_as_1h_window() -> None
 
 
 @pytest.mark.asyncio
-async def test_timeline_spans_the_full_requested_window_not_just_observed_data() -> None:
+async def test_timeline_spans_the_full_requested_window_not_just_observed_data(
+    monkeypatch,
+) -> None:
     # extended_bounds/hard_bounds must force the date_histogram to cover
     # the entire requested range, not merely the span where documents
     # happen to exist. min_doc_count: 0 alone only fills gaps BETWEEN
@@ -243,9 +245,21 @@ async def test_timeline_spans_the_full_requested_window_not_just_observed_data()
     # 30 days of 1d buckets is ~30-31 buckets, never the ~8 you'd get by
     # only spanning the days that actually have data.
     assert len(data.timeline) >= 28
-    # The requested window starts well before any seed/live data does, so
-    # the leading buckets must exist with zero events, not be absent.
-    assert data.timeline[0].events == 0
+
+    # A 30d window that holds NO documents: the leading-and-trailing case
+    # bounds exist for. It must still render ~30 zero-valued buckets, where
+    # an unbounded histogram renders none. (This used to be checked as "the
+    # live window's first bucket is empty", which stopped being true once
+    # live capture since 2026-09-20 put real events on every window's first
+    # day -- and then passed with the bounds removed.) January 2026 predates
+    # all data, seed corpus included.
+    monkeypatch.setattr(
+        "app.services.dashboard.range_to_bounds",
+        lambda _range: ("2026-01-01T00:00:00.000Z", "2026-01-31T00:00:00.000Z"),
+    )
+    empty = await build_dashboard("30d")
+    assert len(empty.timeline) >= 28
+    assert all(point.events == 0 for point in empty.timeline)
 
     narrow = await build_dashboard("1h")
     # 1h of 5m buckets is ~12-13 buckets, present even when the window

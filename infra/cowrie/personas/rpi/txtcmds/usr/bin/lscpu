@@ -1,0 +1,11 @@
+Architecture:          aarch64
+CPU op-mode(s):        32-bit, 64-bit
+Byte Order:            Little Endian
+CPU(s):                4
+On-line CPU(s) list:   0-3
+Thread(s) per core:    1
+Core(s) per socket:    4
+Socket(s):             1
+Vendor ID:             ARM
+Model name:            Cortex-A72
+CPU MHz:               1800.000

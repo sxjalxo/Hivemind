@@ -79,7 +79,9 @@ async def test_seeded_scoping_ignores_stray_non_seed_prefixed_documents() -> Non
 
     baseline = await seed(reset=True)
 
-    await es.index(
+    # The concrete index it landed in: exists/delete by id cannot go through
+    # the alias once it has rolled over (see tests/conftest.get_event).
+    stray_index = (await es.index(
         index=settings.es_index,
         id=stray_id,
         document={
@@ -87,18 +89,18 @@ async def test_seeded_scoping_ignores_stray_non_seed_prefixed_documents() -> Non
             "honeypot": {"id": "cowrie-01", "name": "Cowrie SSH (med-ws-04)"},
         },
         refresh=True,
-    )
+    ))["_index"]
     try:
         assert await seeded_count() == baseline, "stray doc must not be counted"
 
         second = await seed(reset=True)
         assert second == baseline, "reset must reseed exactly the real corpus"
-        assert await es.exists(index=settings.es_index, id=stray_id), (
+        assert await es.exists(index=stray_index, id=stray_id), (
             "reset must not delete a labels.seeded doc outside the seed- id prefix"
         )
     finally:
         try:
-            await es.delete(index=settings.es_index, id=stray_id)
+            await es.delete(index=stray_index, id=stray_id)
         except NotFoundError:
             pass
 
