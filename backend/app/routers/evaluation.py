@@ -40,7 +40,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.auth import Actor, assert_admin_for, require_admin
+from app.auth import Actor, assert_admin_for, assert_can_read, require_admin, require_user
 from app.db import locks
 from app.models.evaluation import (
     EVALUATION_FAILED_STAGE,
@@ -226,6 +226,8 @@ async def start_evaluation(
 @router.get("/evaluations", response_model=list[EvaluationRunSummary])
 async def get_evaluations(
     limit: int = Query(DEFAULT_RUN_LIMIT, ge=1, le=MAX_RUN_LIMIT),
+    honeypot_id: str | None = Query(None),
+    claims: dict | None = Depends(require_user),
 ) -> list[EvaluationRunSummary]:
     """Bounded history rows. Deliberately NOT `list[EvaluationRunOut]`.
 
@@ -234,7 +236,11 @@ async def get_evaluations(
     transfer the entire evaluation database to draw a table. Read one run in
     full through `GET /api/evaluations/{run_id}`.
     """
-    return await runs.list_run_summaries(limit)
+    # Scoped only when filtering: a caller may not list the runs of a sensor
+    # they may not read (404, as everywhere). The unfiltered list is unchanged.
+    if honeypot_id is not None:
+        assert_can_read(claims, honeypot_id)
+    return await runs.list_run_summaries(limit, honeypot_id)
 
 
 # `/evaluations/compare` MUST be declared before `/evaluations/{run_id}`.

@@ -382,6 +382,117 @@ then exits non-zero naming the failed step. Rolling back is deploying the previo
 Cowries on the setup they ran before any persona and records `pre-persona`, so the evaluation
 fingerprint is again the one from before any deploy.
 
+**The sensor page.** `/honeypots/{id}` answers "what is this sensor, what has it been disguised
+as and when, and what has it drawn since", in four panels: *identity* (name, address, protocols,
+first and last event, the persona deployments and recorded changes as a timeline), *traffic*
+(events, sessions and sources per UTC day, the top sources with their country, the protocol
+split, and one row per period), *techniques* (ATT&CK techniques with events, sessions, first and
+last seen and a count per period) and *evaluations* (the sensor's runs, newest first, with a
+compare link between the latest two completed ones). A 7, 30 or 90 day window applies to traffic
+and techniques; the API takes `days` from 1 to 90 (default 30, 422 outside). Every value is
+observed, derived with a named `source`, or `unknown`, never a placeholder. The *type* is the
+protocols the sensor has actually served, most frequent first (`observed`). The *OS* is the
+active persona's distribution (`persona`), else the first readable `os.identity` claim of the
+latest completed evaluation that started at or after the deployment in force (`evaluation`; a
+run made under an earlier disguise says nothing about the one now running), else `unknown`.
+A **period** is the span between two boundaries, where a boundary is a persona deployment or a
+recorded change, labelled with the persona in force and what opened it. The first period starts
+no earlier than the sensor's first event, and periods are compared per day (events, sessions
+and sources over the period's length, at least an hour), because they differ in length.
+**Techniques** come from the deterministic rulebook applied to every distinct command the sensor
+received in the window, not only to commands in sessions someone analysed, and no model is
+involved; each distinct command is matched once and counted by its occurrences. Commands over
+1024 characters (the keyword field's limit) are never considered, and the distinct commands are
+capped, in which case the response says `truncated`. Distinct session and source counts are
+approximate above 10,000 per period (HyperLogLog; the per-day chart's counts above 3,000). The
+honeypot list on the same route family now derives its type and OS the same way and no longer
+shows an invented risk or interaction level (`risk` is `unknown`: nothing measures it). The list
+and all three new routes are read-scoped like the session list: a sensor the caller may not read
+is a 404, and absent from the list.
+
+A recorded change is a configuration change that is not a persona, such as a rate limit switched
+on. `python -m scripts.record_change <honeypot-id> "<detail>" [--kind rate-limit|note] [--at
+<ISO 8601 with timezone>]` writes one `sensor_changes` row to the local database (default kind
+`note`, default time now, recorded as `operator:<user>`) and contacts nothing; history is never
+edited. For example, the guard's per-/24 rate limit on `gcp-wild-01` was recorded as
+`--kind rate-limit --at 2026-10-24T19:28:20Z`, so traffic before and after it reads as two
+periods.
+
+**The persona experiment.** It asks one question of the live honeypot: does the persona change
+what attackers do after they log in? `gcp-wild-01` runs one persona at a time, so the personas
+are rotated in alternating blocks and a report compares post-login behaviour per persona, with
+the block as the unit of analysis. Who arrives and whether the disguise is detected are left for
+later; there is no UI for it and nothing deploys unattended.
+
+The schedule is `infra/cowrie/personas/experiment.yaml`: the sensor, a `start` (null until the
+owner begins; a UTC time ending in `Z`), `block_days: 3`, and twelve blocks written out, three
+cycles of the four arms `web-server`, `db-server`, `rpi` and `stock` (`stock` is
+`deploy_persona --revert`). Each arm takes a different place in each cycle and none follows
+itself across a cycle boundary, so a weekday pattern or a botnet that starts mid-run does not
+line up with one persona. A schedule with no start, an unknown arm or a `block_days` below 1 is
+refused with a message and nothing is deployed.
+
+`python -m scripts.rotate_personas [--apply]` is run at each block boundary. It finds the block
+due now, prints it with the persona running and the next switch, and is a dry run unless given
+`--apply`, which calls `deploy_persona` (and so restarts both VM Cowries and drops live
+sessions). A block counts as in place only when the deployment in force is one recorded at or
+after the block's scheduled start, for that arm (a later deployment of another persona inside the
+block makes it not in place), so every block opens with a fresh deployment even when the previous
+block ran the same persona. Run again when the block is in place, it changes
+nothing. Before the start it says so, and after the last block it says the experiment is over
+and which arm stays. A late switch is recorded at its real time.
+
+The analysis does not trust the schedule's times. Blocks are cut from the sensor's recorded
+`persona_deployments` over the window from `start` to the earlier of now and the last block's
+scheduled end, with the same `periods()` as the sensor page, at deployments only; a late switch
+lengthens the outgoing block and shortens the incoming one, and each block's real start, end
+and length are printed. Sensor changes do not cut blocks; any recorded inside the window are
+listed as possible confounds. A block is left out, with its reason printed, when it did not
+start with a deployment, when its persona is not an arm of the schedule, when it is shorter than
+24 hours, when its coverage is below one half (the share of UTC hours overlapping the block that
+hold at least one event of the sensor, so a VM outage or a pull gap shows as empty hours), or
+when it has no logged-in session.
+
+The unit is a logged-in session: a `session.id` on the sensor with at least one
+`cowrie.login.success`, assigned to the block that holds its first event. One whose last event
+falls at or after the end of its block was cut by the switch; it is counted per block and not
+analysed, and so are sessions that never log in. Events are read from Elasticsearch with a
+point-in-time and `search_after`, without a cap, and the report prints how many it read. Three
+primary metrics were fixed before any data was seen: the share of sessions that ran any command
+(`ran_any_share`), the mean commands per session (`commands_mean`) and the share with at least
+one download attempt (`download_share`). Secondary and descriptive only: the median session
+length (last event minus first, as there is no duration field), the mix of rulebook techniques,
+and the architecture a download URL names (ARM, x86, MIPS or none, from fixed token lists; a
+download with no URL counts as none). The three primary metrics and the median session length
+are also computed with one vote per distinct script, the ordered command sequence as
+`campaigns.fingerprint` identifies it: a script's value is the mean over its sessions, with the
+sessions that ran no command as one group. The block's value for each primary metric is the mean
+over its scripts; for the session length it is the median over the scripts' mean lengths. One
+botnet replaying a script thousands of times then counts once. Both views are printed. The
+technique mix (share of sessions showing each technique) and the architecture mix (share of
+download attempts per architecture) are pooled per arm, with no script weighting.
+
+Each included block gives one value per metric. The test statistic is the between-arm spread of
+the arm means of those values, and its p-value is the share of relabellings of blocks to arms,
+keeping each arm's block count, with a statistic at least as large as the observed one. All
+relabellings are enumerated when there are at most 500,000 (twelve blocks over four arms of
+three is 369,600), otherwise 100,000 random ones with a fixed seed, which the report states.
+The three primary p-values get a Holm correction and the report prints raw and adjusted values.
+The limit is honest and printed: with three blocks per arm only a large effect can reach
+significance, and a high p-value is not evidence of no effect. Each persona is also compared
+with `stock` by the difference of arm means and the minimum and maximum of its block values,
+descriptively. With fewer than two arms holding two included blocks each there is no test, and
+the report prints the per-block tables and "not enough blocks".
+
+`python -m scripts.persona_experiment [--now <ISO 8601 with timezone>]` prints the report as
+plain text and changes nothing: the schedule and window, the blocks as they ran with their
+session counts and status, the sensor changes, a table per arm for each view, the primary
+metrics per block, the permutation results and the secondary mixes. Until the last block ends
+its first line is `INTERIM -- the schedule is not finished`; `--now` reports as of another
+time, for tests and for re-running a finished experiment. The final run is saved locally from
+PowerShell with `python -m scripts.persona_experiment | Out-File -Encoding utf8
+..\docs\paper\rerun\14-persona-experiment.txt` (a bare `>` writes UTF-16).
+
 **Authentication, and roles scoped to a honeypot.** Unset, the API is open — which is
 what it always was, and defensible only bound to localhost. It is never quiet about it:
 a warning on every start and a row on the status dashboard reading *"OPEN — every route
@@ -507,8 +618,8 @@ are kept in a dead-letter index and counted on the status page instead of being 
 CI builds both images and imports the app inside the backend image, because the
 dependency bugs this project has hit failed at import time, not at build time.
 
-**A provenance-tagged dashboard** — thirty-four HTTP endpoints, two WebSocket progress
-channels, fourteen routes, every AI conclusion expandable into its source event.
+**A provenance-tagged dashboard** — thirty-seven HTTP endpoints, two WebSocket progress
+channels, fifteen routes, every AI conclusion expandable into its source event.
 
 ---
 
@@ -804,7 +915,7 @@ captures better attacks.
 
 ```
 backend/     FastAPI service — ingest, analysis pipeline, evaluation subsystem
-             34 HTTP endpoints + 2 WebSocket progress channels
+             37 HTTP endpoints + 2 WebSocket progress channels
 frontend/    React + TanStack Router dashboard
 infra/       Elasticsearch index template, ingest pipeline and lifecycle policy,
              Filebeat and Cowrie config
@@ -837,13 +948,14 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `883 passed` with at most one skip** — there are
-no expected failures.
+infrastructure up first. **A clean run is `1105 passed` with at most one skip** — there are
+no expected failures. It assumes a POSIX `sh` on the PATH (Git Bash provides one); from a plain
+PowerShell without it, 23 tests of the VM's shell scripts skip with "needs a POSIX sh".
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `883 passed` or `882 passed,
+with a reason rather than failing, so a clean run is `1105 passed` or `1104 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.

@@ -230,7 +230,9 @@ def _to_summary(
     )
 
 
-async def list_run_summaries(limit: int) -> list[EvaluationRunSummary]:
+async def list_run_summaries(
+    limit: int, honeypot_id: str | None = None
+) -> list[EvaluationRunSummary]:
     """History rows, bounded, without the per-run hydration.
 
     `list_runs` calls `_hydrate` per run: every probe result, finding,
@@ -238,15 +240,17 @@ async def list_run_summaries(limit: int) -> list[EvaluationRunSummary]:
     only what renders a row and a trend, so this is two queries in total
     however many runs are returned, and `limit` bounds the number of rows.
     Full hydration stays on `load_run` -- this is an addition, not a
-    replacement.
+    replacement. `honeypot_id` narrows to one sensor's runs; the caller is
+    responsible for having checked it may read that sensor.
     """
+    query = select(EvaluationRun)
+    if honeypot_id is not None:
+        query = query.where(EvaluationRun.honeypot_id == honeypot_id)
     async with get_session_factory()() as db:
         rows = (
             (
                 await db.execute(
-                    select(EvaluationRun)
-                    .order_by(EvaluationRun.started_at.desc(), EvaluationRun.id)
-                    .limit(limit)
+                    query.order_by(EvaluationRun.started_at.desc(), EvaluationRun.id).limit(limit)
                 )
             )
             .scalars()

@@ -7,17 +7,17 @@ import {
   Mono,
   PageHeader,
   Panel,
-  RiskBadge,
   SERVICE_ERRORS,
   StatusDot,
 } from "@/components/common";
+import { DescribedValue } from "@/components/sensor/DescribedValue";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatDateTime, formatNumber } from "@/utils/format";
 import { cn } from "@/lib/utils";
 import type { Honeypot, HoneypotStatus } from "@/types";
 import { honeypotsQuery } from "@/services/queries";
 
-export const Route = createFileRoute("/honeypots")({
+export const Route = createFileRoute("/honeypots/")({
   component: HoneypotsPage,
 });
 
@@ -42,7 +42,7 @@ function HoneypotsPage() {
     <div className="space-y-5">
       <PageHeader
         title="Honeypots"
-        subtitle="Deployed sensors, their interaction level and the traffic they are currently absorbing."
+        subtitle="Deployed sensors, what each is disguised as and the traffic it is currently absorbing."
         meta={
           <>
             <span className="label-caps">
@@ -92,13 +92,11 @@ function HoneypotsPage() {
                       "Name",
                       "Type",
                       "OS",
-                      "Interaction",
                       "IP",
                       "Status",
                       "Active",
                       "Events",
                       "Last activity",
-                      "Risk",
                     ].map((heading) => (
                       <th
                         key={heading}
@@ -116,12 +114,19 @@ function HoneypotsPage() {
                       className="border-b border-border/60 transition-colors last:border-0 hover:bg-accent/30"
                     >
                       <td className="whitespace-nowrap px-3 py-2 font-medium text-foreground">
-                        {honeypot.name}
+                        <Link
+                          to="/honeypots/$honeypotId"
+                          params={{ honeypotId: honeypot.id }}
+                          className="hover:text-primary hover:underline"
+                        >
+                          {honeypot.name}
+                        </Link>
                       </td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{honeypot.type}</td>
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{honeypot.os}</td>
-                      <td className="px-3 py-2 text-xs capitalize text-muted-foreground">
-                        {honeypot.interactionLevel}
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        <DescribedValue item={honeypot.type} />
+                      </td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground">
+                        <DescribedValue item={honeypot.os} />
                       </td>
                       <td className="whitespace-nowrap px-3 py-2">
                         <Mono className="text-[13px]">{honeypot.ip}</Mono>
@@ -150,9 +155,6 @@ function HoneypotsPage() {
                           {formatDateTime(honeypot.lastActivity)}
                         </Mono>
                       </td>
-                      <td className="px-3 py-2">
-                        <RiskBadge level={honeypot.risk} />
-                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -178,13 +180,15 @@ function HoneypotCard({ honeypot }: { honeypot: Honeypot }) {
             <p className="font-mono text-[11px] text-muted-foreground">{honeypot.ip}</p>
           </div>
         </div>
-        <RiskBadge level={honeypot.risk} />
       </header>
 
       <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2.5">
-        <Detail label="Type" value={honeypot.type} />
-        <Detail label="Interaction" value={honeypot.interactionLevel} capitalize />
-        <Detail label="Operating system" value={honeypot.os} />
+        <Detail label="Type">
+          <DescribedValue item={honeypot.type} />
+        </Detail>
+        <Detail label="Operating system">
+          <DescribedValue item={honeypot.os} />
+        </Detail>
         <Detail label="Status">
           <span className="flex items-center gap-1.5">
             <StatusDot state={STATUS_STATE[honeypot.status]} />
@@ -201,39 +205,32 @@ function HoneypotCard({ honeypot }: { honeypot: Honeypot }) {
       </dl>
 
       <div className="mt-4 grid grid-cols-3 gap-2 border-t border-border pt-3">
-        <Metric label="Active" value={String(honeypot.activeSessions)} />
+        <Metric label="Sessions" value={String(honeypot.activeSessions)} />
         <Metric label="Events" value={formatNumber(honeypot.events)} />
         <Metric label="Last seen" value={formatDateTime(honeypot.lastActivity).slice(11)} />
       </div>
 
-      <Link
-        to="/sessions"
-        search={{ q: honeypot.name }}
-        className="mt-3 font-mono text-[11px] uppercase tracking-[0.08em] text-primary hover:underline"
-      >
-        View sessions
-      </Link>
+      <div className="mt-3 flex gap-4 font-mono text-[11px] uppercase tracking-[0.08em] text-primary">
+        <Link
+          to="/honeypots/$honeypotId"
+          params={{ honeypotId: honeypot.id }}
+          className="hover:underline"
+        >
+          Sensor page
+        </Link>
+        <Link to="/sessions" search={{ q: honeypot.name }} className="hover:underline">
+          View sessions
+        </Link>
+      </div>
     </article>
   );
 }
 
-function Detail({
-  label,
-  value,
-  children,
-  capitalize,
-}: {
-  label: string;
-  value?: string;
-  children?: React.ReactNode;
-  capitalize?: boolean;
-}) {
+function Detail({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0">
       <dt className="label-caps">{label}</dt>
-      <dd className={cn("mt-0.5 truncate text-xs text-foreground/90", capitalize && "capitalize")}>
-        {children ?? value}
-      </dd>
+      <dd className="mt-0.5 truncate text-xs text-foreground/90">{children}</dd>
     </div>
   );
 }

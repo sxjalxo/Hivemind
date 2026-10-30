@@ -54,6 +54,17 @@ async def active(honeypot_id: str, at: datetime | None = None) -> PersonaDeploym
         return (await db.execute(query)).scalar_one_or_none()
 
 
+async def history(honeypot_id: str) -> list[PersonaDeployment]:
+    """Oldest first."""
+    query = (
+        select(PersonaDeployment)
+        .where(PersonaDeployment.honeypot_id == honeypot_id)
+        .order_by(PersonaDeployment.deployed_at, PersonaDeployment.id)
+    )
+    async with get_session_factory()() as db:
+        return list((await db.execute(query)).scalars())
+
+
 async def active_digest(honeypot_id: str) -> str | None:
     row = await active(honeypot_id)
     return row.digest if row and row.persona != PRE_PERSONA else None

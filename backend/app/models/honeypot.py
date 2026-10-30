@@ -1,12 +1,12 @@
+from app.models.sensor import Described
 from app.serialization import CamelModel
 
 
 class Honeypot(CamelModel):
     id: str
     name: str
-    type: str
-    os: str
-    interaction_level: str
+    type: Described
+    os: Described
     ip: str
     status: str
     active_sessions: int

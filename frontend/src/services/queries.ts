@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { provider } from "./index";
+import { ApiError } from "./api";
 import type { LogQuery } from "@/types";
 
 /**
@@ -106,3 +107,29 @@ export const indicatorCountsQuery = () =>
 
 export const reportsQuery = () =>
   queryOptions({ queryKey: ["reports"], queryFn: () => provider.getReports() });
+
+/** A 404 (unknown or unreadable sensor) will not change on retry; anything else gets the default three. */
+const retryUnlessNotFound = (count: number, error: Error) =>
+  !(error instanceof ApiError && error.status === 404) && count < 3;
+
+/** The sensor page. Each panel owns one of these. */
+export const sensorQueries = {
+  profile: (id: string) =>
+    queryOptions({
+      queryKey: ["sensor", id],
+      queryFn: () => provider.getSensor(id),
+      retry: retryUnlessNotFound,
+    }),
+  traffic: (id: string, days: number) =>
+    queryOptions({
+      queryKey: ["sensor-traffic", id, days],
+      queryFn: () => provider.getSensorTraffic(id, days),
+      retry: retryUnlessNotFound,
+    }),
+  techniques: (id: string, days: number) =>
+    queryOptions({
+      queryKey: ["sensor-techniques", id, days],
+      queryFn: () => provider.getSensorTechniques(id, days),
+      retry: retryUnlessNotFound,
+    }),
+};

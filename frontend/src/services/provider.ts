@@ -24,6 +24,9 @@ import type {
   Reputation,
   RunComparison,
   ServiceStatus,
+  SensorProfile,
+  SensorTechniques,
+  SensorTraffic,
   SessionAnalysis,
   SessionTimelineEvent,
   StartEvaluationResponse,
@@ -50,6 +53,11 @@ export interface DataProvider {
   getSystemStatus(): Promise<ServiceStatus[]>;
 
   getHoneypots(): Promise<Honeypot[]>;
+  /** 404 for a sensor that is unknown or that the caller may not read -- the two are indistinguishable. */
+  getSensor(id: string): Promise<SensorProfile>;
+  /** `days` is 1..90 (default 30); N+1 UTC days come back. */
+  getSensorTraffic(id: string, days?: number): Promise<SensorTraffic>;
+  getSensorTechniques(id: string, days?: number): Promise<SensorTechniques>;
 
   getSessions(params?: {
     risk?: string;
@@ -136,8 +144,9 @@ export interface DataProvider {
    *
    * `limit` defaults to DEFAULT_EVALUATION_LIMIT server-side and is capped at
    * MAX_EVALUATION_LIMIT — 101 or more is rejected with a 422, not clamped.
+   * `honeypotId` narrows to one sensor (404 if the caller may not read it).
    */
-  listEvaluations(limit?: number): Promise<EvaluationRunSummary[]>;
+  listEvaluations(limit?: number, honeypotId?: string): Promise<EvaluationRunSummary[]>;
 
   /**
    * One run in full, and the authoritative record of what it established.

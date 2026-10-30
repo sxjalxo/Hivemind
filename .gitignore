@@ -82,3 +82,5 @@ DEMO.md
 
 # Claude scratch workspace.
 .claude/
+# Locally rendered reports and their page images (not part of the project)
+output/

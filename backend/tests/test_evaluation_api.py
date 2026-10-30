@@ -33,12 +33,14 @@ from app.db.session import get_session_factory
 from app.main import app
 from app.models.evaluation import EvaluationProgressEvent
 from app.models.honeypot import Honeypot
+from app.models.sensor import Described
 from app.routers import evaluation
 from app.auth import Actor
 from app.services.evaluation import runs
 from app.services.evaluation.reset import ResetError
 from app.workers.queue import evaluation_job_key, get_queue
 from tests.conftest import asgi_websocket
+from tests.test_auth import _token, auth_on  # noqa: F401 - auth_on is a fixture
 
 HONEYPOT_ID = "cowrie-01"
 
@@ -53,9 +55,8 @@ def _honeypot(honeypot_id: str) -> Honeypot:
     return Honeypot(
         id=honeypot_id,
         name=honeypot_id,
-        type="SSH",
-        os="Debian 11 (emulated)",
-        interaction_level="medium",
+        type=Described(value="SSH", source="observed"),
+        os=Described(value="unknown", source="unknown"),
         ip="172.20.0.3",
         status="online",
         active_sessions=0,
@@ -436,6 +437,42 @@ async def test_the_list_endpoint_is_bounded_and_not_fully_hydrated(created) -> N
     assert row["categoryScores"][0]["deterministicScore"] == 0.5
     # None means "not established" and is carried, never coerced to 0.
     assert row["categoryScores"][0]["evaluatorRating"] is None
+
+
+async def test_the_list_filters_to_one_honeypot(created) -> None:
+    mine = await created("test-sensor-a")
+    other = await created("test-sensor-b")
+
+    async with await _client() as client:
+        filtered = await client.get(
+            "/api/evaluations", params={"honeypot_id": "test-sensor-a", "limit": 100}
+        )
+        unfiltered = await client.get("/api/evaluations", params={"limit": 100})
+
+    assert filtered.status_code == 200
+    assert [row["id"] for row in filtered.json()] == [str(mine)]
+    # Without the filter the list is what it was: both runs are in it.
+    assert {str(mine), str(other)} <= {row["id"] for row in unfiltered.json()}
+
+
+async def test_filtering_by_an_unreadable_honeypot_is_404(created, auth_on) -> None:
+    await created("test-sensor-a")
+    headers = {
+        "Authorization": "Bearer "
+        + _token(auth_on, role="admin", roles={"test-sensor-a": "none"})
+    }
+
+    async with await _client() as client:
+        refused = await client.get(
+            "/api/evaluations", params={"honeypot_id": "test-sensor-a"}, headers=headers
+        )
+        readable = await client.get(
+            "/api/evaluations", params={"honeypot_id": "test-sensor-b"}, headers=headers
+        )
+
+    assert refused.status_code == 404
+    assert readable.status_code == 200
+    assert readable.json() == []
 
 
 async def test_the_detail_endpoint_is_still_fully_hydrated(created) -> None:

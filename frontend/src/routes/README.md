@@ -9,7 +9,8 @@ route, and `src/routeTree.gen.ts` is generated from them — never edit it by ha
 | File                             | URL                    | Screen                                            |
 | -------------------------------- | ---------------------- | ------------------------------------------------- |
 | `index.tsx`                      | `/`                    | Dashboard                                         |
-| `honeypots.tsx`                  | `/honeypots`           | Honeypot fleet                                    |
+| `honeypots/index.tsx`            | `/honeypots`           | Honeypot fleet                                    |
+| `honeypots/$honeypotId.tsx`      | `/honeypots/:id`       | One sensor: persona history, traffic, techniques  |
 | `sessions/index.tsx`             | `/sessions`            | Attack sessions + campaigns                       |
 | `sessions/$sessionId.tsx`        | `/sessions/:sessionId` | Session investigation, AI analysis, analyst notes |
 | `logs.tsx`                       | `/logs`                | Log Explorer (`?event=<id>` opens one event)      |

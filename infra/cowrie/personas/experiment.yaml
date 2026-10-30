@@ -1,0 +1,27 @@
+# The persona experiment (roadmap R3): which persona gcp-wild-01 runs, block by block.
+#
+# `python -m scripts.rotate_personas [--apply]` (from backend/) deploys the block that is
+# due; `python -m scripts.persona_experiment` reports. Set `start` when the experiment
+# begins: a quoted UTC time ending in Z. null means not started, and nothing deploys.
+# `stock` is the pre-persona setup (deploy_persona --revert). Each arm takes a different
+# position in each cycle and never follows itself, so time trends do not line up with one
+# persona. Blocks are written out on purpose; nothing generates them.
+sensor: gcp-wild-01
+start: null
+block_days: 3
+blocks:
+  # cycle 1
+  - web-server
+  - db-server
+  - stock
+  - rpi
+  # cycle 2
+  - db-server
+  - rpi
+  - web-server
+  - stock
+  # cycle 3
+  - rpi
+  - stock
+  - db-server
+  - web-server

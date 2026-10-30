@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AnalysisRouteImport } from './routes/analysis'
-import { Route as HoneypotsRouteImport } from './routes/honeypots'
 import { Route as LogsRouteImport } from './routes/logs'
 import { Route as MitreRouteImport } from './routes/mitre'
 import { Route as ReportsRouteImport } from './routes/reports'
@@ -21,6 +20,8 @@ import { Route as AttackersIpRouteImport } from './routes/attackers/$ip'
 import { Route as EvaluationIndexRouteImport } from './routes/evaluation/index'
 import { Route as EvaluationRunIdRouteImport } from './routes/evaluation/$runId'
 import { Route as EvaluationCompareRouteImport } from './routes/evaluation/compare'
+import { Route as HoneypotsIndexRouteImport } from './routes/honeypots/index'
+import { Route as HoneypotsHoneypotIdRouteImport } from './routes/honeypots/$honeypotId'
 import { Route as SessionsIndexRouteImport } from './routes/sessions/index'
 import { Route as SessionsSessionIdRouteImport } from './routes/sessions/$sessionId'
 import { Route as SignInSplatRouteImport } from './routes/sign-in.$'
@@ -34,11 +35,6 @@ const IndexRoute = IndexRouteImport.update({
 const AnalysisRoute = AnalysisRouteImport.update({
   id: '/analysis',
   path: '/analysis',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const HoneypotsRoute = HoneypotsRouteImport.update({
-  id: '/honeypots',
-  path: '/honeypots',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LogsRoute = LogsRouteImport.update({
@@ -86,6 +82,16 @@ const EvaluationCompareRoute = EvaluationCompareRouteImport.update({
   path: '/evaluation/compare',
   getParentRoute: () => rootRouteImport,
 } as any)
+const HoneypotsIndexRoute = HoneypotsIndexRouteImport.update({
+  id: '/honeypots/',
+  path: '/honeypots/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const HoneypotsHoneypotIdRoute = HoneypotsHoneypotIdRouteImport.update({
+  id: '/honeypots/$honeypotId',
+  path: '/honeypots/$honeypotId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SessionsIndexRoute = SessionsIndexRouteImport.update({
   id: '/sessions/',
   path: '/sessions/',
@@ -110,7 +116,6 @@ const SignUpSplatRoute = SignUpSplatRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/analysis': typeof AnalysisRoute
-  '/honeypots': typeof HoneypotsRoute
   '/logs': typeof LogsRoute
   '/mitre': typeof MitreRoute
   '/reports': typeof ReportsRoute
@@ -119,16 +124,17 @@ export interface FileRoutesByFullPath {
   '/attackers/$ip': typeof AttackersIpRoute
   '/evaluation/$runId': typeof EvaluationRunIdRoute
   '/evaluation/compare': typeof EvaluationCompareRoute
+  '/honeypots/$honeypotId': typeof HoneypotsHoneypotIdRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/evaluation/': typeof EvaluationIndexRoute
+  '/honeypots/': typeof HoneypotsIndexRoute
   '/sessions/': typeof SessionsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/analysis': typeof AnalysisRoute
-  '/honeypots': typeof HoneypotsRoute
   '/logs': typeof LogsRoute
   '/mitre': typeof MitreRoute
   '/reports': typeof ReportsRoute
@@ -137,17 +143,18 @@ export interface FileRoutesByTo {
   '/attackers/$ip': typeof AttackersIpRoute
   '/evaluation/$runId': typeof EvaluationRunIdRoute
   '/evaluation/compare': typeof EvaluationCompareRoute
+  '/honeypots/$honeypotId': typeof HoneypotsHoneypotIdRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/evaluation': typeof EvaluationIndexRoute
+  '/honeypots': typeof HoneypotsIndexRoute
   '/sessions': typeof SessionsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/analysis': typeof AnalysisRoute
-  '/honeypots': typeof HoneypotsRoute
   '/logs': typeof LogsRoute
   '/mitre': typeof MitreRoute
   '/reports': typeof ReportsRoute
@@ -156,10 +163,12 @@ export interface FileRoutesById {
   '/attackers/$ip': typeof AttackersIpRoute
   '/evaluation/$runId': typeof EvaluationRunIdRoute
   '/evaluation/compare': typeof EvaluationCompareRoute
+  '/honeypots/$honeypotId': typeof HoneypotsHoneypotIdRoute
   '/sessions/$sessionId': typeof SessionsSessionIdRoute
   '/sign-in/$': typeof SignInSplatRoute
   '/sign-up/$': typeof SignUpSplatRoute
   '/evaluation/': typeof EvaluationIndexRoute
+  '/honeypots/': typeof HoneypotsIndexRoute
   '/sessions/': typeof SessionsIndexRoute
 }
 export interface FileRouteTypes {
@@ -167,7 +176,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/analysis'
-    | '/honeypots'
     | '/logs'
     | '/mitre'
     | '/reports'
@@ -176,16 +184,17 @@ export interface FileRouteTypes {
     | '/attackers/$ip'
     | '/evaluation/$runId'
     | '/evaluation/compare'
+    | '/honeypots/$honeypotId'
     | '/sessions/$sessionId'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/evaluation/'
+    | '/honeypots/'
     | '/sessions/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/analysis'
-    | '/honeypots'
     | '/logs'
     | '/mitre'
     | '/reports'
@@ -194,16 +203,17 @@ export interface FileRouteTypes {
     | '/attackers/$ip'
     | '/evaluation/$runId'
     | '/evaluation/compare'
+    | '/honeypots/$honeypotId'
     | '/sessions/$sessionId'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/evaluation'
+    | '/honeypots'
     | '/sessions'
   id:
     | '__root__'
     | '/'
     | '/analysis'
-    | '/honeypots'
     | '/logs'
     | '/mitre'
     | '/reports'
@@ -212,17 +222,18 @@ export interface FileRouteTypes {
     | '/attackers/$ip'
     | '/evaluation/$runId'
     | '/evaluation/compare'
+    | '/honeypots/$honeypotId'
     | '/sessions/$sessionId'
     | '/sign-in/$'
     | '/sign-up/$'
     | '/evaluation/'
+    | '/honeypots/'
     | '/sessions/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AnalysisRoute: typeof AnalysisRoute
-  HoneypotsRoute: typeof HoneypotsRoute
   LogsRoute: typeof LogsRoute
   MitreRoute: typeof MitreRoute
   ReportsRoute: typeof ReportsRoute
@@ -231,10 +242,12 @@ export interface RootRouteChildren {
   AttackersIpRoute: typeof AttackersIpRoute
   EvaluationRunIdRoute: typeof EvaluationRunIdRoute
   EvaluationCompareRoute: typeof EvaluationCompareRoute
+  HoneypotsHoneypotIdRoute: typeof HoneypotsHoneypotIdRoute
   SessionsSessionIdRoute: typeof SessionsSessionIdRoute
   SignInSplatRoute: typeof SignInSplatRoute
   SignUpSplatRoute: typeof SignUpSplatRoute
   EvaluationIndexRoute: typeof EvaluationIndexRoute
+  HoneypotsIndexRoute: typeof HoneypotsIndexRoute
   SessionsIndexRoute: typeof SessionsIndexRoute
 }
 
@@ -252,13 +265,6 @@ declare module '@tanstack/react-router' {
       path: '/analysis'
       fullPath: '/analysis'
       preLoaderRoute: typeof AnalysisRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/honeypots': {
-      id: '/honeypots'
-      path: '/honeypots'
-      fullPath: '/honeypots'
-      preLoaderRoute: typeof HoneypotsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/logs': {
@@ -324,6 +330,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EvaluationCompareRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/honeypots/': {
+      id: '/honeypots/'
+      path: '/honeypots'
+      fullPath: '/honeypots/'
+      preLoaderRoute: typeof HoneypotsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/honeypots/$honeypotId': {
+      id: '/honeypots/$honeypotId'
+      path: '/honeypots/$honeypotId'
+      fullPath: '/honeypots/$honeypotId'
+      preLoaderRoute: typeof HoneypotsHoneypotIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/sessions/': {
       id: '/sessions/'
       path: '/sessions'
@@ -358,7 +378,6 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AnalysisRoute: AnalysisRoute,
-  HoneypotsRoute: HoneypotsRoute,
   LogsRoute: LogsRoute,
   MitreRoute: MitreRoute,
   ReportsRoute: ReportsRoute,
@@ -367,10 +386,12 @@ const rootRouteChildren: RootRouteChildren = {
   AttackersIpRoute: AttackersIpRoute,
   EvaluationRunIdRoute: EvaluationRunIdRoute,
   EvaluationCompareRoute: EvaluationCompareRoute,
+  HoneypotsHoneypotIdRoute: HoneypotsHoneypotIdRoute,
   SessionsSessionIdRoute: SessionsSessionIdRoute,
   SignInSplatRoute: SignInSplatRoute,
   SignUpSplatRoute: SignUpSplatRoute,
   EvaluationIndexRoute: EvaluationIndexRoute,
+  HoneypotsIndexRoute: HoneypotsIndexRoute,
   SessionsIndexRoute: SessionsIndexRoute,
 }
 export const routeTree = rootRouteImport

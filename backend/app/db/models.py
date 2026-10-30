@@ -405,6 +405,20 @@ class PersonaDeployment(SQLModel, table=True):
     deployed_at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
 
 
+class SensorChange(SQLModel, table=True):
+    """History of non-persona configuration changes (rate limits, notes); periods are cut at
+    each one. Never edited or deleted."""
+
+    __tablename__ = "sensor_changes"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    honeypot_id: str = Field(index=True)
+    at: datetime = Field(sa_column=Column(_TZDateTime, nullable=False))
+    kind: str  # one of services.sensor_changes.KINDS
+    detail: str
+    recorded_by: str  # "operator:<os user>", as PersonaDeployment.deployed_by
+
+
 class ClaimRejection(SQLModel, table=True):
     """A claim the model made that a gate refused, and why (checklist item 16).
 

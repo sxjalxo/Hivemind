@@ -63,10 +63,10 @@ function buildUrl(path: string, query?: RequestOptions["query"]): string {
  * as soon as ClerkProvider loads.
  *
  * Returns null rather than throwing when Clerk is absent, which is the
- * ordinary case in demo mode and against a backend with `CLERK_ISSUER` unset.
- * The request then goes out unauthenticated and the backend decides: open
- * deployments serve it, configured ones answer 401. Failing here instead
- * would break demo mode, which has no Clerk at all.
+ * ordinary case for a build without a Clerk key, run against a backend with
+ * `CLERK_ISSUER` unset. The request then goes out unauthenticated and the
+ * backend decides: open deployments serve it, configured ones answer 401.
+ * Failing here instead would break that open, unconfigured setup.
  */
 export async function sessionToken(): Promise<string | null> {
   const clerk = (globalThis as { Clerk?: { session?: { getToken(): Promise<string | null> } } })
@@ -122,7 +122,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
  * Two values are offered because the server must echo exactly one offered
  * protocol or the browser fails the connection -- it echoes the bare marker
  * and reads the token from the other. Returns [] when there is no session, so
- * demo mode and an open backend still connect.
+ * an unconfigured auth build against an open backend still connects.
  */
 export async function wsProtocols(): Promise<string[]> {
   const token = await sessionToken();
@@ -132,6 +132,7 @@ export async function wsProtocols(): Promise<string[]> {
 /** Endpoint map kept in one place so the backend contract is reviewable. */
 export const endpoints = {
   honeypots: "/api/honeypots",
+  honeypot: (id: string) => `/api/honeypots/${encodeURIComponent(id)}`,
   sessions: "/api/sessions",
   campaigns: "/api/campaigns",
   notables: "/api/notables",

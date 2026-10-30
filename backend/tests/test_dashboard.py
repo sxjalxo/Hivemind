@@ -61,17 +61,17 @@ async def test_honeypots_are_derived_from_indexed_events() -> None:
 
     assert len(honeypots) >= 1
     cowrie = next(h for h in honeypots if h.id == "cowrie-01")
-    assert cowrie.type == "SSH"
-    assert cowrie.interaction_level == "medium"
+    # Starts with SSH, not equal to it: cowrie-01 also carries live telnet events
+    # (53 relabelled 2026-10-19, plus later local telnet sessions), not seed ones.
+    assert cowrie.type.value.startswith("SSH")
+    assert cowrie.type.source == "observed"
     assert cowrie.events > 0
     assert cowrie.status in {"online", "offline", "degraded"}
     # ip must be the real destination.ip observed on indexed events, never
     # a hardcoded loopback placeholder.
     assert cowrie.ip != "127.0.0.1"
-    # risk.level is unassessed until Task 14; "informational" is this
-    # codebase's convention for "not yet assessed" — never a fabricated
-    # non-neutral severity like "medium".
-    assert cowrie.risk == "informational"
+    # Nothing measures a sensor-level risk yet: "unknown", never a made-up severity.
+    assert cowrie.risk == "unknown"
 
 
 @pytest.mark.asyncio

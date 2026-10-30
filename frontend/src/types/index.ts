@@ -33,6 +33,7 @@ export interface Paginated<T> {
 }
 
 export * from "./honeypot";
+export * from "./sensor";
 export * from "./session";
 export * from "./event";
 export * from "./analysis";

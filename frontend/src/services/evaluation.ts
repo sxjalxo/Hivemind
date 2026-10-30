@@ -239,10 +239,10 @@ export async function loadEvaluationOrNull(id: string): Promise<EvaluationRun | 
 }
 
 export const evaluationQueries = {
-  list: (limit?: number) =>
+  list: (limit?: number, honeypotId?: string) =>
     queryOptions({
-      queryKey: ["evaluations", limit ?? null],
-      queryFn: () => provider.listEvaluations(limit),
+      queryKey: ["evaluations", limit ?? null, honeypotId ?? null],
+      queryFn: () => provider.listEvaluations(limit, honeypotId),
     }),
   /** Resolves to null when the id has no run row. See loadEvaluationOrNull. */
   detail: (id: string) =>

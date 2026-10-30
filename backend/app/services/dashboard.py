@@ -12,6 +12,7 @@ from app.models.dashboard import (
     TopCommand,
 )
 from app.models.honeypot import Honeypot
+from app.services.sensors import describe_os, describe_type
 
 _WINDOWS = {
     "1h": timedelta(hours=1),
@@ -82,6 +83,7 @@ async def list_honeypots() -> list[Honeypot]:
                     "last_activity": {"max": {"field": "@timestamp"}},
                     "sessions": {"cardinality": {"field": "session.id"}},
                     "dst_ip": {"terms": {"field": "destination.ip", "size": 1}},
+                    "protocols": {"terms": {"field": "network.protocol", "size": 10}},
                 },
             }
         },
@@ -98,25 +100,23 @@ async def list_honeypots() -> list[Honeypot]:
             Honeypot(
                 id=bucket["key"],
                 name=name_buckets[0]["key"] if name_buckets else bucket["key"],
-                type="SSH",
-                os="Debian 11 (emulated)",
-                interaction_level="medium",
+                type=describe_type(
+                    {b["key"]: b["doc_count"] for b in bucket["protocols"]["buckets"]}
+                ),
+                os=await describe_os(bucket["key"]),
                 # Observed from indexed events, not a fabricated address.
                 # "unknown" (never a made-up IP) is the honest fallback for
                 # a honeypot bucket that somehow has no destination.ip on
                 # any of its documents.
                 ip=dst_ip_buckets[0]["key"] if dst_ip_buckets else "unknown",
+                # Derived from the age of the last event, not a liveness check.
                 status="degraded" if stale else "online",
                 active_sessions=bucket["sessions"]["value"],
                 events=bucket["doc_count"],
                 last_activity=last_iso,
-                # risk.level is unassessed until Task 14 writes real
-                # analysis back to events; "informational" is this
-                # codebase's convention for "not yet assessed" (see
-                # to_event in app.es.queries and _assemble in
-                # app.services.session_builder), never a fabricated
-                # severity like "medium".
-                risk="informational",
+                # Nothing measures a sensor-level risk yet; "unknown", never a
+                # made-up severity.
+                risk="unknown",
                 sensor=bucket["key"],
             )
         )

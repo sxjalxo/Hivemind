@@ -12,6 +12,7 @@ import type { RiskLevel } from "@/types";
 export const SERIES = {
   events: "var(--color-series-1)",
   highRisk: "var(--color-series-2)",
+  sessions: "var(--color-series-2)",
 } as const;
 
 /** Severity is a reserved status scale — never reused as a generic series colour. */

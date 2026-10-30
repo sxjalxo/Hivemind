@@ -22,6 +22,9 @@ import type {
   Reputation,
   RunComparison,
   ServiceStatus,
+  SensorProfile,
+  SensorTechniques,
+  SensorTraffic,
   SessionAnalysis,
   SessionTimelineEvent,
   StartEvaluationResponse,
@@ -37,6 +40,14 @@ export const FastAPIProvider: DataProvider = {
   getSystemStatus: () => request<ServiceStatus[]>(endpoints.status),
 
   getHoneypots: () => request<Honeypot[]>(endpoints.honeypots),
+
+  getSensor: (id) => request<SensorProfile>(endpoints.honeypot(id)),
+
+  getSensorTraffic: (id, days) =>
+    request<SensorTraffic>(`${endpoints.honeypot(id)}/traffic`, { query: { days } }),
+
+  getSensorTechniques: (id, days) =>
+    request<SensorTechniques>(`${endpoints.honeypot(id)}/techniques`, { query: { days } }),
 
   getSessions: (params) =>
     request<AttackSession[]>(endpoints.sessions, {
@@ -180,8 +191,11 @@ export const FastAPIProvider: DataProvider = {
 
   getDashboard: (range) => request<DashboardData>("/api/dashboard", { query: { range } }),
 
-  listEvaluations: (limit) =>
-    request<EvaluationRunSummary[]>(endpoints.evaluations, { query: { limit } }),
+  listEvaluations: (limit, honeypotId) =>
+    request<EvaluationRunSummary[]>(endpoints.evaluations, {
+      // The backend's query parameter is snake_case (no alias); a camelCase key is silently ignored.
+      query: { limit, honeypot_id: honeypotId },
+    }),
 
   getEvaluation: (id) => request<EvaluationRun>(endpoints.evaluation(id)),
 

@@ -269,8 +269,8 @@ echo "VITE_API_BASE_URL=http://localhost:8000" > .env
 npm run dev
 ```
 
-Open <http://localhost:8080>. Without `VITE_API_BASE_URL` the app runs on built-in demo
-data instead — useful for a UI-only look, and every surface that renders it is badged.
+Open <http://localhost:8080>. There is no demo provider: without `VITE_API_BASE_URL` the app
+calls `http://localhost:8000`, so the backend must be running.
 
 ### 5. Generate traffic (optional)
 
@@ -298,6 +298,9 @@ Run from `backend/` with the venv's Python, as `python -m scripts.<name>`:
 | `mapping_eval [--runs N]` | ATT&CK mapping precision/recall, rulebook alone vs rulebook + model |
 | `run_degradation_matrix [--personas] [--repeat N]` | evaluates every matrix arm (`--personas`: the three honeypot personas instead); `--repeat` reports each score's spread |
 | `build_persona [--check] [name]` | renders `infra/cowrie/personas/*/persona.yaml` into Cowrie's files; `--check` fails on drift |
+| `record_change <honeypot-id> "<detail>" [--kind rate-limit\|note] [--at <ISO time>]` | records a non-persona configuration change of a sensor (e.g. a rate limit switched on), which starts a new period on its sensor page; local database only |
+| `rotate_personas [--apply]` | deploys the persona the experiment schedule (`infra/cowrie/personas/experiment.yaml`) says is due on the live honeypot; a dry run by default, and `--apply` runs `deploy_persona`, which restarts the live Cowrie and drops its sessions |
+| `persona_experiment [--now <ISO time>]` | prints the persona experiment's report (blocks as they ran, per-arm metrics, permutation tests) from the local database and Elasticsearch; changes nothing, and is marked INTERIM until the last block ends |
 | `prune --older-than 90d [--apply]` | retention, dry run by default; run it in the stack as `docker compose --profile tools run --rm prune ...` so it can reach the log volumes |
 
 ---
