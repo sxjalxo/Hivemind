@@ -325,15 +325,15 @@ class Settings(BaseSettings):
             return self.clerk_jwks_url
         return f"{(self.clerk_issuer or '').rstrip('/')}/.well-known/jwks.json"
 
-    # Caps on the attacker-similarity aggregation. A terms aggregation returns
-    # at most `size` buckets and reports nothing about what it dropped, so
-    # these are paired with an explicit completeness check: a profile whose
-    # command set was truncated withholds its similarity scores rather than
-    # computing them from the surviving subset. Raise them (env:
-    # ATTACKER_COMMAND_CARDINALITY_LIMIT / ATTACKER_IP_CARDINALITY_LIMIT)
-    # rather than accepting a truncated score.
-    attacker_command_cardinality_limit: int = 2000
-    attacker_ip_cardinality_limit: int = 500
+    # Cost caps on the attacker-similarity read, which pages through every
+    # (attacker, command) pair. An attacker with more distinct commands than
+    # the first, or more attackers than the second, makes the profile withhold
+    # its similarity scores rather than compute them from part of the data.
+    # Raise them (env: ATTACKER_COMMAND_CARDINALITY_LIMIT /
+    # ATTACKER_IP_CARDINALITY_LIMIT) rather than accepting a partial score.
+    # The live honeypot passed 500 attackers in October 2026.
+    attacker_command_cardinality_limit: int = 10_000
+    attacker_ip_cardinality_limit: int = 20_000
 
     # The agent's target is a fixed compose service name, never a
     # user-supplied address: there must be no code path from an HTTP request

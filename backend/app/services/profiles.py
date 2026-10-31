@@ -62,86 +62,74 @@ class _CommandSet:
     complete: bool
 
 
+_PAIR_PAGE = 10_000
+
+
 async def _commands_by_ip() -> tuple[dict[str, _CommandSet], str | None]:
-    """Distinct commands per attacker IP, in a single aggregation.
+    """Distinct commands per attacker IP: every (IP, command) pair, paged.
 
-    This used to walk every session and fetch its events one request at a
-    time -- O(sessions) round trips per profile view. One terms aggregation
-    replaces all of it, but a terms aggregation silently drops buckets beyond
-    `size`, so each set carries whether it is complete. The second return
-    value is the reason similarity cannot be trusted, or None when it can.
-
-    The two caps multiply: 500 IPs x 2000 commands is a million buckets
-    against Elasticsearch's default `search.max_buckets` of 65,536, which is
-    enforced across the whole aggregation tree. A busy honeypot therefore
-    fails the search outright rather than returning a truncated answer, so
-    that failure is caught and reported as its own incomplete state instead of
-    propagating as a 500 from every attacker profile.
+    This used to be one terms aggregation nested in another. That silently
+    drops buckets beyond `size` and, once the live honeypot drew hundreds of
+    attackers, hit both its attacker cap and Elasticsearch's 65,536-bucket
+    limit, so every profile withheld its similarity. A composite aggregation
+    pages through the pairs instead: each page is bounded, and every set is
+    whole. The caps are now cost caps -- an attacker over the command cap, or
+    more attackers than the IP cap, withholds similarity rather than scoring a
+    part. The second return value is that reason, or None.
     """
     settings = get_settings()
     command_limit = settings.attacker_command_cardinality_limit
     ip_limit = settings.attacker_ip_cardinality_limit
 
+    raw: dict[str, set[str]] = {}
+    after = None
+    # ponytail: a full scan of the pairs on every profile view (~2 s at 64k pairs,
+    # October 2026); cache per index refresh or prefilter candidates if it grows.
     try:
-        result = await _run_command_aggregation(settings, ip_limit, command_limit)
+        while True:
+            composite = {
+                "size": _PAIR_PAGE,
+                "sources": [
+                    {"ip": {"terms": {"field": "source.ip"}}},
+                    {"command": {"terms": {"field": "process.command_line.keyword"}}},
+                ],
+            }
+            if after:
+                composite["after"] = after
+            result = await get_es().search(
+                index=settings.es_index,
+                size=0,
+                query={"exists": {"field": "process.command_line"}},
+                aggs={"pairs": {"composite": composite}},
+            )
+            pairs = result["aggregations"]["pairs"]
+            for bucket in pairs["buckets"]:
+                raw.setdefault(bucket["key"]["ip"], set()).add(bucket["key"]["command"])
+            if len(raw) > ip_limit:
+                return _sets(raw, command_limit), "attacker_cardinality_limit"
+            after = pairs.get("after_key")
+            if not pairs["buckets"] or not after:
+                break
     except ApiError as exc:
-        # too_many_buckets_exception is the expected one; any aggregation
-        # failure leaves us unable to compare, which is a reportable state
-        # rather than a crash.
+        # Any failure leaves us unable to compare, which is a reportable state
+        # rather than a 500 from every attacker profile.
         logger.warning("attacker command aggregation failed, similarity withheld: %s", exc)
         return {}, "aggregation_failed"
 
-    ips_agg = result["aggregations"]["ips"]
-    every_attacker_present = ips_agg.get("sum_other_doc_count", 0) == 0
-
-    by_ip: dict[str, _CommandSet] = {}
-    for bucket in ips_agg["buckets"]:
-        command_buckets = bucket["commands"]["buckets"]
-        # Three independent truncation signals, because none alone is
-        # sufficient. sum_other_doc_count is exact but only non-zero once a
-        # bucket was actually dropped; the returned bucket count catches a set
-        # that exactly fills the cap (treated as suspect on purpose -- erring
-        # toward "incomplete" is the safe direction); the cardinality is
-        # approximate at high values but independent of the terms agg.
-        truncated = (
-            bucket["commands"].get("sum_other_doc_count", 0) > 0
-            or len(command_buckets) >= command_limit
-            or bucket["distinct_commands"]["value"] > command_limit
-        )
-        by_ip[bucket["key"]] = _CommandSet(
-            commands={normalize_command(b["key"]) for b in command_buckets},
-            complete=not truncated,
-        )
-
+    by_ip = _sets(raw, command_limit)
     if any(not command_set.complete for command_set in by_ip.values()):
         return by_ip, "command_cardinality_limit"
-    if not every_attacker_present:
-        return by_ip, "attacker_cardinality_limit"
     return by_ip, None
 
 
-async def _run_command_aggregation(settings, ip_limit: int, command_limit: int) -> dict:
-    return await get_es().search(
-        index=settings.es_index,
-        size=0,
-        query={"exists": {"field": "process.command_line"}},
-        aggs={
-            "ips": {
-                "terms": {"field": "source.ip", "size": ip_limit},
-                "aggs": {
-                    "commands": {
-                        "terms": {
-                            "field": "process.command_line.keyword",
-                            "size": command_limit,
-                        }
-                    },
-                    "distinct_commands": {
-                        "cardinality": {"field": "process.command_line.keyword"}
-                    },
-                },
-            }
-        },
-    )
+def _sets(raw: dict[str, set[str]], command_limit: int) -> dict[str, _CommandSet]:
+    return {
+        ip: _CommandSet(
+            commands={normalize_command(c) for c in commands},
+            complete=len(commands) <= command_limit,
+        )
+        for ip, commands in raw.items()
+    }
 
 
 # One search page. An attacker whose sessions together exceed it gets a profile
@@ -240,9 +228,7 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
             mappings = (
                 (
                     await db.execute(
-                        select(TechniqueMapping).where(
-                            TechniqueMapping.analysis_id == analysis.id
-                        )
+                        select(TechniqueMapping).where(TechniqueMapping.analysis_id == analysis.id)
                     )
                 )
                 .scalars()
@@ -274,7 +260,9 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
         # 0.87 computed from a subset is not.
         pass
     else:
-        scored = ((other, jaccard(mine.commands, theirs.commands)) for other, theirs in others.items())
+        scored = (
+            (other, jaccard(mine.commands, theirs.commands)) for other, theirs in others.items()
+        )
         similarity = [
             SimilarAttacker(ip=other, score=score) for other, score in scored if score > 0
         ]

