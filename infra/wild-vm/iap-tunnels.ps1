@@ -71,26 +71,31 @@ foreach ($name in 'GCP_PROJECT', 'GCP_ZONE', 'GCP_INSTANCE') {
 $gcloud = Join-Path $env:LOCALAPPDATA 'Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd'
 if (-not (Test-Path $gcloud)) { $gcloud = (Get-Command gcloud.cmd -ErrorAction Stop).Source }
 
-$listening = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
-foreach ($t in $tunnels) {
-    $up = $listening | Where-Object { $_.LocalAddress -eq $t.Local -and $_.LocalPort -eq $t.LocalPort }
-    if (-not $up) {
-        Start-Process -WindowStyle Hidden -FilePath $gcloud -ArgumentList @(
-            'compute', 'start-iap-tunnel', $cfg.GCP_INSTANCE, $t.Remote,
-            "--local-host-port=$($t.Local):$($t.LocalPort)",
-            "--zone=$($cfg.GCP_ZONE)", "--project=$($cfg.GCP_PROJECT)",
-            '--iap-tunnel-disable-connection-check')
-    }
-}
-
-$deadline = (Get-Date).AddSeconds(30)
-do {
-    Start-Sleep -Seconds 2
+# At logon the network is often not up yet and a tunnel's gcloud exits at once, so a
+# tunnel still missing after 30 s is started again, up to five times (~3 minutes).
+for ($attempt = 1; $attempt -le 5; $attempt++) {
     $listening = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
-    $missing = @($tunnels | Where-Object {
-        $t = $_; -not ($listening | Where-Object { $_.LocalAddress -eq $t.Local -and $_.LocalPort -eq $t.LocalPort })
-    })
-} while ($missing.Count -and (Get-Date) -lt $deadline)
+    foreach ($t in $tunnels) {
+        $up = $listening | Where-Object { $_.LocalAddress -eq $t.Local -and $_.LocalPort -eq $t.LocalPort }
+        if (-not $up) {
+            Start-Process -WindowStyle Hidden -FilePath $gcloud -ArgumentList @(
+                'compute', 'start-iap-tunnel', $cfg.GCP_INSTANCE, $t.Remote,
+                "--local-host-port=$($t.Local):$($t.LocalPort)",
+                "--zone=$($cfg.GCP_ZONE)", "--project=$($cfg.GCP_PROJECT)",
+                '--iap-tunnel-disable-connection-check')
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds(30)
+    do {
+        Start-Sleep -Seconds 2
+        $listening = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue
+        $missing = @($tunnels | Where-Object {
+            $t = $_; -not ($listening | Where-Object { $_.LocalAddress -eq $t.Local -and $_.LocalPort -eq $t.LocalPort })
+        })
+    } while ($missing.Count -and (Get-Date) -lt $deadline)
+    if (-not $missing.Count) { break }
+}
 
 foreach ($t in $tunnels) {
     $state = if ($missing | Where-Object { $_.LocalPort -eq $t.LocalPort -and $_.Local -eq $t.Local }) { 'DOWN' } else { 'up' }
