@@ -30,6 +30,7 @@ def world(monkeypatch):
         return state.code
 
     monkeypatch.setattr(rotate, "load_schedule", lambda: SCHEDULE)
+    monkeypatch.setattr(deploy_persona, "SENSORS", ("test-sensor-r", "test-sensor-r2"))
     monkeypatch.setattr(rotate, "_history", history)
     monkeypatch.setattr(deploy_persona, "main", deploy)
     return state
@@ -101,4 +102,12 @@ def test_an_unreachable_database_deploys_nothing(world, monkeypatch, capsys) -> 
     monkeypatch.setattr(rotate, "_history", down)
     assert rotate.main(["--apply"], now=IN_SLOT_0) == 1
     assert "ConnectionRefusedError" in capsys.readouterr().err
+    assert world.calls == []
+
+
+def test_a_schedule_for_another_sensor_deploys_nothing(world, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(deploy_persona, "SENSORS", ("gcp-wild-01", "gcp-eval-01"))
+    assert rotate.main(["--apply"], now=IN_SLOT_0) == 1
+    err = capsys.readouterr().err
+    assert "test-sensor-r" in err and "nothing was changed" in err
     assert world.calls == []

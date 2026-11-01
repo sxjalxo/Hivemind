@@ -455,20 +455,25 @@ when it has no logged-in session.
 
 The unit is a logged-in session: a `session.id` on the sensor with at least one
 `cowrie.login.success`, assigned to the block that holds its first event. One whose last event
-falls at or after the end of its block was cut by the switch; it is counted per block and not
-analysed, and so are sessions that never log in. Events are read from Elasticsearch with a
+falls within two minutes of the end of its block, or after it, was cut by the switch; it is
+counted per block and not analysed, and so are sessions that never log in. The margin is there
+because the deployment time is recorded after the restart returns, so the sessions it kills end
+just before the recorded switch, and because a session still running at the window end is read
+truncated. Events are read from Elasticsearch with a
 point-in-time and `search_after`, without a cap, and the report prints how many it read. Three
 primary metrics were fixed before any data was seen: the share of sessions that ran any command
 (`ran_any_share`), the mean commands per session (`commands_mean`) and the share with at least
 one download attempt (`download_share`). Secondary and descriptive only: the median session
 length (last event minus first, as there is no duration field), the mix of rulebook techniques,
 and the architecture a download URL names (ARM, x86, MIPS or none, from fixed token lists; a
-download with no URL counts as none). The three primary metrics and the median session length
-are also computed with one vote per distinct script, the ordered command sequence as
-`campaigns.fingerprint` identifies it: a script's value is the mean over its sessions, with the
-sessions that ran no command as one group. The block's value for each primary metric is the mean
+download with no URL counts as none). The mean commands, the download share and the median
+session length are also computed with one vote per distinct script, the ordered command sequence
+as `campaigns.fingerprint` identifies it: a script's value is the mean over its sessions, with
+the sessions that ran no command as one group. The block's value for each metric is the mean
 over its scripts; for the session length it is the median over the scripts' mean lengths. One
-botnet replaying a script thousands of times then counts once. Both views are printed. The
+botnet replaying a script thousands of times then counts once. `ran_any_share` is not in this
+view: with one vote per script it would be 1 - 1/(k+1) for k scripts, a count of scripts and not
+a behaviour; the view prints k (the number of distinct scripts) instead. Both views are printed. The
 technique mix (share of sessions showing each technique) and the architecture mix (share of
 download attempts per architecture) are pooled per arm, with no script weighting.
 
@@ -477,8 +482,11 @@ the arm means of those values, and its p-value is the share of relabellings of b
 keeping each arm's block count, with a statistic at least as large as the observed one. All
 relabellings are enumerated when there are at most 500,000 (twelve blocks over four arms of
 three is 369,600), otherwise 100,000 random ones with a fixed seed, which the report states.
-The three primary p-values get a Holm correction and the report prints raw and adjusted values.
-The limit is honest and printed: with three blocks per arm only a large effect can reach
+The per-session view is the confirmatory analysis: its three primary p-values get a Holm
+correction and the report prints raw and adjusted values. The script-weighted view is a
+robustness check with its own Holm correction over its two metrics. The schedule is fixed
+(counterbalanced, not randomised), so p assumes the blocks are exchangeable: no time trend that
+lines up with the schedule. The limit is honest and printed: with three blocks per arm only a large effect can reach
 significance, and a high p-value is not evidence of no effect. Each persona is also compared
 with `stock` by the difference of arm means and the minimum and maximum of its block values,
 descriptively. With fewer than two arms holding two included blocks each there is no test, and
@@ -948,14 +956,14 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `1112 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `1114 passed` with at most one skip** — there are
 no expected failures. It assumes a POSIX `sh` on the PATH (Git Bash provides one); from a plain
 PowerShell without it, 23 tests of the VM's shell scripts skip with "needs a POSIX sh".
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `1112 passed` or `1111 passed,
+with a reason rather than failing, so a clean run is `1114 passed` or `1113 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.

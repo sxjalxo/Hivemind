@@ -52,6 +52,13 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
     except ScheduleError as exc:
         print(f"schedule: {exc}; nothing was changed", file=sys.stderr)
         return 1
+    if schedule.sensor != deploy_persona.SENSORS[0]:
+        print(
+            f"schedule: sensor {schedule.sensor!r} is not the live sensor "
+            f"{deploy_persona.SENSORS[0]!r}; nothing was changed",
+            file=sys.stderr,
+        )
+        return 1
     if now < schedule.start:
         print(f"not started: block 1 ({schedule.arms[0]}) starts {_t(schedule.start)}")
         return 0

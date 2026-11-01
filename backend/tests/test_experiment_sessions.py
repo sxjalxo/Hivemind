@@ -8,6 +8,7 @@ from app.services.experiment.sessions import (
     COMMAND,
     LOGIN,
     PRIMARY,
+    SCRIPT_PRIMARY,
     Event,
     SessionStats,
     arch_mix,
@@ -87,6 +88,19 @@ def test_sessions_go_to_the_span_holding_their_first_event() -> None:
     assert [s.session_id for s in last.sessions] == ["second"]
 
 
+def test_a_session_ending_near_the_span_end_is_cut() -> None:
+    end = T0 + timedelta(days=1)
+    spans = [(T0, end)]
+
+    def ending(sid: str, before_s: int):
+        return _session(sid, start=end - timedelta(seconds=before_s + 5), seconds=5)
+
+    near, far = ending("near", 10), ending("far", 130)
+    (tally,) = assign([near, far], spans)
+    assert [s.session_id for s in tally.sessions] == ["far"]
+    assert tally.cut == 1
+
+
 def test_block_metrics_per_session() -> None:
     sessions = [
         _session("a", seconds=10),
@@ -108,13 +122,16 @@ def test_one_vote_per_script() -> None:
     session_view, script_view = metrics([*bot, loader]), script_metrics([*bot, loader])
     assert session_view["download_share"] == pytest.approx(0.25)
     assert script_view["download_share"] == pytest.approx(0.5)  # two scripts, one downloads
-    assert script_view["ran_any_share"] == pytest.approx(1.0)
+    assert set(script_view) == {*SCRIPT_PRIMARY, "duration_median_s", "scripts"}
+    assert script_view["scripts"] == 2
 
 
 def test_sessions_without_commands_vote_as_one_group() -> None:
     silent = [_session(f"s{i}") for i in range(3)]
     busy = _session("busy", commands=["uname -a"])
-    assert script_metrics([*silent, busy])["ran_any_share"] == pytest.approx(0.5)
+    m = script_metrics([*silent, busy])
+    assert m["commands_mean"] == pytest.approx(0.5)  # (0 + 1) / 2 groups
+    assert m["scripts"] == 1  # the no-command group is not a script
 
 
 def test_technique_and_architecture_mixes() -> None:

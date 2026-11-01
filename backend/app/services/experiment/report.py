@@ -10,6 +10,7 @@ from app.services.experiment.read import Block, blocks_as_run, coverage, read_se
 from app.services.experiment.schedule import STOCK, Schedule
 from app.services.experiment.sessions import (
     PRIMARY,
+    SCRIPT_PRIMARY,
     Tally,
     arch_mix,
     assign,
@@ -19,8 +20,11 @@ from app.services.experiment.sessions import (
 )
 from app.services.experiment.stats import SAMPLES, holm, permutation_p, smallest_p
 
-VIEWS = (("session_view", "per session"), ("script_view", "one vote per script"))
-_ALL = (*PRIMARY, "duration_median_s")
+# view attribute, title, the metrics tested in it
+VIEWS = (
+    ("session_view", "per session", PRIMARY),
+    ("script_view", "one vote per script", SCRIPT_PRIMARY),
+)
 
 
 @dataclass
@@ -69,10 +73,10 @@ def _tests(included: list[BlockRow]) -> dict | None:
         return None
     labels = [row.block.arm for row in included]
     out = {}
-    for view, _ in VIEWS:
-        raw = {m: permutation_p([getattr(r, view)[m] for r in included], labels) for m in PRIMARY}
+    for view, _, names in VIEWS:
+        raw = {m: permutation_p([getattr(r, view)[m] for r in included], labels) for m in names}
         adjusted = holm({m: p for m, (p, _) in raw.items()})
-        out[view] = {m: (raw[m][0], adjusted[m], raw[m][1]) for m in PRIMARY}
+        out[view] = {m: (raw[m][0], adjusted[m], raw[m][1]) for m in names}
     return out
 
 
@@ -157,7 +161,8 @@ def render(r: Report) -> str:
     lines += ["", "Sensor changes inside the window (possible confounds)"]
     lines += [f"  {_t(c.at)} {c.kind}: {c.detail}" for c in r.changes] or ["  none"]
 
-    for view, title in VIEWS:
+    for view, title, names in VIEWS:
+        shown = (*names, "duration_median_s", *(("scripts",) if view == "script_view" else ()))
         lines += ["", f"Metrics by arm, {title}: mean of block values [min, max]"]
         means: dict[str, dict[str, float]] = {}
         for arm in arms:
@@ -165,16 +170,16 @@ def render(r: Report) -> str:
             if not values:
                 lines.append(f"  {arm:<11} no included block")
                 continue
-            means[arm] = {m: statistics.fmean(v[m] for v in values) for m in _ALL}
+            means[arm] = {m: statistics.fmean(v[m] for v in values) for m in shown}
             cells = [
                 f"{m} {means[arm][m]:.3f} [{min(v[m] for v in values):.3f}, "
                 f"{max(v[m] for v in values):.3f}]"
-                for m in _ALL
+                for m in shown
             ]
             lines.append(f"  {arm:<11} n={len(values)}  " + "  ".join(cells))
         if STOCK in means:
             for arm in (a for a in arms if a in means and a != STOCK):
-                diffs = "  ".join(f"{m} {means[arm][m] - means[STOCK][m]:+.3f}" for m in PRIMARY)
+                diffs = "  ".join(f"{m} {means[arm][m] - means[STOCK][m]:+.3f}" for m in names)
                 lines.append(f"  {arm} - stock: {diffs}")
 
     lines += ["", "Primary metrics per included block, per session"]
@@ -187,8 +192,8 @@ def render(r: Report) -> str:
     if r.tests is None:
         lines.append("  not enough blocks: fewer than two arms with two included blocks each")
     else:
-        for view, title in VIEWS:
-            for m in PRIMARY:
+        for view, title, names in VIEWS:
+            for m in names:
                 p, adjusted, exhaustive = r.tests[view][m]
                 how = "exhaustive" if exhaustive else f"{SAMPLES} random relabellings, seed 0"
                 lines.append(f"  {title:<20} {m:<15} p={p:.4f}  holm={adjusted:.4f}  ({how})")
@@ -199,6 +204,14 @@ def render(r: Report) -> str:
         lines.append(
             "  With three blocks per arm only a large effect can reach significance; "
             "a high p-value is not evidence of no effect."
+        )
+        lines.append(
+            "  The schedule is fixed (counterbalanced, not randomised), so p assumes the blocks "
+            "are exchangeable: no time trend that lines up with the schedule."
+        )
+        lines.append(
+            "  The per-session view is the confirmatory analysis; "
+            "the one-vote-per-script view is a robustness check."
         )
 
     lines += ["", "Secondary, pooled over each arm's included blocks (descriptive)"]

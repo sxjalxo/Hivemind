@@ -10,7 +10,7 @@ import re
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import cache
 
 from app.services.campaigns import fingerprint
@@ -23,6 +23,11 @@ DOWNLOADS = ("cowrie.session.file_download", "cowrie.session.file_download.faile
 ACTIONS = ("cowrie.session.connect", LOGIN, COMMAND, *DOWNLOADS, "cowrie.session.closed")
 # Fixed before any data was seen (spec section 4); never add to or reorder.
 PRIMARY = ("ran_any_share", "commands_mean", "download_share")
+# The script view has no ran_any_share: with one vote per script it only counts distinct scripts.
+SCRIPT_PRIMARY = ("commands_mean", "download_share")
+# A session's last event can land just before the recorded switch (deploy_persona records the
+# time after run-cowrie.sh returns) or be truncated at the window end; both read as complete.
+CUT_MARGIN = timedelta(seconds=120)
 
 _ARCH_TOKENS = {
     "arm": (
@@ -118,8 +123,8 @@ def techniques(s: SessionStats) -> frozenset[str]:
 def assign(sessions, spans: list[tuple[datetime, datetime]]) -> list[Tally]:
     """Sort sessions into the spans [start, end) that hold their first event.
 
-    A logged-in session whose last event is at or after its span's end was cut by
-    the switch and is only counted, as is one that never logged in. Sessions
+    A logged-in session whose last event is within CUT_MARGIN of its span's end (or
+    after it) was cut by the switch and is only counted, as is one that never logged in. Sessions
     outside every span are dropped.
     """
     tallies = [Tally([]) for _ in spans]
@@ -128,7 +133,7 @@ def assign(sessions, spans: list[tuple[datetime, datetime]]) -> list[Tally]:
             if start <= s.first < end:
                 if not s.logged_in:
                     tally.not_logged_in += 1
-                elif s.last >= end:
+                elif s.last >= end - CUT_MARGIN:
                     tally.cut += 1
                 else:
                     tally.sessions.append(s)
@@ -145,25 +150,31 @@ def _values(s: SessionStats) -> dict[str, float]:
     }
 
 
-def _summarise(rows: list[dict[str, float]]) -> dict[str, float]:
-    out = {m: statistics.fmean(r[m] for r in rows) for m in PRIMARY}
+def _summarise(rows: list[dict[str, float]], names: tuple[str, ...]) -> dict[str, float]:
+    out = {m: statistics.fmean(r[m] for r in rows) for m in names}
     out["duration_median_s"] = statistics.median(r["duration_s"] for r in rows)
     return out
 
 
 def metrics(sessions: list[SessionStats]) -> dict[str, float]:
     """One vote per session: the three primaries and the median session length."""
-    return _summarise([_values(s) for s in sessions])
+    return _summarise([_values(s) for s in sessions], PRIMARY)
 
 
 def script_metrics(sessions: list[SessionStats]) -> dict[str, float]:
-    """One vote per script: each script's mean, then over scripts (no-command sessions: one group)."""
+    """One vote per script: each script's mean, then over scripts (no-command sessions: one group).
+
+    Also `scripts`, the number of distinct scripts (descriptive, not tested).
+    """
     groups: dict[str | None, list[dict[str, float]]] = defaultdict(list)
     for s in sessions:
         groups[s.script].append(_values(s))
-    return _summarise(
-        [{k: statistics.fmean(r[k] for r in rows) for k in rows[0]} for rows in groups.values()]
+    out = _summarise(
+        [{k: statistics.fmean(r[k] for r in rows) for k in rows[0]} for rows in groups.values()],
+        SCRIPT_PRIMARY,
     )
+    out["scripts"] = float(sum(1 for script in groups if script is not None))
+    return out
 
 
 def technique_mix(sessions: list[SessionStats]) -> dict[str, float]:

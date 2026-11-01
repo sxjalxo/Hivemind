@@ -16,7 +16,7 @@ from app.services.experiment.report import (
     render,
 )
 from app.services.experiment.schedule import STOCK, Schedule
-from app.services.experiment.sessions import PRIMARY, Tally
+from app.services.experiment.sessions import PRIMARY, SCRIPT_PRIMARY, Tally
 from app.services.persona_deployments import PRE_PERSONA
 from scripts import persona_experiment
 from tests.test_experiment_read import _events, _wipe
@@ -150,9 +150,10 @@ def test_the_script_says_when_the_experiment_has_not_started(tmp_path, capsys) -
 def _row(i: int, arm: str) -> BlockRow:
     start = T0 + timedelta(days=i)
     view = {m: float(i * 7 % 5 + k) / 10 for k, m in enumerate((*PRIMARY, "duration_median_s"))}
+    script = {**{m: view[m] for m in SCRIPT_PRIMARY}, "duration_median_s": 5.0, "scripts": 2.0 + i}
     tally = Tally([_session(f"s{i}", commands=["uname -a"])])
     return BlockRow(
-        Block(start, start + timedelta(days=1), arm, True), 24, 24, tally, None, view, dict(view)
+        Block(start, start + timedelta(days=1), arm, True), 24, 24, tally, None, view, script
     )
 
 
@@ -160,8 +161,9 @@ def test_the_permutation_section_is_rendered_for_two_arms_of_two_blocks() -> Non
     rows = [_row(i, arm) for i, arm in enumerate([STOCK, "web-server", STOCK, "web-server"])]
     tests = _tests(rows)
     assert set(tests) == {"session_view", "script_view"}
+    assert set(tests["session_view"]) == set(PRIMARY)
+    assert set(tests["script_view"]) == set(SCRIPT_PRIMARY)
     for view in tests.values():
-        assert set(view) == set(PRIMARY)
         assert all(
             0 < p <= 1 and 0 < adj <= 1 and exhaustive for p, adj, exhaustive in view.values()
         )
@@ -174,3 +176,7 @@ def test_the_permutation_section_is_rendered_for_two_arms_of_two_blocks() -> Non
     assert "p=" in text and "holm=" in text and "(exhaustive)" in text
     assert "smallest attainable p with these block counts: 0.3333" in text  # 2 equal arms: 2 / 6
     assert "web-server - stock:" in text
+    script_text = text.split("one vote per script: mean")[1].split("Primary metrics")[0]
+    assert "commands_mean" in script_text and "scripts " in script_text
+    assert "ran_any_share" not in script_text
+    assert "confirmatory" in text and "exchangeable" in text
