@@ -54,6 +54,9 @@ const KIND_LABEL: Record<QueryKind, string> = {
   text: "Free text",
 };
 
+// Kinds the sessions API's `q` can answer (command line, username, source IP, id).
+const SESSION_SEARCH_KINDS = new Set<QueryKind>(["ip", "command", "username", "session", "text"]);
+
 export function GlobalSearchTrigger({ className }: { className?: string }) {
   const [open, setOpen] = useState(false);
 
@@ -103,7 +106,19 @@ function GlobalSearchDialog({
   const trimmed = value.trim();
   const kind = useMemo(() => classifyQuery(trimmed), [trimmed]);
 
-  const { data: sessions = [] } = useQuery({ ...sessionQueries.list(), enabled: open });
+  // Sessions are searched by the backend (command line, username, source IP), not
+  // filtered from the newest page held here, so an older attacker is found too.
+  const [searchTerm, setSearchTerm] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setSearchTerm(trimmed), 250);
+    return () => clearTimeout(timer);
+  }, [trimmed]);
+  const searchesSessions = SESSION_SEARCH_KINDS.has(kind);
+  const { data: recent = [] } = useQuery({ ...sessionQueries.list(), enabled: open && !trimmed });
+  const { data: found = [] } = useQuery({
+    ...sessionQueries.list({ q: searchTerm }),
+    enabled: open && searchesSessions && searchTerm !== "" && searchTerm === trimmed,
+  });
   const { data: indicators = [] } = useQuery({
     ...indicatorsQuery(),
     enabled: open,
@@ -117,23 +132,18 @@ function GlobalSearchDialog({
 
   const lower = trimmed.toLowerCase();
 
-  const matchedSessions = trimmed
-    ? sessions
-        .filter(
-          (session) =>
-            session.id.toLowerCase().includes(lower) ||
-            session.attackerIp.includes(trimmed) ||
-            session.mitreTechniqueIds.some((id) => id.toLowerCase() === lower),
-        )
-        .slice(0, 5)
-    : sessions.slice(0, 4);
+  const matchedSessions = !trimmed
+    ? recent.slice(0, 4)
+    : searchesSessions && searchTerm === trimmed
+      ? found.slice(0, 5)
+      : [];
 
   const matchedIndicators = trimmed
     ? indicators.filter((ioc) => ioc.value.toLowerCase().includes(lower)).slice(0, 5)
     : [];
 
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange}>
+    <CommandDialog open={open} onOpenChange={onOpenChange} shouldFilter={false}>
       <CommandInput
         placeholder="192.168.1.45   T1059   wget   root   SESSION-8F42A1"
         value={value}
@@ -155,6 +165,12 @@ function GlobalSearchDialog({
               >
                 <User className="size-4 text-muted-foreground" />
                 Open attacker profile <span className="font-mono">{trimmed}</span>
+              </CommandItem>
+            ) : null}
+            {kind === "session" ? (
+              <CommandItem value={`session-${trimmed}`} onSelect={() => go(`/sessions/${trimmed}`)}>
+                <ScrollText className="size-4 text-muted-foreground" />
+                Open session <span className="font-mono">{trimmed}</span>
               </CommandItem>
             ) : null}
             {kind === "technique" ? (

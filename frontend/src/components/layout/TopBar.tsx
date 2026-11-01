@@ -3,7 +3,6 @@ import { useQuery } from "@tanstack/react-query";
 import { Menu } from "lucide-react";
 import { GlobalSearchTrigger } from "./GlobalSearch";
 import { NotablesBell } from "./NotablesBell";
-import { TimeRangeSelector } from "./TimeRangeSelector";
 import { StatusDot } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import type { ServiceStatus } from "@/types";
@@ -63,7 +62,6 @@ export function TopBar({ onOpenNav }: { onOpenNav: () => void }) {
       <GlobalSearchTrigger className="min-w-0 flex-1 sm:max-w-md" />
 
       <div className="ml-auto flex shrink-0 items-center gap-2">
-        <TimeRangeSelector className="hidden sm:flex" />
         <AiEngineIndicator />
         <NotablesBell />
         <AccountControls />

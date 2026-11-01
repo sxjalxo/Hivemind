@@ -42,17 +42,20 @@ function DashboardPage() {
     <div className="space-y-5">
       <PageHeader
         title="Honeypot Intelligence Dashboard"
-        subtitle="Real-time overview of attacker activity, AI classifications and threat intelligence."
+        subtitle="Attacker activity, AI classifications and threat intelligence, refreshed every 30 seconds."
         meta={
           <>
             <span className="label-caps">Window: {label}</span>
           </>
         }
         actions={
-          <Button size="sm" onClick={() => void navigate({ to: "/sessions" })}>
-            Triage sessions
-            <ArrowRight className="size-3.5" />
-          </Button>
+          <>
+            <TimeRangeTabs />
+            <Button size="sm" onClick={() => void navigate({ to: "/sessions" })}>
+              Triage sessions
+              <ArrowRight className="size-3.5" />
+            </Button>
+          </>
         }
       />
 
@@ -82,7 +85,6 @@ function DashboardPage() {
               className="xl:col-span-3"
               title="Attacker Activity Timeline"
               description="Honeypot events over the selected window, with high-risk activity overlaid."
-              actions={<TimeRangeTabs />}
             >
               {dashboard.isPending ? (
                 <Skeleton className="h-[248px] w-full" />

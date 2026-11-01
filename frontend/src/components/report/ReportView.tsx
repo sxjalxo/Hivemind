@@ -19,7 +19,10 @@ import type { ThreatReport } from "@/types";
 export function ReportView({ report }: { report: ThreatReport }) {
   return (
     <article className="space-y-6">
-      <ReportSection title="Executive Summary" provenance="AI INFERENCE">
+      <ReportSection
+        title="Executive Summary"
+        provenance={report.executiveSummaryObserved ? "OBSERVED" : "AI INFERENCE"}
+      >
         <p className="text-sm leading-relaxed text-foreground/90">{report.executiveSummary}</p>
       </ReportSection>
 
@@ -175,9 +178,6 @@ export function ReportView({ report }: { report: ThreatReport }) {
             <ConfidenceBar value={report.threatAssessment.confidence} />
           </div>
         </div>
-        <p className="mt-3 text-sm leading-relaxed text-foreground/85">
-          {report.threatAssessment.narrative}
-        </p>
       </ReportSection>
 
       <ReportSection title="Recommended Actions" provenance="AI INFERENCE">

@@ -47,6 +47,21 @@ export function RiskBadge({ level, score, size, withDot = true, className }: Ris
   );
 }
 
+/** No analysis has assessed this yet: a muted mark, never a default severity. */
+export function NotAssessedBadge({ className }: { className?: string }) {
+  return (
+    <span
+      title="None of these sessions has been analysed, so nothing has assessed the risk."
+      className={cn(
+        "inline-flex items-center rounded border border-dashed border-border-strong px-1.5 py-[3px] font-mono text-[10px] uppercase leading-none tracking-[0.08em] text-muted-foreground",
+        className,
+      )}
+    >
+      Not assessed
+    </span>
+  );
+}
+
 /** Normalises loosely-typed backend strings onto the RiskLevel union. */
 export function asRiskLevel(value: string | undefined): RiskLevel {
   switch (value?.toLowerCase()) {

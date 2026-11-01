@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowUpRight } from "lucide-react";
-import { CopyButton, Mono, RiskBadge, asRiskLevel } from "@/components/common";
+import { CopyButton, Mono, NotAssessedBadge, RiskBadge, asRiskLevel } from "@/components/common";
 import { formatNumber } from "@/utils/format";
 
 export interface TopAttackerRow {
@@ -8,7 +8,7 @@ export interface TopAttackerRow {
   country: string;
   events: number;
   sessions: number;
-  risk: string;
+  risk: string | null;
   lastSeen: string;
 }
 
@@ -27,7 +27,7 @@ export function TopAttackersTable({ rows }: { rows: TopAttackerRow[] }) {
               <th className="label-caps px-3 py-2 text-left font-normal">Country</th>
               <th className="label-caps px-3 py-2 text-right font-normal">Events</th>
               <th className="label-caps px-3 py-2 text-right font-normal">Sessions</th>
-              <th className="label-caps px-3 py-2 text-left font-normal">Risk</th>
+              <th className="label-caps px-3 py-2 text-left font-normal">Assessed risk</th>
               <th className="label-caps px-3 py-2 text-right font-normal">Last seen</th>
             </tr>
           </thead>
@@ -64,7 +64,7 @@ export function TopAttackersTable({ rows }: { rows: TopAttackerRow[] }) {
                   {row.sessions}
                 </td>
                 <td className="px-3 py-2">
-                  <RiskBadge level={asRiskLevel(row.risk)} />
+                  {row.risk ? <RiskBadge level={asRiskLevel(row.risk)} /> : <NotAssessedBadge />}
                 </td>
                 <td className="px-3 py-2 text-right">
                   <Mono tone="muted" className="text-xs">
@@ -89,7 +89,7 @@ export function TopAttackersTable({ rows }: { rows: TopAttackerRow[] }) {
                 {row.ip}
                 <ArrowUpRight className="size-3 text-muted-foreground" aria-hidden />
               </Link>
-              <RiskBadge level={asRiskLevel(row.risk)} />
+              {row.risk ? <RiskBadge level={asRiskLevel(row.risk)} /> : <NotAssessedBadge />}
             </div>
             <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
               <div className="flex justify-between">

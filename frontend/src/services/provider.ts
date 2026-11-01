@@ -224,7 +224,8 @@ export interface DashboardData {
     country: string;
     events: number;
     sessions: number;
-    risk: string;
+    /** Highest risk an analysis gave one of its sessions; null: not assessed. */
+    risk: string | null;
     lastSeen: string;
   }[];
   topCommands: { command: string; count: number; techniqueId?: string }[];

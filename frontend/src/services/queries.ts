@@ -79,7 +79,11 @@ export const notablesQuery = () =>
   });
 
 export const dashboardQuery = (range: string) =>
-  queryOptions({ queryKey: ["dashboard", range], queryFn: () => provider.getDashboard(range) });
+  queryOptions({
+    queryKey: ["dashboard", range],
+    queryFn: () => provider.getDashboard(range),
+    refetchInterval: 30_000, // the page says "refreshed every 30 seconds"
+  });
 
 export const logFacetsQuery = () =>
   queryOptions({ queryKey: ["log-facets"], queryFn: () => provider.getLogFacets() });

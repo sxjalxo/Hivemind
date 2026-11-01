@@ -1,4 +1,4 @@
-export { RiskBadge, asRiskLevel } from "./RiskBadge";
+export { NotAssessedBadge, RiskBadge, asRiskLevel } from "./RiskBadge";
 export { ProvenanceBadge } from "./ProvenanceBadge";
 export { MitreBadge, ClassificationChain } from "./MitreBadge";
 export { Mono, CopyButton, CopyableMono } from "./Mono";

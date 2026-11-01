@@ -19,7 +19,12 @@ export function reportToMarkdown(report: ThreatReport): string {
     "",
   );
 
-  push("## Executive Summary  [AI INFERENCE]", "", report.executiveSummary, "");
+  push(
+    `## Executive Summary  [${report.executiveSummaryObserved ? "OBSERVED" : "AI INFERENCE"}]`,
+    "",
+    report.executiveSummary,
+    "",
+  );
 
   const overview = report.incidentOverview;
   push(
@@ -91,8 +96,6 @@ export function reportToMarkdown(report: ThreatReport): string {
     "",
     `- Level: ${report.threatAssessment.level.toUpperCase()}`,
     `- Confidence: ${formatPct(report.threatAssessment.confidence)}`,
-    "",
-    report.threatAssessment.narrative,
     "",
   );
 

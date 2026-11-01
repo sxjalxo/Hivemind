@@ -11,6 +11,7 @@ import {
   LoadingState,
   MitreBadge,
   Mono,
+  NotAssessedBadge,
   PageHeader,
   Panel,
   ProvenanceBadge,
@@ -63,15 +64,31 @@ function AttackerProfilePage() {
       />
 
       <div className="grid gap-4 lg:grid-cols-4">
-        <Panel className="lg:col-span-1" title="Assessed risk">
-          <RiskScoreMeter score={data.riskScore} />
-          <div className="mt-3">
-            <RiskBadge level={data.risk} size="md" />
-          </div>
-          <p className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted-foreground">
-            Aggregated from {data.sessions} correlated{" "}
-            {data.sessions === 1 ? "session" : "sessions"}.
-          </p>
+        <Panel
+          className="lg:col-span-1"
+          title="Assessed risk"
+          actions={<ProvenanceBadge kind="AI INFERENCE" showIcon={false} />}
+        >
+          {data.risk !== null && data.riskScore !== null ? (
+            <>
+              <RiskScoreMeter score={data.riskScore} />
+              <div className="mt-3">
+                <RiskBadge level={data.risk} size="md" />
+              </div>
+              <p className="mt-3 border-t border-border pt-2.5 text-[11px] leading-relaxed text-muted-foreground">
+                The highest risk an analysis gave any of its {data.sessions}{" "}
+                {data.sessions === 1 ? "session" : "sessions"}.
+              </p>
+            </>
+          ) : (
+            <>
+              <NotAssessedBadge />
+              <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+                None of its {data.sessions} {data.sessions === 1 ? "session" : "sessions"} has been
+                analysed, so nothing has assessed its risk. Analyse a session to assess it.
+              </p>
+            </>
+          )}
         </Panel>
 
         <Panel className="lg:col-span-3" title="Identity and reach">

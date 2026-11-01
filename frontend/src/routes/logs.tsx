@@ -101,20 +101,9 @@ function eventToCsvRow(e: HoneypotEvent) {
   ];
 }
 
-const ECS_FIELDS = [
-  "timestamp",
-  "source.ip",
-  "destination.ip",
-  "event.action",
-  "event.category",
-  "network.protocol",
-  "user.name",
-  "process.command_line",
-  "honeypot.name",
-  "session.id",
-  "risk.score",
-  "mitre.technique",
-];
+// The fields free-text search matches -- the backend's multi_match list in
+// app/es/queries.py. Keep the two in step.
+const SEARCHED_FIELDS = ["process.command_line", "event.action", "user.name", "source.ip"];
 
 function LogExplorerPage() {
   const search = Route.useSearch();
@@ -276,7 +265,7 @@ function LogExplorerPage() {
               Reset filters
             </button>
             <span className="ml-auto hidden font-mono text-[10px] text-muted-foreground xl:block">
-              {ECS_FIELDS.join("  ")}
+              Search matches {SEARCHED_FIELDS.join(" · ")}
             </span>
           </div>
 

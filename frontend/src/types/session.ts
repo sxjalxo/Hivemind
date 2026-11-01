@@ -124,8 +124,9 @@ export interface SessionTimelineEvent {
 
 export interface AttackerProfile {
   ip: string;
-  risk: RiskLevel;
-  riskScore: number;
+  /** From analyses of this attacker's sessions; null until one is analysed. */
+  risk: RiskLevel | null;
+  riskScore: number | null;
   behaviorLabel: string;
   sessions: number;
   firstSeen: string;
