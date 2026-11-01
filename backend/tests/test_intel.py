@@ -821,3 +821,36 @@ async def test_type_counts_cover_every_indicator_not_one_page() -> None:
 
     every = await list_indicators()
     assert await indicator_counts() == dict(Counter(i.type for i in every))
+
+
+@pytest.mark.asyncio
+async def test_an_attacker_with_no_analysed_session_has_no_risk() -> None:
+    # It used to report score 0 and level "informational": a verdict nobody made.
+    from app.es.client import get_es
+
+    ip, honeypot = "203.0.113.77", "test-sensor-unassessed"
+    es, index = get_es(), get_settings().es_index
+    try:
+        for action in ("cowrie.session.connect", "cowrie.session.closed"):
+            await es.index(
+                index=index,
+                document={
+                    "@timestamp": "2026-10-01T00:00:00Z",
+                    "honeypot": {"id": honeypot, "name": honeypot},
+                    "session": {"id": "test-unassessed-s1"},
+                    "source": {"ip": ip},
+                    "event": {"action": action},
+                    "network": {"protocol": "ssh"},
+                },
+                refresh=True,
+            )
+        profile = await build_profile(ip)
+        assert profile is not None
+        assert (profile.risk, profile.risk_score) == (None, None)
+    finally:
+        await es.delete_by_query(
+            index=index,
+            query={"term": {"honeypot.id": honeypot}},
+            refresh=True,
+            conflicts="proceed",
+        )

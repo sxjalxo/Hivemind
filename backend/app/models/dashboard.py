@@ -31,7 +31,8 @@ class TopAttacker(CamelModel):
     country: str
     events: int
     sessions: int
-    risk: str
+    # The highest risk an analysis gave one of its sessions; None: not assessed.
+    risk: str | None
     last_seen: str
 
 

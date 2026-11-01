@@ -20,9 +20,10 @@ class AttackerBehavior(CamelModel):
 
 
 class ThreatAssessment(CamelModel):
+    # Stored snapshots written before 2026-11-01 also carry `narrative` (the
+    # model's behaviour summary a third time); it is ignored on read.
     level: str
     confidence: float
-    narrative: str
 
 
 class ThreatReport(CamelModel):
@@ -32,6 +33,10 @@ class ThreatReport(CamelModel):
     created_at: str
     generated_by: str
     executive_summary: str
+    # True when the summary is built from recorded facts. Snapshots written
+    # before 2026-11-01 hold the model's behaviour summary here; the default
+    # keeps them labelled as inference, never as observed.
+    executive_summary_observed: bool = False
     incident_overview: IncidentOverview
     timeline: list[SessionTimelineEvent]
     attacker_behavior: AttackerBehavior

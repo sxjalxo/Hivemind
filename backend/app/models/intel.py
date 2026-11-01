@@ -28,8 +28,9 @@ class SimilarAttacker(CamelModel):
 
 class AttackerProfileOut(CamelModel):
     ip: str
-    risk: str
-    risk_score: int
+    # From the analyses of this attacker's sessions; None when none is analysed.
+    risk: str | None
+    risk_score: int | None
     behavior_label: str
     sessions: int
     first_seen: str
@@ -52,7 +53,6 @@ class AttackerProfileOut(CamelModel):
     similarity_complete: bool = True
     similarity_incomplete_reason: str | None = None
     attack_pattern: list[str]
-
 
 
 class IocExport(CamelModel):

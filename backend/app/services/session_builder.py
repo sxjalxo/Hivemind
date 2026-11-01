@@ -329,7 +329,8 @@ async def list_sessions(
             {
                 "multi_match": {
                     "query": q,
-                    "fields": ["process.command_line", "user.name", "source.ip"],
+                    # session.id is a keyword: a pasted id matches exactly.
+                    "fields": ["process.command_line", "user.name", "source.ip", "session.id"],
                     # source.ip is mapped as `ip`, not `text`/`keyword`; without
                     # `lenient` a query string that isn't a valid IP literal
                     # (e.g. a command fragment like "xmrig_setup") makes ES

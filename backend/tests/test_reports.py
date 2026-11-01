@@ -18,6 +18,7 @@ from app.db.session import get_session_factory
 from app.main import create_app
 from app.seed.seeder import seed
 from app.services.analyzer import latest_for_session, run_analysis
+from app.models.report import ThreatReport
 from app.services.reports import create_report, list_reports
 
 # Every test below either runs a real analysis or triggers one indirectly
@@ -128,7 +129,12 @@ async def test_report_assembles_from_a_completed_analysis() -> None:
     report = await create_report("seed-botnet-01")
     try:
         assert report.session_id == "seed-botnet-01"
-        assert report.executive_summary
+        # Built from recorded facts only, and so labelled: not the model's text again.
+        assert report.executive_summary_observed is True
+        assert report.executive_summary != report.attacker_behavior.explanation
+        assert report.executive_summary.startswith("185.220.101.44")
+        assert "7 commands" in report.executive_summary
+        assert not hasattr(report.threat_assessment, "narrative")
         assert report.timeline
         assert report.incident_overview.attacker_ip == "185.220.101.44"
         assert 0 <= report.incident_overview.risk_score <= 100
@@ -193,3 +199,32 @@ async def test_event_endpoint_404s_for_an_unknown_id() -> None:
         response = await client.get("/api/events/not-a-real-event")
 
     assert response.status_code == 404
+
+
+def test_a_report_saved_before_the_facts_summary_still_loads_as_inference() -> None:
+    # Stored snapshots hold the model's summary in executive_summary and a
+    # `narrative`; neither may be presented as observed.
+    legacy = {
+        "id": "r",
+        "title": "t",
+        "sessionId": "s",
+        "createdAt": "2026-10-01T00:00:00Z",
+        "generatedBy": "m",
+        "executiveSummary": "model text",
+        "incidentOverview": {
+            "attackerIp": "203.0.113.9",
+            "target": "x",
+            "timeRange": "-",
+            "protocol": "ssh",
+            "risk": "low",
+            "riskScore": 10,
+        },
+        "timeline": [],
+        "attackerBehavior": {"classification": "c", "explanation": "model text", "confidence": 0.5},
+        "mitre": [],
+        "indicators": [],
+        "threatAssessment": {"level": "low", "confidence": 0.5, "narrative": "model text"},
+        "recommendedActions": [],
+    }
+    report = ThreatReport.model_validate(legacy)
+    assert report.executive_summary_observed is False

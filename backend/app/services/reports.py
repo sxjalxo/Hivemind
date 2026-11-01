@@ -17,6 +17,35 @@ from app.services.intel import list_indicators
 from app.services.session_builder import build_timeline, get_session
 
 
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" + ("" if n == 1 else "s")
+
+
+def executive_summary(session, timeline, techniques, indicators) -> str:
+    """One paragraph of recorded facts only: no model output, so it is OBSERVED.
+
+    The model's account of the behaviour is the Attacker Behaviour section's.
+    """
+    who = session.attacker_ip + (f" ({session.country})" if session.country else "")
+    login = f", logged in as {session.username}" if session.username else ""
+    downloads = sum(1 for event in timeline if event.kind == "download")
+    ran = f"It ran {_count(session.command_count, 'command')}"
+    if downloads:
+        ran += f" and attempted {_count(downloads, 'download')}"
+    observed = sorted({t.technique_id for t in techniques if t.observed})
+    rules = (
+        f"Rules matched {_count(len(observed), 'ATT&CK technique')}: {', '.join(observed)}."
+        if observed
+        else "No rule matched an ATT&CK technique."
+    )
+    return (
+        f"{who} connected to {session.honeypot_name} over {session.protocol} at "
+        f"{session.started_at}{login}, for {_count(session.duration_seconds, 'second')}. "
+        f"{ran}. {rules} {_count(len(indicators), 'indicator')} of compromise "
+        f"{'was' if len(indicators) == 1 else 'were'} extracted."
+    )
+
+
 async def create_report(session_id: str, actor: Actor | None = None) -> ThreatReport:
     """Assemble a report from the session's latest analysis.
 
@@ -49,7 +78,8 @@ async def create_report(session_id: str, actor: Actor | None = None) -> ThreatRe
         session_id=session_id,
         created_at=created.isoformat().replace("+00:00", "Z"),
         generated_by=analysis.model,
-        executive_summary=analysis.behavior_summary,
+        executive_summary=executive_summary(session, timeline, analysis.techniques, indicators),
+        executive_summary_observed=True,
         incident_overview=IncidentOverview(
             attacker_ip=session.attacker_ip,
             target=session.honeypot_name,
@@ -69,7 +99,6 @@ async def create_report(session_id: str, actor: Actor | None = None) -> ThreatRe
         threat_assessment=ThreatAssessment(
             level=analysis.risk,
             confidence=analysis.confidence,
-            narrative=analysis.behavior_summary,
         ),
         recommended_actions=analysis.recommended_actions,
     )

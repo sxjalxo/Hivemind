@@ -238,8 +238,10 @@ async def build_profile(ip: str) -> AttackerProfileOut | None:
                 if mapping.technique_id not in technique_ids:
                     technique_ids.append(mapping.technique_id)
 
-    risk_score = max((a.risk_score for a in analyses), default=0)
-    risk = next((a.risk for a in analyses if a.risk_score == risk_score), "informational")
+    # Not assessed (None) until one of its sessions is analysed: a default
+    # score of 0 or level "informational" would read as a verdict.
+    risk_score = max((a.risk_score for a in analyses), default=None)
+    risk = next((a.risk for a in analyses if a.risk_score == risk_score), None)
     behavior = next((a.classification for a in analyses), "Not yet analyzed")
 
     all_commands, similarity_incomplete_reason = await _commands_by_ip()

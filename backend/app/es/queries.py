@@ -43,6 +43,7 @@ def build_log_query(query: LogQuery, deny_honeypots: set[str] | None = None) -> 
             {
                 "multi_match": {
                     "query": query.q,
+                    # Shown in the Log Explorer (SEARCHED_FIELDS in routes/logs.tsx).
                     "fields": [
                         "process.command_line",
                         "event.action",

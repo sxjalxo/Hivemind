@@ -319,3 +319,12 @@ async def test_a_download_entry_says_where_the_payload_came_from_and_landed() ->
     finally:
         await es.delete_by_query(index=get_settings().es_index,
                                  query={"term": {"session.id": _DOWNLOADS_SESSION}}, refresh=True)
+
+
+@pytest.mark.asyncio
+async def test_a_pasted_session_id_finds_its_session() -> None:
+    # The global search sends whatever is typed to `q`; an id must match exactly.
+    await seed(reset=True)
+    sessions = await list_sessions(q="seed-botnet-01")
+    # Found by id; other seed sessions may also match its text tokens ("01").
+    assert "seed-botnet-01" in {s.id for s in sessions}

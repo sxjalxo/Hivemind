@@ -1,6 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
+
 from app.config import get_settings
+from app.db.models import Analysis
+from app.db.session import get_session_factory
 from app.es.client import get_es
 from app.models.dashboard import (
     DashboardData,
@@ -14,14 +18,16 @@ from app.models.dashboard import (
 from app.models.honeypot import Honeypot
 from app.services.sensors import describe_os, describe_type
 
+# Every range the dashboard's tabs offer (frontend hooks/useTimeRange.tsx).
 _WINDOWS = {
+    "15m": timedelta(minutes=15),
     "1h": timedelta(hours=1),
     "24h": timedelta(hours=24),
     "7d": timedelta(days=7),
     "30d": timedelta(days=30),
 }
 
-_BUCKET_INTERVAL = {"1h": "5m", "24h": "1h", "7d": "12h", "30d": "1d"}
+_BUCKET_INTERVAL = {"15m": "1m", "1h": "5m", "24h": "1h", "7d": "12h", "30d": "1d"}
 
 _RISK_LEVELS = ["critical", "high", "medium", "low", "informational"]
 
@@ -52,6 +58,32 @@ def _range_filter(start: str, end: str, *, inclusive_end: bool = True) -> dict:
 
 def _epoch_millis(iso: str) -> int:
     return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+
+
+# Every KPI is compared with the same aggregation over the previous window of
+# equal length. Distinct counts are HyperLogLog estimates in both windows.
+_KPI_AGGS = {
+    "sessions": {"cardinality": {"field": "session.id"}},
+    "techniques": {"cardinality": {"field": "mitre.technique_id"}},
+    "high_risk": {"filter": {"terms": {"risk.level": ["critical", "high"]}}},
+}
+
+_KPIS = (
+    ("total_events", "Total events", "default"),
+    ("active_sessions", "Sessions", "info"),
+    ("high_risk", "High-risk events", "critical"),
+    ("techniques", "ATT&CK techniques", "ai"),
+)
+
+
+def _kpi_values(response: dict) -> dict[str, int]:
+    aggs = response["aggregations"]
+    return {
+        "total_events": response["hits"]["total"]["value"],
+        "active_sessions": aggs["sessions"]["value"],
+        "high_risk": aggs["high_risk"]["doc_count"],
+        "techniques": aggs["techniques"]["value"],
+    }
 
 
 def _trend(current: int, previous: int) -> tuple[float, str]:
@@ -95,7 +127,9 @@ async def list_honeypots() -> list[Honeypot]:
         name_buckets = bucket["name"]["buckets"]
         dst_ip_buckets = bucket["dst_ip"]["buckets"]
         last_iso = bucket["last_activity"]["value_as_string"]
-        stale = (now - datetime.fromisoformat(last_iso.replace("Z", "+00:00"))) > timedelta(hours=24)
+        stale = (now - datetime.fromisoformat(last_iso.replace("Z", "+00:00"))) > timedelta(
+            hours=24
+        )
         honeypots.append(
             Honeypot(
                 id=bucket["key"],
@@ -121,6 +155,50 @@ async def list_honeypots() -> list[Honeypot]:
             )
         )
     return honeypots
+
+
+async def assessed_risk(ips: list[str]) -> dict[str, str]:
+    """The highest risk any analysis gave one of each IP's sessions.
+
+    The same rule as the attacker profile: an AI assessment, never a default.
+    An IP none of whose sessions has been analysed is absent ("not assessed").
+    """
+    if not ips:
+        return {}
+    async with get_session_factory()() as db:
+        rows = (
+            await db.execute(select(Analysis.session_id, Analysis.risk, Analysis.risk_score))
+        ).all()
+    best: dict[str, tuple[str, int]] = {}
+    for session_id, risk, score in rows:
+        if session_id not in best or score > best[session_id][1]:
+            best[session_id] = (risk, score)
+    if not best:
+        return {}
+    response = await get_es().search(
+        index=get_settings().es_index,
+        size=0,
+        query={
+            "bool": {
+                "filter": [
+                    {"terms": {"source.ip": ips}},
+                    {"terms": {"session.id": list(best)}},
+                ]
+            }
+        },
+        aggs={
+            "ips": {
+                "terms": {"field": "source.ip", "size": len(ips)},
+                "aggs": {"sessions": {"terms": {"field": "session.id", "size": len(best)}}},
+            }
+        },
+    )
+    return {
+        bucket["key"]: max(
+            (best[s["key"]] for s in bucket["sessions"]["buckets"]), key=lambda r: r[1]
+        )[0]
+        for bucket in response["aggregations"]["ips"]["buckets"]
+    }
 
 
 async def build_dashboard(range_: str) -> DashboardData:
@@ -152,17 +230,11 @@ async def build_dashboard(range_: str) -> DashboardData:
                     "extended_bounds": bounds,
                     "hard_bounds": bounds,
                 },
-                "aggs": {
-                    "high_risk": {
-                        "filter": {"terms": {"risk.level": ["critical", "high"]}}
-                    }
-                },
+                "aggs": {"high_risk": {"filter": {"terms": {"risk.level": ["critical", "high"]}}}},
             },
-            "sessions": {"cardinality": {"field": "session.id"}},
+            **_KPI_AGGS,
             "risk_levels": {"terms": {"field": "risk.level", "size": 10}},
             "classifications": {"terms": {"field": "ai_classification", "size": 10}},
-            "techniques": {"cardinality": {"field": "mitre.technique_id"}},
-            "high_risk": {"filter": {"terms": {"risk.level": ["critical", "high"]}}},
             "attackers": {
                 "terms": {"field": "source.ip", "size": 10},
                 "aggs": {
@@ -182,57 +254,31 @@ async def build_dashboard(range_: str) -> DashboardData:
     # previous window's upper edge exclusive so the two windows partition
     # cleanly instead of double-counting a document landing exactly on
     # that shared boundary instant.
-    previous = await get_es().count(
+    previous = await get_es().search(
         index=settings.es_index,
-        query={
-            "bool": {
-                "filter": [_range_filter(prev_start, prev_end, inclusive_end=False)]
-            }
-        },
+        query={"bool": {"filter": [_range_filter(prev_start, prev_end, inclusive_end=False)]}},
+        size=0,
+        track_total_hits=True,
+        aggs=_KPI_AGGS,
     )
 
     aggs = result["aggregations"]
-    total_events = result["hits"]["total"]["value"]
-    high_risk = aggs["high_risk"]["doc_count"]
-    sessions = aggs["sessions"]["value"]
-    techniques = aggs["techniques"]["value"]
+    current = _kpi_values(result)
+    before = _kpi_values(previous)
 
-    events_pct, events_dir = _trend(total_events, int(previous["count"]))
-
-    kpis = [
-        DashboardKpi(
-            id="total_events",
-            label="Total events",
-            value=total_events,
-            trend_pct=events_pct,
-            trend_direction=events_dir,
-            tone="default",
-        ),
-        DashboardKpi(
-            id="active_sessions",
-            label="Sessions",
-            value=sessions,
-            trend_pct=0.0,
-            trend_direction="flat",
-            tone="info",
-        ),
-        DashboardKpi(
-            id="high_risk",
-            label="High-risk events",
-            value=high_risk,
-            trend_pct=0.0,
-            trend_direction="flat",
-            tone="critical",
-        ),
-        DashboardKpi(
-            id="techniques",
-            label="ATT&CK techniques",
-            value=techniques,
-            trend_pct=0.0,
-            trend_direction="flat",
-            tone="ai",
-        ),
-    ]
+    kpis = []
+    for kpi_id, label, tone in _KPIS:
+        pct, direction = _trend(current[kpi_id], before[kpi_id])
+        kpis.append(
+            DashboardKpi(
+                id=kpi_id,
+                label=label,
+                value=current[kpi_id],
+                trend_pct=pct,
+                trend_direction=direction,
+                tone=tone,
+            )
+        )
 
     timeline = [
         TimelinePoint(
@@ -249,10 +295,10 @@ async def build_dashboard(range_: str) -> DashboardData:
     ]
 
     classifications = [
-        NamedValue(name=b["key"], value=b["doc_count"])
-        for b in aggs["classifications"]["buckets"]
+        NamedValue(name=b["key"], value=b["doc_count"]) for b in aggs["classifications"]["buckets"]
     ]
 
+    assessed = await assessed_risk([b["key"] for b in aggs["attackers"]["buckets"]])
     top_attackers = []
     for b in aggs["attackers"]["buckets"]:
         country_buckets = b["country"]["buckets"]
@@ -262,9 +308,7 @@ async def build_dashboard(range_: str) -> DashboardData:
                 country=country_buckets[0]["key"] if country_buckets else "Unknown",
                 events=b["doc_count"],
                 sessions=b["sessions"]["value"],
-                # Not yet assessed — see the risk="informational" note in
-                # list_honeypots above; the same convention applies here.
-                risk="informational",
+                risk=assessed.get(b["key"]),
                 last_seen=b["last_seen"]["value_as_string"],
             )
         )

@@ -1,12 +1,25 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import delete
 
 from app.config import get_settings
+from app.db.models import Analysis
+from app.db.session import get_session_factory
 from app.es.client import get_es
 from app.seed.seeder import load_corpus, seed
-from app.services.dashboard import _trend, build_dashboard, list_honeypots, range_to_bounds
+from app.services.dashboard import (
+    _KPI_AGGS,
+    _kpi_values,
+    _trend,
+    assessed_risk,
+    build_dashboard,
+    list_honeypots,
+    range_to_bounds,
+)
+
+_RISKS = {"critical", "high", "medium", "low", "informational"}
 
 
 def _parse(ts: str) -> datetime:
@@ -14,9 +27,11 @@ def _parse(ts: str) -> datetime:
 
 
 def test_range_to_bounds_supports_every_documented_window() -> None:
-    for window in ("1h", "24h", "7d", "30d"):
+    # 15m was offered by the dashboard's tabs but unknown here, so it silently
+    # showed 24 hours under a "Last 15 minutes" label.
+    for window, span in (("15m", 15 * 60), ("1h", 3600), ("24h", 86400), ("7d", 7 * 86400)):
         start, end = range_to_bounds(window)
-        assert start < end
+        assert (_parse(end) - _parse(start)).total_seconds() == span
 
 
 def test_range_to_bounds_windows_have_distinct_spans() -> None:
@@ -123,9 +138,7 @@ async def test_top_commands_counts_seeded_commands(monkeypatch) -> None:
         await seed(reset=True)
         data = await build_dashboard("30d")
 
-        seeded = {
-            e["input"] for e in load_corpus() if e["eventid"] == "cowrie.command.input"
-        }
+        seeded = {e["input"] for e in load_corpus() if e["eventid"] == "cowrie.command.input"}
         commands = {c.command for c in data.top_commands}
 
         assert commands, "the top-commands panel is empty"
@@ -155,9 +168,8 @@ async def test_top_attackers_lists_seeded_source_ips(monkeypatch) -> None:
 
         ips = {a.ip for a in data.top_attackers}
         assert "185.220.101.44" in ips
-        # No attacker has been assessed yet — every one must carry the
-        # "not yet assessed" convention, never a fabricated severity.
-        assert all(a.risk == "informational" for a in data.top_attackers)
+        # An analysis's assessment or None (not assessed) -- never a default.
+        assert all(a.risk is None or a.risk in _RISKS for a in data.top_attackers)
     finally:
         for name in await es.indices.get_alias(name=index):
             await es.indices.delete(index=name)
@@ -209,6 +221,69 @@ async def test_total_events_kpi_trend_agrees_with_the_windows_it_summarises() ->
 
     assert events_kpi.trend_direction == expected_direction
     assert events_kpi.trend_pct == expected_pct
+
+
+@pytest.mark.asyncio
+async def test_every_kpi_trend_compares_the_same_aggregation_over_the_previous_window() -> None:
+    # Sessions, high-risk events and techniques used to be a constant "0.0%, flat".
+    await seed(reset=True)
+    data = await build_dashboard("7d")
+    start, end = range_to_bounds("7d")
+    start_at, end_at = _parse(start), _parse(end)
+    previous = await get_es().search(
+        index=get_settings().es_index,
+        query={
+            "range": {
+                "@timestamp": {
+                    "gte": (start_at - (end_at - start_at)).isoformat(),
+                    "lt": start_at.isoformat(),
+                }
+            }
+        },
+        size=0,
+        track_total_hits=True,
+        aggs=_KPI_AGGS,
+    )
+    before = _kpi_values(previous)  # a past window: live ingest cannot change it
+
+    assert {k.id for k in data.kpis} == set(before)
+    for kpi in data.kpis:
+        assert (kpi.trend_pct, kpi.trend_direction) == _trend(kpi.value, before[kpi.id]), kpi.id
+
+
+@pytest.mark.asyncio
+async def test_an_attacker_is_assessed_only_by_an_analysis_of_its_sessions() -> None:
+    await seed(reset=True)
+    analysis_id = uuid.uuid4()
+    async with get_session_factory()() as db:
+        db.add(
+            Analysis(
+                started_by="unrecorded",
+                id=analysis_id,
+                session_id="seed-botnet-01",
+                model="test-fixture",
+                analysis_type="behavioral",
+                status="completed",
+                created_at=datetime.now(UTC),
+                duration_seconds=0,
+                classification="test",
+                confidence=0.5,
+                risk_score=100,  # the highest possible, so it wins over any other run
+                risk="critical",
+                behavior_summary="fixture row for assessed risk",
+                model_tier="local",
+                prompt_version="test",
+            )
+        )
+        await db.commit()
+    try:
+        # 203.0.113.0/24 is documentation space: no session, so not assessed.
+        risk = await assessed_risk(["185.220.101.44", "203.0.113.250"])
+        assert risk == {"185.220.101.44": "critical"}
+    finally:
+        async with get_session_factory()() as db:
+            await db.execute(delete(Analysis).where(Analysis.id == analysis_id))
+            await db.commit()
 
 
 @pytest.mark.asyncio

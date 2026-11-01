@@ -948,14 +948,14 @@ cd backend && .venv/Scripts/python -m pytest
 ```
 
 They run against the live Docker stack and the real local model, so bring the
-infrastructure up first. **A clean run is `1107 passed` with at most one skip** — there are
+infrastructure up first. **A clean run is `1112 passed` with at most one skip** — there are
 no expected failures. It assumes a POSIX `sh` on the PATH (Git Bash provides one); from a plain
 PowerShell without it, 23 tests of the VM's shell scripts skip with "needs a POSIX sh".
 
 The last digit moves because one test is model-dependent, not because the suite is flaky.
 That end-to-end case depends on whether `llama3.1:8b` infers a technique on that pass and
 on whether its citation survives the evidence barrier; when it does not, the test skips
-with a reason rather than failing, so a clean run is `1107 passed` or `1106 passed,
+with a reason rather than failing, so a clean run is `1112 passed` or `1111 passed,
 1 skipped` and both are green. Quoting a single exact number here would make an ordinary
 run look like a regression. The boundary it protects — an LLM-sourced mapping is never
 marked `observed` — is pinned separately by a deterministic test that needs no model.
