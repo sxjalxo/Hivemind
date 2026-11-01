@@ -278,7 +278,9 @@ class Settings(BaseSettings):
     seed_output_head_lines: int = 20
     seed_output_tail_lines: int = 20
 
-    cors_origins: list[str] = ["http://localhost:8080"]
+    # Both loopback spellings: a page opened at 127.0.0.1 is a different origin
+    # from localhost, and the frontend reports a refused origin as "API unreachable".
+    cors_origins: list[str] = ["http://localhost:8080", "http://127.0.0.1:8080"]
 
     # --- Authentication (Clerk) ---------------------------------------
     #
