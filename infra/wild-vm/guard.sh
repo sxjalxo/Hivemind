@@ -10,10 +10,14 @@
 #      bounds them.
 #   2. Disk floor: with less than DISK_FLOOR_KB free, Cowrie is stopped, so file
 #      after file uploaded by an attacker cannot fill the disk sshd and the OS need.
-#   3. Egress budget: once this billing month's outbound bytes pass
-#      EGRESS_BUDGET, Cowrie is stopped until the month turns. Counted on the
-#      interface, so unbilled metadata-server and firewall-dropped packets are
-#      included: it errs toward stopping early.
+#   3. Egress budget: once this billing month's internet-bound bytes pass
+#      EGRESS_BUDGET, Cowrie is stopped until the month turns. Counted by an
+#      iptables chain (mangle HIVEMIND-EGRESS) on everything leaving ens4 except
+#      IAP (35.235.240.0/20: our pulls, admin SSH, evaluation) and the metadata
+#      server, which Google bills as free. Counting the interface total instead
+#      stopped Cowrie on 2026-10-29 at 0.9 GB counted while the bill showed ~0.6
+#      GiB of internet egress since August. If iptables fails, the interface
+#      total is counted again: it errs toward stopping early.
 #   4. Rate limit (2026-10-25): a few bots ran 300k+ events a day each and
 #      Cowrie's replies alone outran the free tier, so each source /24 may open
 #      RATE_PER_MIN new connections a minute (burst RATE_BURST) and hold
@@ -31,7 +35,8 @@ set -eu
 EGRESS_BUDGET=${EGRESS_BUDGET:-900000000} # bytes; 10% under the free 1 GB
 DISK_FLOOR_KB=${DISK_FLOOR_KB:-1048576}
 KEEP_DAYS=90 # ponytail: by age, not by "pulled"; wild-pull down for 90 days loses the oldest day
-TX=${TX:-/sys/class/net/ens4/statistics/tx_bytes}
+TX=${TX:-} # a file to read the byte count from instead (tests)
+IFACE_TX=${IFACE_TX:-/sys/class/net/ens4/statistics/tx_bytes}
 RATE_LIMIT=${RATE_LIMIT:-on}
 RATE_PER_MIN=2 # calibration knobs: tune after seeing the drop counts
 RATE_BURST=6
@@ -53,16 +58,38 @@ tty=$(docker volume inspect -f '{{.Mountpoint}}' cowrie-tty 2>/dev/null || true)
 # 2. Free disk.
 free_kb=$(df --output=avail -k / | tail -1 | tr -d ' ')
 
-# 3. This billing month's egress. The counter restarts at boot: a reading below
-#    the last one means a reboot, so all of it is new. On the first run ever,
-#    the bytes since boot are counted (an overestimate when booted last month).
+# 3. This billing month's egress. A counter restarts at boot (and the chain when
+#    reinstalled): a reading below the last one means a restart, so all of it is
+#    new. On the first run ever, the bytes since boot are counted.
+internet_bytes() {
+  if ! iptables -t mangle -C POSTROUTING -o ens4 -j HIVEMIND-EGRESS 2>/dev/null; then
+    iptables -t mangle -N HIVEMIND-EGRESS 2>/dev/null || true
+    iptables -t mangle -F HIVEMIND-EGRESS &&
+      iptables -t mangle -A HIVEMIND-EGRESS -d 35.235.240.0/20 -j RETURN &&
+      iptables -t mangle -A HIVEMIND-EGRESS -d 169.254.169.254/32 -j RETURN &&
+      iptables -t mangle -A HIVEMIND-EGRESS -j RETURN &&
+      iptables -t mangle -A POSTROUTING -o ens4 -j HIVEMIND-EGRESS || return 1
+    say "egress: counting internet-bound bytes (IAP and metadata server excluded)"
+  fi
+  # The chain's last rule matches whatever the two exclusions let through.
+  iptables -t mangle -L HIVEMIND-EGRESS -v -x -n | tail -1 | awk '{ print $2 }'
+}
 month=$(TZ=America/Los_Angeles date +%Y-%m)
-raw=$(cat "$TX")
-last=$(cat "$STATE/tx-last" 2>/dev/null || echo 0)
+last_file="$STATE/tx-last"
+if [ -n "$TX" ]; then
+  raw=$(cat "$TX")
+elif raw=$(internet_bytes) && case $raw in '' | *[!0-9]*) false ;; esac; then
+  : # a number; anything else falls back below rather than ending the run
+else
+  raw=$(cat "$IFACE_TX")
+  last_file="$STATE/tx-last-iface"
+  say "egress: iptables counter unavailable; counting the interface total"
+fi
+last=$(cat "$last_file" 2>/dev/null || echo 0)
 if [ "$raw" -ge "$last" ]; then delta=$((raw - last)); else delta=$raw; fi
 total=$(($(cat "$STATE/egress-$month" 2>/dev/null || echo 0) + delta))
 echo "$total" >"$STATE/egress-$month"
-echo "$raw" >"$STATE/tx-last"
+echo "$raw" >"$last_file"
 
 reason=""
 if [ "$free_kb" -lt "$DISK_FLOOR_KB" ]; then reason="disk: ${free_kb} KB free"; fi

@@ -199,8 +199,8 @@ firewall rule for your IP.
 
 The VM side is `infra/wild-vm/`: Cowrie's config and run script (deploy steps in its
 header) and `guard.sh`, which every five minutes ages out rotated logs and terminal recordings after 90 days and
-stops Cowrie if free disk drops under 1 GB or the month's outbound traffic passes 900 MB of
-the free tier's 1 GB. It lifts a stop by itself; `journalctl -t hivemind-guard` on the VM says why.
+stops Cowrie if free disk drops under 1 GB or the month's internet-bound traffic passes 900 MB of
+the free tier's 1 GB (our own IAP traffic -- pulls, admin SSH, evaluation -- is not counted; Google bills it as free). It lifts a stop by itself; `journalctl -t hivemind-guard` on the VM says why.
 It also rate-limits the live honeypot's ports 22/23 per source /24 (2 new connections a minute,
 burst 6, 3 at once; the knobs are at the top of the script), so a few flood bots cannot spend the
 month's egress; the evaluation Cowrie is never limited. `iptables -L DOCKER-USER -v` shows what was dropped.

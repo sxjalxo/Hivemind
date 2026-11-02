@@ -28,14 +28,24 @@ printf 'Avail\\n%s\\n' "$FREE_KB"
 shift 2
 echo "$*" >>"$SAID"
 """,
-    # -C answers from IPT_PRESENT (0 = rule exists); -L prints a counter fixture;
+    # -C answers from IPT_PRESENT (0 = rule exists; the mangle egress chain from
+    # IPT_EGRESS_PRESENT); -L prints a counter fixture per chain;
     # IPT_FAIL=1 makes every call fail, as a missing module or a locked xtables would.
     "iptables": """#!/bin/sh
 echo "$*" >>"$IPT_CALLS"
 [ "$IPT_FAIL" = 1 ] && exit 1
-case "$1" in
-  -C) exit "$IPT_PRESENT" ;;
-  -L) printf 'Chain DOCKER-USER
+table=filter
+[ "$1" = -t ] && { table=$2; shift 2; }
+case "$table $1" in
+  "mangle -C") exit "$IPT_EGRESS_PRESENT" ;;
+  "mangle -L") printf 'Chain HIVEMIND-EGRESS (1 references)
+    pkts      bytes target     prot opt in     out     source               destination
+      10      600 RETURN     all  --  *      *       0.0.0.0/0            35.235.240.0/20
+       1       60 RETURN     all  --  *      *       0.0.0.0/0            169.254.169.254
+     300   123456 RETURN     all  --  *      *       0.0.0.0/0            0.0.0.0/0
+' ;;
+  "filter -C") exit "$IPT_PRESENT" ;;
+  "filter -L") printf 'Chain DOCKER-USER
  pkts bytes target
    40  2400 DROP tcp
     2   120 DROP tcp
@@ -59,6 +69,9 @@ def guard(
     ipt_fail: bool = False,
     rate_limit: str = "on",
     minute: str = "17",
+    counter: str = "file",  # "iptables": the real path, the mangle chain's counter
+    egress_chain_present: bool = True,
+    iface_tx: int = 0,
 ):
     stubs = tmp / "bin"
     if not stubs.exists():
@@ -69,6 +82,7 @@ def guard(
         (tmp / "logs").mkdir()
         (tmp / "tty").mkdir()
     (tmp / "tx").write_text(str(tx))
+    (tmp / "iface_tx").write_text(str(iface_tx))
     calls = tmp / "calls"
     calls.write_text("")
     env = {
@@ -81,7 +95,9 @@ def guard(
         "RUNNING": "true" if running else "false",
         "FREE_KB": str(free_kb),
         "EGRESS_BUDGET": str(budget),
-        "TX": str(tmp / "tx"),
+        "TX": str(tmp / "tx") if counter == "file" else "",
+        "IFACE_TX": str(tmp / "iface_tx"),
+        "IPT_EGRESS_PRESENT": "0" if egress_chain_present else "1",
         "STATE": str(tmp / "state"),
         "IPT_CALLS": str(tmp / "ipt"),
         "IPT_PRESENT": "0" if ipt_present else "1",
@@ -195,3 +211,29 @@ def test_the_hourly_run_logs_how_many_connections_were_turned_away(tmp_path: Pat
     assert "rate limit: 42 new connections dropped" in (tmp_path / "said").read_text()
     guard(tmp_path, tx=10, minute="35")  # not on the hour: nothing more said
     assert (tmp_path / "said").read_text().count("connections dropped") == 1
+
+
+def test_internet_bound_bytes_come_from_the_egress_chain(tmp_path: Path) -> None:
+    # The chain's catch-all rule: what is left after IAP and the metadata server.
+    assert guard(tmp_path, tx=0, counter="iptables", budget=10**9) == []
+    assert egress(tmp_path) == 123456
+    assert ipt(tmp_path, "-t mangle -A") == []  # already installed: left alone
+
+
+def test_a_missing_egress_chain_is_installed_excluding_iap_and_metadata(tmp_path: Path) -> None:
+    guard(tmp_path, tx=0, counter="iptables", egress_chain_present=False, budget=10**9)
+    assert ipt(tmp_path, "-t mangle -A") == [
+        "-t mangle -A HIVEMIND-EGRESS -d 35.235.240.0/20 -j RETURN",
+        "-t mangle -A HIVEMIND-EGRESS -d 169.254.169.254/32 -j RETURN",
+        "-t mangle -A HIVEMIND-EGRESS -j RETURN",
+        "-t mangle -A POSTROUTING -o ens4 -j HIVEMIND-EGRESS",
+    ]
+    assert "counting internet-bound bytes" in (tmp_path / "said").read_text()
+
+
+def test_a_failing_iptables_falls_back_to_the_interface_total(tmp_path: Path) -> None:
+    assert guard(
+        tmp_path, tx=0, counter="iptables", ipt_fail=True, iface_tx=5000, budget=1000
+    ) == ["stop cowrie"]
+    assert egress(tmp_path) == 5000
+    assert "counting the interface total" in (tmp_path / "said").read_text()
