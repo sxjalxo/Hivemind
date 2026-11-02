@@ -31,6 +31,10 @@
 # by this script, only once no bound is exceeded; a Cowrie stopped by hand is
 # left alone. This month's count: cat /var/lib/hivemind/egress-YYYY-MM
 set -eu
+# cron.d jobs run with PATH=/usr/bin:/bin; iptables is in /usr/sbin. Without this every
+# cron run failed both iptables uses (2,227 times, 2026-10-24..11-02): the rate limit came
+# back after a reboot only when the guard was run by hand. Appended, so tests' stubs win.
+PATH=$PATH:/usr/sbin:/sbin
 # Overridable only so backend/tests/test_wild_guard.py can drive it.
 EGRESS_BUDGET=${EGRESS_BUDGET:-900000000} # bytes; 10% under the free 1 GB
 DISK_FLOOR_KB=${DISK_FLOOR_KB:-1048576}
