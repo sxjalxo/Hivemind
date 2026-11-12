@@ -36,7 +36,8 @@ the local model analysing five of those sessions.
 
 **Dashboard** — seven days of live traffic: 3 million events from 106,000 sessions. The
 traffic ends on 9 November, when the honeypot's own egress guard stopped it for the rest
-of the month.
+of the month. The exact window and the queries that re-count these figures are in
+[OVERVIEW.md](OVERVIEW.md#figures-in-the-readme-screenshots-checked-2026-11-12).
 
 ![Dashboard over seven days of live honeypot traffic, 5–9 November 2026](assets/screenshots/dashboard.png)
 

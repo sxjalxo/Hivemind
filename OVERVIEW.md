@@ -972,6 +972,43 @@ marked `observed` — is pinned separately by a deterministic test that needs no
 cd frontend && npx tsc --noEmit && npm run lint && npm run build
 ```
 
+### Figures in the README screenshots (checked 2026-11-12)
+
+The dashboard screenshot in `README.md` shows **3,005,879 total events** and **106,406
+sessions**. Both are the dashboard's own 7-day KPIs (`app/services/dashboard.py`,
+`build_dashboard("7d")`), read from the local `honeypot-events` index at the moment of
+capture, about 07:26:57 UTC on 12 November 2026. That puts the window at
+**2026-11-05T07:26:57Z to 2026-11-12T07:26:57Z**. The live honeypot stopped on 9 November,
+so only the start of the window affects the counts.
+
+Re-run against the same index, a window starting at 07:26:57.215Z on 5 November gives:
+
+| Figure | How the dashboard computes it | Re-count |
+|---|---|---|
+| Total events | exact hit count, `track_total_hits: true` | **3,005,879** |
+| Sessions (card) | `cardinality` of `session.id`, default precision | **106,406** |
+| Sessions (exact) | composite aggregation over `session.id`, paged | 106,123 |
+
+Every event in the window carries `honeypot.id: gcp-wild-01`. The first is at
+2026-11-05T07:26:57.655Z and the last at 2026-11-09T07:30:06.263Z, when the egress guard
+stopped Cowrie for the month.
+
+The card's session figure is a HyperLogLog estimate, 283 above the exact count (+0.27%).
+The README rounds it to 106,000, which holds for both values. The per-window counts
+are bounded queries on `@timestamp`:
+
+```json
+{ "query": { "range": { "@timestamp": { "gte": "2026-11-05T07:26:57.215Z",
+                                         "lte": "2026-11-12T07:26:57Z" } } },
+  "size": 0, "track_total_hits": true,
+  "aggs": { "sessions": { "cardinality": { "field": "session.id" } } } }
+```
+
+These counts can only be reproduced against our own index. The raw Cowrie logs are not
+in the repository, because they hold the source addresses of real third parties. A
+reviewer can still check the method against the code above, and against any indexed
+corpus they run.
+
 ### Load and robustness (measured 2026-10-13)
 
 Stress-tested against the running containers — one uvicorn worker, the demo stack:
