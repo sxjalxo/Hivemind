@@ -37,11 +37,13 @@ echo "$*" >>"$IPT_CALLS"
 table=filter
 [ "$1" = -t ] && { table=$2; shift 2; }
 case "$table $1" in
-  "mangle -C") exit "$IPT_EGRESS_PRESENT" ;;
+  "mangle -C") case "$*" in *ctorigdstport*) exit "$IPT_PORTS_PRESENT" ;; *) exit "$IPT_EGRESS_PRESENT" ;; esac ;;
   "mangle -L") printf 'Chain HIVEMIND-EGRESS (1 references)
     pkts      bytes target     prot opt in     out     source               destination
       10      600 RETURN     all  --  *      *       0.0.0.0/0            35.235.240.0/20
        1       60 RETURN     all  --  *      *       0.0.0.0/0            169.254.169.254
+      40     2000            tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            ctorigdstport 22
+     200    90000            tcp  --  *      *       0.0.0.0/0            0.0.0.0/0            ctorigdstport 23
      300   123456 RETURN     all  --  *      *       0.0.0.0/0            0.0.0.0/0
 ' ;;
   "filter -C") exit "$IPT_PRESENT" ;;
@@ -71,6 +73,7 @@ def guard(
     minute: str = "17",
     counter: str = "file",  # "iptables": the real path, the mangle chain's counter
     egress_chain_present: bool = True,
+    port_counters_present: bool = True,
     iface_tx: int = 0,
 ):
     stubs = tmp / "bin"
@@ -98,6 +101,7 @@ def guard(
         "TX": str(tmp / "tx") if counter == "file" else "",
         "IFACE_TX": str(tmp / "iface_tx"),
         "IPT_EGRESS_PRESENT": "0" if egress_chain_present else "1",
+        "IPT_PORTS_PRESENT": "0" if port_counters_present else "1",
         "STATE": str(tmp / "state"),
         "IPT_CALLS": str(tmp / "ipt"),
         "IPT_PRESENT": "0" if ipt_present else "1",
@@ -175,11 +179,15 @@ def test_missing_rate_limit_rules_are_installed_once_each(tmp_path: Path) -> Non
     guard(tmp_path, tx=10, ipt_present=False)
     inserted = ipt(tmp_path, "-I")
     assert len(inserted) == 4  # ssh + telnet, each a rate and a concurrency rule
-    for port in ("22", "23"):
-        mine = [r for r in inserted if f"--ctorigdstport {port} " in r]
-        assert len(mine) == 2
-        assert any("--hashlimit-above 2/minute --hashlimit-burst 6" in r for r in mine)
-        assert any("--connlimit-above 3 --connlimit-mask 24" in r for r in mine)
+    ssh = [r for r in inserted if "--ctorigdstport 22 " in r]
+    telnet = [r for r in inserted if "--ctorigdstport 23 " in r]
+    assert len(ssh) == len(telnet) == 2
+    assert any("--hashlimit-above 2/minute --hashlimit-burst 6" in r for r in ssh)
+    assert any("--connlimit-above 3 --connlimit-mask 24" in r for r in ssh)
+    # Telnet: one new connection per 10 minutes and one at a time, per /24.
+    assert any("--hashlimit-name telnet-strict" in r for r in telnet)
+    assert any("--hashlimit-above 6/hour --hashlimit-burst 2" in r for r in telnet)
+    assert any("--connlimit-above 1 --connlimit-mask 24" in r for r in telnet)
     assert all(r.startswith("-I DOCKER-USER ") and r.endswith("-j DROP") for r in inserted)
     assert all("--hashlimit-srcmask 24" in r for r in inserted if "hashlimit" in r)
     # Never the evaluation Cowrie: every IAP connection reaches it from a few proxy
@@ -237,3 +245,37 @@ def test_a_failing_iptables_falls_back_to_the_interface_total(tmp_path: Path) ->
     ) == ["stop cowrie"]
     assert egress(tmp_path) == 5000
     assert "counting the interface total" in (tmp_path / "said").read_text()
+
+
+def test_the_old_telnet_rules_are_retired_on_every_run(tmp_path: Path) -> None:
+    guard(tmp_path, tx=10)
+    deleted = ipt(tmp_path, "-D")
+    assert len(deleted) == 2
+    assert all("--ctorigdstport 23 " in r for r in deleted)
+    assert any("--hashlimit-name cowrie-23 " in r and "2/minute" in r for r in deleted)
+    assert any("--connlimit-above 3 " in r for r in deleted)
+
+
+def test_missing_per_port_counters_are_added_ahead_of_the_catch_all(tmp_path: Path) -> None:
+    guard(tmp_path, tx=0, counter="iptables", port_counters_present=False, budget=10**9)
+    assert ipt(tmp_path, "-t mangle -I") == [
+        "-t mangle -I HIVEMIND-EGRESS 3 -p tcp -m conntrack --ctorigdstport 22",
+        "-t mangle -I HIVEMIND-EGRESS 3 -p tcp -m conntrack --ctorigdstport 23",
+    ]
+    assert egress(tmp_path) == 123456  # still the catch-all, not a port rule
+
+
+def test_the_hourly_run_logs_bytes_per_port(tmp_path: Path) -> None:
+    guard(tmp_path, tx=0, counter="iptables", budget=10**9, minute="00")
+    said = (tmp_path / "said").read_text()
+    assert "egress: port 22 2000 bytes, port 23 90000 bytes since the chain was installed" in said
+
+
+def test_a_months_budget_can_be_raised_by_hand_but_never_by_a_bad_file(tmp_path: Path) -> None:
+    guard(tmp_path, tx=10, budget=10**9)  # creates the state directory
+    (month,) = [p.name.removeprefix("egress-") for p in (tmp_path / "state").glob("egress-*")]
+    budget_file = tmp_path / "state" / f"budget-{month}"
+    budget_file.write_text("5000")
+    assert guard(tmp_path, tx=3000, budget=1000) == []  # 3000 counted, 5000 allowed
+    budget_file.write_text("lots")
+    assert guard(tmp_path, tx=3000, budget=1000) == ["stop cowrie"]  # falls back to 1000

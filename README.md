@@ -214,9 +214,11 @@ The VM side is `infra/wild-vm/`: Cowrie's config and run script (deploy steps in
 header) and `guard.sh`, which every five minutes ages out rotated logs and terminal recordings after 90 days and
 stops Cowrie if free disk drops under 1 GB or the month's internet-bound traffic passes 900 MB of
 the free tier's 1 GB (our own IAP traffic -- pulls, admin SSH, evaluation -- is not counted; Google bills it as free). It lifts a stop by itself; `journalctl -t hivemind-guard` on the VM says why.
-It also rate-limits the live honeypot's ports 22/23 per source /24 (2 new connections a minute,
-burst 6, 3 at once; the knobs are at the top of the script), so a few flood bots cannot spend the
-month's egress; the evaluation Cowrie is never limited. `iptables -L DOCKER-USER -v` shows what was dropped.
+It also rate-limits the live honeypot per source /24 -- SSH (22) to 2 new connections a minute,
+burst 6, 3 at once; telnet (23), 96% of the traffic, to one every 10 minutes, burst 2, 1 at once;
+the knobs are at the top of the script -- so flood bots cannot spend the month's egress; the
+evaluation Cowrie is never limited. Bytes per port are logged hourly, and one month's budget can be
+raised by hand with `echo BYTES >/var/lib/hivemind/budget-YYYY-MM`. `iptables -L DOCKER-USER -v` shows what was dropped.
 The evaluation half measures a second Cowrie on the same VM (`run-cowrie.sh eval`, ports 2222 and 2223,
 reachable only through IAP, or from your IP without it) as target `gcp-eval-01`, reset and read through a key that can do nothing else
 (`setup-eval-gate.sh`); `backend/.env.example` has its `EVALUATION_TARGETS` entry.

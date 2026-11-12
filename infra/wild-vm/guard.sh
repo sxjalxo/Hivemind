@@ -27,6 +27,11 @@
 #      the evaluation Cowrie (host 2222/2223) is never limited -- every IAP
 #      connection reaches it from a few proxy addresses. Re-checked every run,
 #      so they survive reboots. Off: RATE_LIMIT=off, then iptables -F DOCKER-USER.
+#      Telnet (2026-11-12) gets its own, much stricter limit: 96% of events and,
+#      by the November bill, ~78 MB/day of billed egress against a free 1 GB a
+#      month. The 2/min telnet rules it replaced are deleted on every run.
+#   A month's budget can be raised by hand: echo BYTES >$STATE/budget-YYYY-MM.
+#   Bytes per port (22, 23) are counted in the egress chain and logged hourly.
 # Every action is logged (journalctl -t hivemind-guard). A stop is lifted only
 # by this script, only once no bound is exceeded; a Cowrie stopped by hand is
 # left alone. This month's count: cat /var/lib/hivemind/egress-YYYY-MM
@@ -42,9 +47,12 @@ KEEP_DAYS=90 # ponytail: by age, not by "pulled"; wild-pull down for 90 days los
 TX=${TX:-} # a file to read the byte count from instead (tests)
 IFACE_TX=${IFACE_TX:-/sys/class/net/ens4/statistics/tx_bytes}
 RATE_LIMIT=${RATE_LIMIT:-on}
-RATE_PER_MIN=2 # calibration knobs: tune after seeing the drop counts
+RATE_PER_MIN=2 # SSH; calibration knobs: tune after seeing the drop counts
 RATE_BURST=6
 CONCURRENT=3
+TELNET_RATE=6/hour # one new connection per 10 minutes per /24
+TELNET_BURST=2
+TELNET_CONCURRENT=1
 SRC_MASK=24
 STATE=${STATE:-/var/lib/hivemind}
 mkdir -p "$STATE"
@@ -75,15 +83,21 @@ internet_bytes() {
       iptables -t mangle -A POSTROUTING -o ens4 -j HIVEMIND-EGRESS || return 1
     say "egress: counting internet-bound bytes (IAP and metadata server excluded)"
   fi
+  for port in 22 23; do # count-only rules (no target), kept ahead of the catch-all
+    iptables -t mangle -C HIVEMIND-EGRESS -p tcp -m conntrack --ctorigdstport "$port" 2>/dev/null ||
+      iptables -t mangle -I HIVEMIND-EGRESS 3 -p tcp -m conntrack --ctorigdstport "$port" ||
+      return 1
+  done
   # The chain's last rule matches whatever the two exclusions let through.
   iptables -t mangle -L HIVEMIND-EGRESS -v -x -n | tail -1 | awk '{ print $2 }'
 }
 month=$(TZ=America/Los_Angeles date +%Y-%m)
+counter=interface
 last_file="$STATE/tx-last"
 if [ -n "$TX" ]; then
   raw=$(cat "$TX")
 elif raw=$(internet_bytes) && case $raw in '' | *[!0-9]*) false ;; esac; then
-  : # a number; anything else falls back below rather than ending the run
+  counter=iptables # a number; anything else falls back below rather than ending the run
 else
   raw=$(cat "$IFACE_TX")
   last_file="$STATE/tx-last-iface"
@@ -94,10 +108,18 @@ if [ "$raw" -ge "$last" ]; then delta=$((raw - last)); else delta=$raw; fi
 total=$(($(cat "$STATE/egress-$month" 2>/dev/null || echo 0) + delta))
 echo "$total" >"$STATE/egress-$month"
 echo "$raw" >"$last_file"
+if [ "$counter" = iptables ] && [ "${NOW_MINUTE:-$(date +%M)}" -lt 5 ]; then # hourly
+  ports=$(iptables -t mangle -L HIVEMIND-EGRESS -v -x -n |
+    awk '$(NF-1) == "ctorigdstport" { printf "%sport %s %s bytes", sep, $NF, $2; sep = ", " }') || ports=""
+  say "egress: ${ports:-no per-port counts} since the chain was installed; $total counted in $month"
+fi
+
+budget=$(cat "$STATE/budget-$month" 2>/dev/null || echo "$EGRESS_BUDGET")
+case $budget in '' | *[!0-9]*) budget=$EGRESS_BUDGET ;; esac # a bad file never lifts the bound
 
 reason=""
 if [ "$free_kb" -lt "$DISK_FLOOR_KB" ]; then reason="disk: ${free_kb} KB free"; fi
-if [ "$total" -gt "$EGRESS_BUDGET" ]; then
+if [ "$total" -gt "$budget" ]; then
   reason="${reason:+$reason; }egress: $total bytes sent in $month"
 fi
 
@@ -117,11 +139,23 @@ fi
 #    bounds above (errexit is off inside a function called with ||).
 rate_limit() {
   installed=""
+  old="-p tcp -m conntrack --ctstate NEW --ctorigdstport 23"
+  for rule in \
+    "$old -m hashlimit --hashlimit-name cowrie-23 --hashlimit-mode srcip --hashlimit-srcmask $SRC_MASK --hashlimit-above 2/minute --hashlimit-burst 6 -j DROP" \
+    "$old -m connlimit --connlimit-above 3 --connlimit-mask $SRC_MASK -j DROP"; do
+    # shellcheck disable=SC2086 # the 2026-10-24 telnet rules, retired; absent is fine
+    if iptables -D DOCKER-USER $rule 2>/dev/null; then say "rate limit: retired an old telnet rule"; fi
+  done
   for port in 22 23; do
     new="-p tcp -m conntrack --ctstate NEW --ctorigdstport $port"
+    if [ "$port" = 22 ]; then
+      name=cowrie-22 rate=$RATE_PER_MIN/minute burst=$RATE_BURST concurrent=$CONCURRENT
+    else
+      name=telnet-strict rate=$TELNET_RATE burst=$TELNET_BURST concurrent=$TELNET_CONCURRENT
+    fi
     for rule in \
-      "$new -m hashlimit --hashlimit-name cowrie-$port --hashlimit-mode srcip --hashlimit-srcmask $SRC_MASK --hashlimit-above $RATE_PER_MIN/minute --hashlimit-burst $RATE_BURST -j DROP" \
-      "$new -m connlimit --connlimit-above $CONCURRENT --connlimit-mask $SRC_MASK -j DROP"; do
+      "$new -m hashlimit --hashlimit-name $name --hashlimit-mode srcip --hashlimit-srcmask $SRC_MASK --hashlimit-above $rate --hashlimit-burst $burst -j DROP" \
+      "$new -m connlimit --connlimit-above $concurrent --connlimit-mask $SRC_MASK -j DROP"; do
       # shellcheck disable=SC2086 # the rule is meant to word-split into arguments
       if ! iptables -C DOCKER-USER $rule 2>/dev/null; then
         iptables -I DOCKER-USER $rule || return 1
@@ -133,7 +167,7 @@ rate_limit() {
     date -u +%Y-%m-%dT%H:%M:%SZ >"$STATE/rate-limit-since.new"
     [ -f "$STATE/rate-limit-since" ] || mv "$STATE/rate-limit-since.new" "$STATE/rate-limit-since"
     rm -f "$STATE/rate-limit-since.new"
-    say "rate limit: installed ($RATE_PER_MIN/min burst $RATE_BURST, $CONCURRENT concurrent, per /$SRC_MASK, ports 22/23)"
+    say "rate limit: installed (ssh $RATE_PER_MIN/min burst $RATE_BURST, $CONCURRENT concurrent; telnet $TELNET_RATE burst $TELNET_BURST, $TELNET_CONCURRENT concurrent; per /$SRC_MASK)"
   fi
   if [ "${NOW_MINUTE:-$(date +%M)}" -lt 5 ]; then # once an hour (cron runs every 5 minutes)
     dropped=$(iptables -L DOCKER-USER -v -x -n | awk '$3 == "DROP" { n += $1 } END { print n + 0 }') || return 1
