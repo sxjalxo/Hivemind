@@ -32,7 +32,11 @@ export function StatusDot({
   );
 }
 
-/** Reusable service health row — reused in the sidebar, top bar and live analysis panel. */
+/**
+ * Reusable service health row — reused in the sidebar, top bar and live analysis panel.
+ * `dense` rows (narrow columns) show the short state on one line, with the backend's
+ * detail in the tooltip; the full detail is on the Settings page, which has the room.
+ */
 export function StatusRow({
   status,
   className,
@@ -56,8 +60,14 @@ export function StatusRow({
         <StatusDot state={status.state} />
         <span className="truncate text-xs text-muted-foreground">{status.name}</span>
       </span>
-      <span className={cn("font-mono text-[10px] uppercase tracking-[0.08em]", style.text)}>
-        {status.detail ?? style.label}
+      <span
+        className={cn(
+          "font-mono text-[10px] uppercase tracking-[0.08em]",
+          dense && "shrink-0 whitespace-nowrap",
+          style.text,
+        )}
+      >
+        {dense ? style.label : (status.detail ?? style.label)}
       </span>
     </div>
   );
