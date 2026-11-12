@@ -30,25 +30,38 @@ Based on *"Beekeeper: Accelerating Honeypot Analysis With LLM-Driven Feedback"*
 
 ## Screenshots
 
-**Dashboard** — fleet-wide attacker activity over a selected window.
+The first four screenshots show **real attack traffic** captured by the live honeypot on
+Google Cloud (`gcp-wild-01`) between 5 and 9 November 2026; the classifications come from
+the local model analysing five of those sessions.
 
-![Dashboard](assets/screenshots/dashboard.png)
+**Dashboard** — seven days of live traffic: 3 million events from 106,000 sessions. The
+traffic ends on 9 November, when the honeypot's own egress guard stopped it for the rest
+of the month.
 
-**Attack sessions** — every captured session ranked for triage, with its risk score and
-the ATT&CK tactic chain it exercised.
+![Dashboard over seven days of live honeypot traffic, 5–9 November 2026](assets/screenshots/dashboard.png)
 
-![Attack sessions](assets/screenshots/sessions.png)
+**Sensor page** — the live honeypot itself: what it is disguised as (the `web-server`
+persona) and since when, every recorded configuration change, and its traffic, cut at each
+change so periods can be compared.
 
-**Threat intelligence** — extracted indicators, each carrying its own provenance tier.
-`OBSERVED` came straight from telemetry; `CORRELATED` was derived across more than one
-session.
+![Sensor page of the live GCP honeypot gcp-wild-01](assets/screenshots/sensor.png)
 
-![Threat intelligence](assets/screenshots/threat-intel.png)
+**Attack sessions** — captured sessions, newest first, with the campaigns above them:
+sessions that ran the identical command sequence, grouped deterministically. These are
+botnets replaying one script from many addresses.
 
-**MITRE ATT&CK mapping** — techniques positioned on the Enterprise matrix, with the count
-of evidence behind each one.
+![Attack sessions and campaigns captured by the live honeypot](assets/screenshots/sessions.png)
 
-![MITRE ATT&CK mapping](assets/screenshots/mitre.png)
+**MITRE ATT&CK mapping** — one live session (`595b6c411118`) on the Enterprise matrix. The
+four highlighted techniques are *observed*: a deterministic rule matched the command.
+
+![MITRE ATT&CK matrix for one live honeypot session](assets/screenshots/mitre.png)
+
+**Threat intelligence** *(seeded demo data)* — extracted indicators, each carrying its own
+provenance tier. `OBSERVED` came straight from telemetry; `CORRELATED` was derived across
+more than one session.
+
+![Threat intelligence indicators from the seeded demo corpus](assets/screenshots/threat-intel.png)
 
 **Realism evaluation** — run history for the half that attacks the honeypot, with both
 fingerprints, the evaluator's status and who started each run. The honeypot column shows
