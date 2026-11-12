@@ -9,7 +9,7 @@ import {
 } from "recharts";
 import { ChartTooltipCard } from "./ChartTooltip";
 import { AXIS_STYLE, SERIES } from "./palette";
-import { formatNumber } from "@/utils/format";
+import { formatCompact, formatTick } from "@/utils/format";
 
 export interface TimelinePoint {
   t: string;
@@ -68,13 +68,14 @@ export function ActivityTimelineChart({ data }: { data: TimelinePoint[] }) {
               axisLine={false}
               tick={AXIS_STYLE.tick}
               minTickGap={24}
+              tickFormatter={(value: string) => formatTick(value)}
             />
             <YAxis
               tickLine={false}
               axisLine={false}
               tick={AXIS_STYLE.tick}
               width={54}
-              tickFormatter={(value: number) => formatNumber(value)}
+              tickFormatter={(value: number) => formatCompact(value)}
             />
             <Tooltip
               cursor={{ stroke: "var(--color-border-strong)", strokeWidth: 1 }}

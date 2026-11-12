@@ -24,7 +24,7 @@ import { ChartTooltipCard } from "@/components/charts/ChartTooltip";
 import { AXIS_STYLE, SERIES } from "@/components/charts/palette";
 import { openedByLabel, periodName } from "@/components/sensor/periods";
 import { sensorQueries } from "@/services/queries";
-import { formatDateTime, formatNumber } from "@/utils/format";
+import { formatCompact, formatDateTime, formatNumber } from "@/utils/format";
 import type { SensorTraffic } from "@/types";
 
 const SERIES_META = [
@@ -109,7 +109,7 @@ function TrafficBody({ data }: { data: SensorTraffic }) {
                 axisLine={false}
                 tick={AXIS_STYLE.tick}
                 width={54}
-                tickFormatter={(value: number) => formatNumber(value)}
+                tickFormatter={(value: number) => formatCompact(value)}
               />
               <Tooltip
                 cursor={{ stroke: "var(--color-border-strong)", strokeWidth: 1 }}

@@ -4,6 +4,18 @@ export function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
+/** 600K, 1.2M: for axis ticks, where a full number is clipped. */
+export function formatCompact(value: number): string {
+  return new Intl.NumberFormat("en-US", { notation: "compact" }).format(value);
+}
+
+/** "11-07 12:00" (UTC): a chart tick, where a full ISO timestamp does not fit. */
+export function formatTick(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toISOString().slice(5, 16).replace("T", " ");
+}
+
 export function formatTime(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;

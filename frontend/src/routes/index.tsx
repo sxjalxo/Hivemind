@@ -69,12 +69,9 @@ function DashboardPage() {
         </Panel>
       ) : (
         <>
-          <section
-            aria-label="Key metrics"
-            className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8"
-          >
+          <section aria-label="Key metrics" className="grid grid-cols-2 gap-3 md:grid-cols-4">
             {dashboard.isPending
-              ? Array.from({ length: 8 }, (_, index) => <KpiCardSkeleton key={index} />)
+              ? Array.from({ length: 4 }, (_, index) => <KpiCardSkeleton key={index} />)
               : dashboard.data.kpis.map((kpi) => <KpiCard key={kpi.id} kpi={kpi} />)}
           </section>
 

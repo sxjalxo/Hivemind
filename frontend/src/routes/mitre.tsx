@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/select";
 import { formatPct } from "@/utils/format";
 import type { MitreTechnique } from "@/types";
-import { mitreCoverageQuery, sessionQueries } from "@/services/queries";
+import { analysisQueries, mitreCoverageQuery } from "@/services/queries";
 
 interface MitreSearch {
   session?: string | undefined;
@@ -36,7 +36,19 @@ function MitrePage() {
   const navigate = useNavigate({ from: "/mitre" });
   const [selected, setSelected] = useState<MitreTechnique | null>(null);
 
-  const sessions = useQuery(sessionQueries.list());
+  // Only analysed sessions have mappings to scope to -- not the newest page of
+  // sessions, which left an older analysed session (a deep link) unselectable.
+  const analyses = useQuery(analysisQueries.history());
+  const scopes = [
+    ...new Map(
+      (analyses.data ?? [])
+        .filter((analysis) => analysis.status === "completed")
+        .map((analysis) => [analysis.sessionId, analysis.classification]),
+    ),
+  ];
+  if (search.session && !scopes.some(([id]) => id === search.session)) {
+    scopes.unshift([search.session, ""]);
+  }
   const coverage = useQuery(mitreCoverageQuery(search.session));
 
   // Deep links such as /mitre?technique=T1059 open straight into the drawer.
@@ -82,9 +94,9 @@ function MitrePage() {
               <SelectItem value="all" className="text-xs">
                 All sessions
               </SelectItem>
-              {(sessions.data ?? []).map((session) => (
-                <SelectItem key={session.id} value={session.id} className="font-mono text-xs">
-                  {session.id} — {session.attackerIp}
+              {scopes.map(([id, classification]) => (
+                <SelectItem key={id} value={id} className="font-mono text-xs">
+                  {classification ? `${id} — ${classification}` : id}
                 </SelectItem>
               ))}
             </SelectContent>
